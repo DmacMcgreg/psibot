@@ -36,7 +36,7 @@ src/
   agent/
     index.ts                # AgentService - runs query() with MCP servers + subagents
     tools.ts                # "agent-tools" MCP server (memory, knowledge, browser, jobs, telegram media, worktrees)
-    media-tools.ts          # "media-tools" MCP server (image_generate, audio_transcribe, tts_generate)
+    media-tools.ts          # "media-tools" MCP server (image gen, Soprano TTS, parakeet STT)
     subagents.ts            # AgentDefinition records (image-generator, audio-processor, coder, researcher)
     prompts.ts              # System prompt builder (loads IDENTITY/USER/TOOLS + memory)
   heartbeat/
@@ -83,8 +83,9 @@ knowledge/
   memory/                   # Daily log files (YYYY-MM-DD.md)
 data/
   app.db                    # SQLite database
-  images/                   # Generated images (from media-tools)
-  audio/                    # Generated audio (from media-tools)
+  images/                   # Generated images (Gemini API)
+  audio/tts/                # Generated speech audio (Soprano/edge-tts)
+  stt/                      # Transcription output files (parakeet)
   media/inbound/            # Downloaded telegram voice messages
 public/
   htmx.min.js              # HTMX client
@@ -103,7 +104,7 @@ Tools are defined with `createSdkMcpServer` + `tool()` from the SDK. Each tool r
 `query()` accepts `agents: Record<string, AgentDefinition>`. The main agent spawns subagents via the built-in `Task` tool. Subagents inherit MCP servers from parent.
 
 ### Subprocess Pattern
-External tools (agent-browser, parakeet-mlx, mlx_audio, edge-tts) run via `Bun.spawn()` with piped stdout/stderr, captured via `new Response(proc.stdout).text()`.
+External tools (agent-browser, mlx_audio.stt.generate, mlx_audio.tts.generate, edge-tts) run via `Bun.spawn()` with piped stdout/stderr, captured via `new Response(proc.stdout).text()`. Audio tools installed via `uv tool install mlx-audio`.
 
 ## Key Environment Variables
 
