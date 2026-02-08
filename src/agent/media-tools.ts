@@ -10,8 +10,11 @@ const DATA_DIR = resolve(process.cwd(), "data");
 const IMAGES_DIR = join(DATA_DIR, "images");
 const AUDIO_DIR = join(DATA_DIR, "audio");
 
-const PARAKEET_PATH = "/Users/davidmcgregor/.local/bin/parakeet-mlx";
-const CHATTERBOX_PATH = "/Users/davidmcgregor/Documents/2_Code/chatterbox-2025-12-23-mlx/.venv/bin/mlx_audio.tts.generate";
+const STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3";
+const TTS_MODEL = "mlx-community/Soprano-80M-bf16";
+const TTS_VOICE = "sonia";
+const STT_CMD = "mlx_audio.stt.generate";
+const TTS_CMD = "mlx_audio.tts.generate";
 
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) {
@@ -68,8 +71,13 @@ export function createMediaTools() {
 
           log.info("Generating image", { prompt: args.prompt.slice(0, 100) });
 
+          const imageConfig: Record<string, string> = {};
+          if (args.aspect_ratio) {
+            imageConfig.aspectRatio = args.aspect_ratio;
+          }
+
           const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${apiKey}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -80,8 +88,8 @@ export function createMediaTools() {
                   },
                 ],
                 generationConfig: {
-                  responseModalities: ["IMAGE"],
-                  ...(args.aspect_ratio ? { aspectRatio: args.aspect_ratio } : {}),
+                  responseModalities: ["TEXT", "IMAGE"],
+                  ...(Object.keys(imageConfig).length > 0 ? { imageConfig } : {}),
                 },
               }),
             }
@@ -127,10 +135,10 @@ export function createMediaTools() {
 
       tool(
         "audio_transcribe",
-        "Transcribe an audio file to text using parakeet-mlx (local Apple Silicon STT). Supports wav, mp3, ogg, m4a, flac formats.",
+        "Transcribe an audio file to text using mlx-audio parakeet (local Apple Silicon STT). Supports wav, mp3, ogg, m4a, flac formats.",
         {
           audio_path: z.string().describe("Absolute path to the audio file to transcribe"),
-          output_format: z.enum(["txt", "json", "srt"]).optional().describe("Output format (default: 'txt')"),
+          output_format: z.enum(["txt", "json", "srt", "vtt"]).optional().describe("Output format (default: 'txt')"),
         },
         async (args) => {
           if (!existsSync(args.audio_path)) {
@@ -141,11 +149,16 @@ export function createMediaTools() {
           }
 
           const format = args.output_format ?? "txt";
-          log.info("Transcribing audio", { path: args.audio_path, format });
+          const timestamp = Date.now();
+          const sttOutputDir = join(DATA_DIR, "stt");
+          ensureDir(sttOutputDir);
+          const outputBase = join(sttOutputDir, `${timestamp}`);
+
+          log.info("Transcribing audio", { path: args.audio_path, format, model: STT_MODEL });
 
           try {
             const proc = Bun.spawn(
-              [PARAKEET_PATH, args.audio_path, "--output-format", format],
+              [STT_CMD, "--model", STT_MODEL, "--audio", args.audio_path, "--output", outputBase, "--format", format],
               {
                 stdout: "pipe",
                 stderr: "pipe",
@@ -168,9 +181,15 @@ export function createMediaTools() {
               };
             }
 
-            log.info("Transcription complete", { outputLength: stdout.length });
+            const outputFile = `${outputBase}.${format}`;
+            let transcription = stdout.trim();
+            if (existsSync(outputFile)) {
+              transcription = readFileSync(outputFile, "utf-8").trim();
+            }
+
+            log.info("Transcription complete", { outputLength: transcription.length });
             return {
-              content: [{ type: "text" as const, text: stdout.trim() }],
+              content: [{ type: "text" as const, text: transcription }],
             };
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -184,99 +203,67 @@ export function createMediaTools() {
 
       tool(
         "tts_generate",
-        "Generate speech audio from text. Uses chatterbox (local MLX) for short text or edge-tts (Microsoft cloud) for longer text. Returns the file path to the generated audio.",
+        "Generate speech audio from text using Soprano (local MLX TTS on Apple Silicon). Returns the file path to the generated WAV audio.",
         {
           text: z.string().describe("Text to convert to speech"),
-          engine: z.enum(["chatterbox", "edge"]).optional().describe("TTS engine. Default: 'chatterbox' for short text (<500 chars), 'edge' for longer text"),
-          voice: z.string().optional().describe("Voice name (edge-tts only, e.g. 'en-US-AriaNeural'). Ignored for chatterbox."),
+          speed: z.number().optional().describe("Speech speed multiplier (default: 1.0)"),
         },
         async (args) => {
-          ensureDir(AUDIO_DIR);
+          const ttsOutputDir = join(AUDIO_DIR, "tts");
+          ensureDir(ttsOutputDir);
 
-          const engine = args.engine ?? (args.text.length > 500 ? "edge" : "chatterbox");
           const timestamp = Date.now();
+          const filePrefix = join(ttsOutputDir, `${timestamp}`);
+          const expectedOutput = `${filePrefix}_000.wav`;
 
-          log.info("Generating TTS", { engine, textLength: args.text.length });
+          const cleanText = args.text.replace(/\\/g, "");
 
-          if (engine === "chatterbox") {
-            const outputPath = join(AUDIO_DIR, `${timestamp}.wav`);
+          log.info("Generating TTS", { textLength: cleanText.length, model: TTS_MODEL, voice: TTS_VOICE });
 
-            try {
-              const proc = Bun.spawn(
-                [CHATTERBOX_PATH, "--text", args.text, "--output", outputPath],
-                {
-                  stdout: "pipe",
-                  stderr: "pipe",
-                  env: { ...process.env },
-                }
-              );
+          try {
+            const cmdArgs = [TTS_CMD, "--model", TTS_MODEL, "--text", cleanText, "--voice", TTS_VOICE, "--file_prefix", filePrefix];
+            if (args.speed !== undefined) {
+              cmdArgs.push("--speed", String(args.speed));
+            }
 
-              const [stdout, stderr] = await Promise.all([
-                new Response(proc.stdout).text(),
-                new Response(proc.stderr).text(),
-              ]);
+            const proc = Bun.spawn(cmdArgs, {
+              stdout: "pipe",
+              stderr: "pipe",
+              env: { ...process.env },
+            });
 
-              const exitCode = await proc.exited;
+            const [, stderr] = await Promise.all([
+              new Response(proc.stdout).text(),
+              new Response(proc.stderr).text(),
+            ]);
 
-              if (exitCode !== 0) {
-                log.error("Chatterbox TTS failed", { exitCode, stderr: stderr.slice(0, 500) });
-                return {
-                  content: [{ type: "text" as const, text: `Chatterbox TTS failed (exit ${exitCode}): ${stderr.slice(0, 500)}` }],
-                  isError: true,
-                };
-              }
+            const exitCode = await proc.exited;
 
-              log.info("Chatterbox TTS complete", { outputPath });
+            if (exitCode !== 0) {
+              log.error("Soprano TTS failed", { exitCode, stderr: stderr.slice(0, 500) });
               return {
-                content: [{ type: "text" as const, text: `Audio saved to: ${outputPath}` }],
-              };
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              return {
-                content: [{ type: "text" as const, text: `Chatterbox TTS error: ${message}` }],
+                content: [{ type: "text" as const, text: `TTS failed (exit ${exitCode}): ${stderr.slice(0, 500)}` }],
                 isError: true,
               };
             }
-          } else {
-            const outputPath = join(AUDIO_DIR, `${timestamp}.mp3`);
-            const voice = args.voice ?? "en-US-AriaNeural";
 
-            try {
-              const proc = Bun.spawn(
-                ["edge-tts", "--text", args.text, "--write-media", outputPath, "--voice", voice],
-                {
-                  stdout: "pipe",
-                  stderr: "pipe",
-                  env: { ...process.env },
-                }
-              );
-
-              const [stdout, stderr] = await Promise.all([
-                new Response(proc.stdout).text(),
-                new Response(proc.stderr).text(),
-              ]);
-
-              const exitCode = await proc.exited;
-
-              if (exitCode !== 0) {
-                log.error("Edge TTS failed", { exitCode, stderr: stderr.slice(0, 500) });
-                return {
-                  content: [{ type: "text" as const, text: `Edge TTS failed (exit ${exitCode}): ${stderr.slice(0, 500)}` }],
-                  isError: true,
-                };
-              }
-
-              log.info("Edge TTS complete", { outputPath, voice });
+            if (!existsSync(expectedOutput)) {
               return {
-                content: [{ type: "text" as const, text: `Audio saved to: ${outputPath}` }],
-              };
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              return {
-                content: [{ type: "text" as const, text: `Edge TTS error: ${message}` }],
+                content: [{ type: "text" as const, text: `TTS completed but output file not found at ${expectedOutput}` }],
                 isError: true,
               };
             }
+
+            log.info("TTS complete", { outputPath: expectedOutput });
+            return {
+              content: [{ type: "text" as const, text: `Audio saved to: ${expectedOutput}` }],
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text" as const, text: `TTS error: ${message}` }],
+              isError: true,
+            };
           }
         }
       ),
