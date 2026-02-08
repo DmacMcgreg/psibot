@@ -34,6 +34,7 @@ export class AgentService {
     const config = getConfig();
     const maxBudget = options.maxBudgetUsd ?? config.DEFAULT_MAX_BUDGET_USD;
     const runId = crypto.randomUUID();
+    const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = stale
 
     log.info("Starting agent run", {
       runId,
@@ -76,6 +77,22 @@ export class AgentService {
     let resultText = "";
     let totalCost = 0;
     let durationMs = 0;
+    let lastMessageAt = Date.now();
+    let staleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const resetStaleTimer = () => {
+      lastMessageAt = Date.now();
+      if (staleTimer) clearTimeout(staleTimer);
+      staleTimer = setTimeout(async () => {
+        const staleSec = Math.round((Date.now() - lastMessageAt) / 1000);
+        log.warn("Agent run stale, interrupting", { runId, staleSec });
+        try {
+          await agentQuery.interrupt();
+        } catch {
+          // ignore interrupt errors
+        }
+      }, STALE_TIMEOUT_MS);
+    };
 
     try {
       // Store user message
@@ -90,7 +107,9 @@ export class AgentService {
       }
 
       log.info("Entering message loop", { runId });
+      resetStaleTimer();
       for await (const message of agentQuery) {
+        resetStaleTimer();
         log.info("Message received", { runId, type: message.type, subtype: "subtype" in message ? message.subtype : undefined });
         switch (message.type) {
           case "system":
@@ -175,6 +194,7 @@ export class AgentService {
       log.error("Agent run failed", { runId, error: message });
       throw err;
     } finally {
+      if (staleTimer) clearTimeout(staleTimer);
       this.activeQueries.delete(runId);
     }
   }
