@@ -1,4 +1,6 @@
 import { InputFile, type Context } from "grammy";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { AgentService } from "../agent/index.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { Scheduler } from "../scheduler/index.ts";
@@ -240,6 +242,66 @@ export function registerCommands(deps: CommandDeps) {
     await ctx.reply(status);
   }
 
+  const INBOUND_MEDIA_DIR = resolve(process.cwd(), "data", "media", "inbound");
+
+  async function handleVoice(ctx: Context): Promise<void> {
+    const voice = ctx.message?.voice ?? ctx.message?.audio;
+    if (!voice) return;
+
+    const thinkingMsg = await ctx.reply("Transcribing voice message...");
+    const chatId = String(ctx.chat?.id ?? "");
+
+    try {
+      mkdirSync(INBOUND_MEDIA_DIR, { recursive: true });
+
+      const file = await ctx.getFile();
+      const fileUrl = `https://api.telegram.org/file/bot${ctx.api.token}/${file.file_path}`;
+
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download voice file: ${response.status}`);
+      }
+
+      const ext = file.file_path?.split(".").pop() ?? "ogg";
+      const localPath = join(INBOUND_MEDIA_DIR, `${Date.now()}.${ext}`);
+      const buffer = await response.arrayBuffer();
+      await Bun.write(localPath, buffer);
+
+      log.info("Voice message saved", { localPath, size: buffer.byteLength });
+
+      const sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+      const prompt = `The user sent a voice message. The audio file is at: ${localPath}\n\nPlease transcribe it using the audio_transcribe tool, then respond to whatever they said.`;
+
+      const result = await agent.run({
+        prompt,
+        source: "telegram",
+        sourceId: chatId,
+        sessionId,
+        useBrowser: false,
+      });
+
+      const responseText = `${result.result}\n\n${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
+      const chunks = splitMessage(responseText);
+
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        thinkingMsg.message_id,
+        chunks[0]
+      );
+
+      for (let i = 1; i < chunks.length; i++) {
+        await ctx.reply(chunks[i]);
+      }
+    } catch (err) {
+      log.error("Voice message error", { error: String(err) });
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        thinkingMsg.message_id,
+        `Voice message error: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   return {
     handleStart,
     handleAsk,
@@ -251,5 +313,6 @@ export function registerCommands(deps: CommandDeps) {
     handleSearch,
     handleBrowse,
     handleStatus,
+    handleVoice,
   };
 }

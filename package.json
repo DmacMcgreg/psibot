@@ -2,6 +2,9 @@
   "name": "telegram-claude-code",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "psibot": "src/cli.ts"
+  },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",

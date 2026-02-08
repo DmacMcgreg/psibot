@@ -1,5 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { join, basename } from "node:path";
 import { MemorySystem } from "../memory/index.ts";
 import { runBrowserTask } from "../browser/index.ts";
 import {
@@ -10,19 +12,31 @@ import {
   deleteJob,
   getJobRuns,
 } from "../db/queries.ts";
+import { createLogger } from "../shared/logger.ts";
+import type { Bot, InputFile as GrammyInputFile } from "grammy";
 
-interface ToolDeps {
+const log = createLogger("tools");
+
+export interface ToolDeps {
   memory: MemorySystem;
   reloadScheduler: () => void;
   triggerJob: (jobId: number) => void;
+  getBot: () => Bot | null;
+  defaultChatIds: number[];
+  psibotDir: string;
 }
 
 export function createAgentTools(deps: ToolDeps) {
-  const { memory, reloadScheduler, triggerJob } = deps;
+  const { memory, reloadScheduler, triggerJob, getBot, defaultChatIds, psibotDir } = deps;
+
+  const reposDir = join(psibotDir, "repos");
+  const worktreesDir = join(psibotDir, "worktrees");
+
   return createSdkMcpServer({
     name: "agent-tools",
     version: "1.0.0",
     tools: [
+      // --- Memory tools ---
       tool(
         "memory_read",
         "Read the agent's persistent memory file (knowledge/memory.md). Returns the full contents.",
@@ -177,6 +191,7 @@ export function createAgentTools(deps: ToolDeps) {
         }
       ),
 
+      // --- Browser tool ---
       tool(
         "browser_task",
         "Execute a browser automation task using agent-browser. Can navigate to URLs, interact with pages, and extract information.",
@@ -211,6 +226,7 @@ export function createAgentTools(deps: ToolDeps) {
         }
       ),
 
+      // --- Job tools ---
       tool(
         "job_create",
         "Create a new scheduled job. Use type 'cron' with a schedule expression for recurring jobs, or type 'once' with run_at for one-off jobs.",
@@ -344,6 +360,296 @@ ${runsText}`;
           }
           triggerJob(args.job_id);
           return { content: [{ type: "text" as const, text: `Triggered job "${job.name}" (ID: ${args.job_id}). It will run in the background.` }] };
+        }
+      ),
+
+      // --- Telegram media tools ---
+      tool(
+        "telegram_send_photo",
+        "Send an image file to the user via Telegram.",
+        {
+          image_path: z.string().describe("Absolute path to the image file"),
+          caption: z.string().optional().describe("Optional caption for the image"),
+          chat_id: z.string().optional().describe("Telegram chat ID. Defaults to the primary user."),
+        },
+        async (args) => {
+          const bot = getBot();
+          if (!bot) {
+            return {
+              content: [{ type: "text" as const, text: "Telegram bot not available." }],
+              isError: true,
+            };
+          }
+
+          if (!existsSync(args.image_path)) {
+            return {
+              content: [{ type: "text" as const, text: `Image file not found: ${args.image_path}` }],
+              isError: true,
+            };
+          }
+
+          const chatId = args.chat_id ? Number(args.chat_id) : defaultChatIds[0];
+          if (!chatId) {
+            return {
+              content: [{ type: "text" as const, text: "No chat ID available." }],
+              isError: true,
+            };
+          }
+
+          try {
+            const fileData = await Bun.file(args.image_path).arrayBuffer();
+            const { InputFile } = await import("grammy");
+            await bot.api.sendPhoto(
+              chatId,
+              new InputFile(new Uint8Array(fileData), basename(args.image_path)),
+              args.caption ? { caption: args.caption } : undefined
+            );
+            log.info("Sent photo via Telegram", { chatId, path: args.image_path });
+            return {
+              content: [{ type: "text" as const, text: `Photo sent to chat ${chatId}.` }],
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text" as const, text: `Failed to send photo: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "telegram_send_voice",
+        "Send an audio file as a voice message via Telegram. OGG files play inline as voice messages; MP3/WAV are sent as audio files.",
+        {
+          audio_path: z.string().describe("Absolute path to the audio file"),
+          caption: z.string().optional().describe("Optional caption"),
+          chat_id: z.string().optional().describe("Telegram chat ID. Defaults to the primary user."),
+        },
+        async (args) => {
+          const bot = getBot();
+          if (!bot) {
+            return {
+              content: [{ type: "text" as const, text: "Telegram bot not available." }],
+              isError: true,
+            };
+          }
+
+          if (!existsSync(args.audio_path)) {
+            return {
+              content: [{ type: "text" as const, text: `Audio file not found: ${args.audio_path}` }],
+              isError: true,
+            };
+          }
+
+          const chatId = args.chat_id ? Number(args.chat_id) : defaultChatIds[0];
+          if (!chatId) {
+            return {
+              content: [{ type: "text" as const, text: "No chat ID available." }],
+              isError: true,
+            };
+          }
+
+          try {
+            const fileData = await Bun.file(args.audio_path).arrayBuffer();
+            const { InputFile } = await import("grammy");
+            const inputFile = new InputFile(new Uint8Array(fileData), basename(args.audio_path));
+            const isOgg = args.audio_path.endsWith(".ogg") || args.audio_path.endsWith(".oga");
+
+            if (isOgg) {
+              await bot.api.sendVoice(chatId, inputFile, args.caption ? { caption: args.caption } : undefined);
+            } else {
+              await bot.api.sendAudio(chatId, inputFile, args.caption ? { caption: args.caption } : undefined);
+            }
+
+            log.info("Sent audio via Telegram", { chatId, path: args.audio_path, isOgg });
+            return {
+              content: [{ type: "text" as const, text: `Audio sent to chat ${chatId}.` }],
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text" as const, text: `Failed to send audio: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      // --- Worktree tools ---
+      tool(
+        "worktree_create",
+        "Create a git worktree for isolated coding sessions. Clones the repo as a bare repo (if needed) and creates a worktree checkout.",
+        {
+          repo_url: z.string().describe("Git repository URL to clone"),
+          branch: z.string().optional().describe("Branch to check out (default: 'main')"),
+          name: z.string().optional().describe("Name for the worktree directory (default: derived from repo + branch)"),
+        },
+        async (args) => {
+          try {
+            mkdirSync(reposDir, { recursive: true });
+            mkdirSync(worktreesDir, { recursive: true });
+
+            // Extract repo name from URL
+            const repoName = basename(args.repo_url).replace(/\.git$/, "");
+            const barePath = join(reposDir, `${repoName}.git`);
+            const branch = args.branch ?? "main";
+            const wtName = args.name ?? `${repoName}-${branch}`;
+            const wtPath = join(worktreesDir, wtName);
+
+            if (existsSync(wtPath)) {
+              return {
+                content: [{ type: "text" as const, text: `Worktree already exists at: ${wtPath}` }],
+              };
+            }
+
+            // Clone bare repo if not cached
+            if (!existsSync(barePath)) {
+              log.info("Cloning bare repo", { url: args.repo_url, barePath });
+              const cloneProc = Bun.spawn(
+                ["git", "clone", "--bare", args.repo_url, barePath],
+                { stdout: "pipe", stderr: "pipe", env: { ...process.env } }
+              );
+              const stderr = await new Response(cloneProc.stderr).text();
+              const exitCode = await cloneProc.exited;
+              if (exitCode !== 0) {
+                return {
+                  content: [{ type: "text" as const, text: `Failed to clone repo: ${stderr.slice(0, 500)}` }],
+                  isError: true,
+                };
+              }
+            }
+
+            // Create worktree
+            log.info("Creating worktree", { barePath, wtPath, branch });
+            const wtProc = Bun.spawn(
+              ["git", "-C", barePath, "worktree", "add", wtPath, branch],
+              { stdout: "pipe", stderr: "pipe", env: { ...process.env } }
+            );
+            const wtStderr = await new Response(wtProc.stderr).text();
+            const wtExit = await wtProc.exited;
+            if (wtExit !== 0) {
+              return {
+                content: [{ type: "text" as const, text: `Failed to create worktree: ${wtStderr.slice(0, 500)}` }],
+                isError: true,
+              };
+            }
+
+            log.info("Worktree created", { wtPath });
+            return {
+              content: [{ type: "text" as const, text: `Worktree created at: ${wtPath}\nBranch: ${branch}` }],
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text" as const, text: `Worktree creation error: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "worktree_list",
+        "List all active git worktrees under ~/.psibot/worktrees/ with their current branch and last commit.",
+        {},
+        async () => {
+          try {
+            if (!existsSync(worktreesDir)) {
+              return {
+                content: [{ type: "text" as const, text: "No worktrees directory found. Create a worktree first." }],
+              };
+            }
+
+            const entries = readdirSync(worktreesDir, { withFileTypes: true })
+              .filter((e) => e.isDirectory());
+
+            if (entries.length === 0) {
+              return {
+                content: [{ type: "text" as const, text: "No worktrees found." }],
+              };
+            }
+
+            const lines: string[] = [];
+            for (const entry of entries) {
+              const wtPath = join(worktreesDir, entry.name);
+
+              const branchProc = Bun.spawn(
+                ["git", "-C", wtPath, "branch", "--show-current"],
+                { stdout: "pipe", stderr: "pipe" }
+              );
+              const branch = (await new Response(branchProc.stdout).text()).trim();
+
+              const logProc = Bun.spawn(
+                ["git", "-C", wtPath, "log", "--oneline", "-1"],
+                { stdout: "pipe", stderr: "pipe" }
+              );
+              const lastCommit = (await new Response(logProc.stdout).text()).trim();
+
+              lines.push(`- **${entry.name}** (${wtPath})\n  Branch: ${branch || "detached"}\n  Last: ${lastCommit || "no commits"}`);
+            }
+
+            return {
+              content: [{ type: "text" as const, text: lines.join("\n") }],
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text" as const, text: `Error listing worktrees: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "worktree_remove",
+        "Remove a git worktree by name.",
+        {
+          name: z.string().describe("Name of the worktree directory to remove"),
+        },
+        async (args) => {
+          const wtPath = join(worktreesDir, args.name);
+          if (!existsSync(wtPath)) {
+            return {
+              content: [{ type: "text" as const, text: `Worktree not found: ${args.name}` }],
+              isError: true,
+            };
+          }
+
+          try {
+            // Find the bare repo that owns this worktree
+            const gitDirProc = Bun.spawn(
+              ["git", "-C", wtPath, "rev-parse", "--git-common-dir"],
+              { stdout: "pipe", stderr: "pipe" }
+            );
+            const gitDir = (await new Response(gitDirProc.stdout).text()).trim();
+
+            const proc = Bun.spawn(
+              ["git", "-C", gitDir, "worktree", "remove", wtPath],
+              { stdout: "pipe", stderr: "pipe", env: { ...process.env } }
+            );
+            const stderr = await new Response(proc.stderr).text();
+            const exitCode = await proc.exited;
+
+            if (exitCode !== 0) {
+              return {
+                content: [{ type: "text" as const, text: `Failed to remove worktree: ${stderr.slice(0, 500)}` }],
+                isError: true,
+              };
+            }
+
+            log.info("Worktree removed", { name: args.name });
+            return {
+              content: [{ type: "text" as const, text: `Worktree "${args.name}" removed.` }],
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{ type: "text" as const, text: `Error removing worktree: ${message}` }],
+              isError: true,
+            };
+          }
         }
       ),
     ],

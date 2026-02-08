@@ -1,7 +1,9 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { getConfig } from "../config.ts";
 import { MemorySystem } from "../memory/index.ts";
-import { createAgentTools } from "./tools.ts";
+import { createAgentTools, type ToolDeps } from "./tools.ts";
+import { createMediaTools } from "./media-tools.ts";
+import { buildAgentDefinitions } from "./subagents.ts";
 import { buildSystemPrompt } from "./prompts.ts";
 import {
   insertChatMessage,
@@ -12,20 +14,20 @@ import type { AgentRunOptions, AgentRunResult } from "../shared/types.ts";
 
 const log = createLogger("agent");
 
-interface AgentServiceDeps {
-  memory: MemorySystem;
-  reloadScheduler: () => void;
-  triggerJob: (jobId: number) => void;
-}
+export type AgentServiceDeps = ToolDeps;
 
 export class AgentService {
   private memory: MemorySystem;
   private toolServer: ReturnType<typeof createAgentTools>;
+  private mediaToolServer: ReturnType<typeof createMediaTools>;
+  private agentDefinitions: ReturnType<typeof buildAgentDefinitions>;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
 
   constructor(deps: AgentServiceDeps) {
     this.memory = deps.memory;
     this.toolServer = createAgentTools(deps);
+    this.mediaToolServer = createMediaTools();
+    this.agentDefinitions = buildAgentDefinitions();
   }
 
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -41,12 +43,14 @@ export class AgentService {
     });
 
     const systemPrompt = buildSystemPrompt(this.memory);
+    log.info("System prompt built", { runId, length: systemPrompt.length });
 
     const disallowedTools: string[] = [];
     if (!options.useBrowser) {
       disallowedTools.push("browser_task");
     }
 
+    log.info("Calling query()", { runId, model: config.DEFAULT_MODEL });
     const agentQuery = query({
       prompt: options.prompt,
       options: {
@@ -58,10 +62,13 @@ export class AgentService {
         disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined,
         mcpServers: {
           "agent-tools": this.toolServer,
+          "media-tools": this.mediaToolServer,
         },
+        agents: this.agentDefinitions,
         ...(options.sessionId ? { resume: options.sessionId } : {}),
       },
     });
+    log.info("query() returned iterator", { runId });
 
     this.activeQueries.set(runId, agentQuery);
 
@@ -82,7 +89,9 @@ export class AgentService {
         });
       }
 
+      log.info("Entering message loop", { runId });
       for await (const message of agentQuery) {
+        log.info("Message received", { runId, type: message.type, subtype: "subtype" in message ? message.subtype : undefined });
         switch (message.type) {
           case "system":
             if (message.subtype === "init") {

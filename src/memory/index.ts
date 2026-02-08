@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { upsertMemoryEntry, searchMemory } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
@@ -86,6 +86,27 @@ export class MemorySystem {
   readKnowledgeFile(filePath: string): string {
     const fullPath = safePath(filePath);
     return readFileSync(fullPath, "utf-8");
+  }
+
+  readKnowledgeFileOptional(filePath: string): string | null {
+    try {
+      return this.readKnowledgeFile(filePath);
+    } catch {
+      return null;
+    }
+  }
+
+  appendDailyLog(content: string): void {
+    const memoryDir = join(KNOWLEDGE_DIR, "memory");
+    if (!existsSync(memoryDir)) {
+      mkdirSync(memoryDir, { recursive: true });
+    }
+    const date = new Date().toISOString().split("T")[0];
+    const logPath = join(memoryDir, `${date}.md`);
+    const existing = existsSync(logPath) ? readFileSync(logPath, "utf-8") : `# Daily Log - ${date}\n\n`;
+    writeFileSync(logPath, `${existing.trimEnd()}\n\n${content}\n`);
+    this.indexFile(`memory/${date}.md`);
+    log.info("Appended daily log", { date });
   }
 
   writeKnowledgeFile(filePath: string, content: string): void {

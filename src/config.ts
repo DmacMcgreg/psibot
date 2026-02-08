@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { join } from "node:path";
 
 const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
@@ -20,6 +21,33 @@ const envSchema = z.object({
   DEFAULT_MODEL: z.string().default("claude-opus-4-6"),
   TAILSCALE_IP_PREFIX: z.string().default("100."),
   DB_PATH: z.string().default("./data/app.db"),
+  HEARTBEAT_ENABLED: z
+    .string()
+    .default("true")
+    .transform((s) => s === "true"),
+  HEARTBEAT_INTERVAL_MINUTES: z
+    .string()
+    .default("30")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  HEARTBEAT_QUIET_START: z
+    .string()
+    .default("23")
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(23)),
+  HEARTBEAT_QUIET_END: z
+    .string()
+    .default("8")
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(23)),
+  HEARTBEAT_MAX_BUDGET_USD: z
+    .string()
+    .default("0.50")
+    .transform(Number)
+    .pipe(z.number().positive()),
+  PSIBOT_DIR: z
+    .string()
+    .default(join(process.env.HOME ?? "/tmp", ".psibot")),
 });
 
 export type Config = z.infer<typeof envSchema>;

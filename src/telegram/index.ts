@@ -41,6 +41,10 @@ export function createTelegramBot(deps: TelegramDeps) {
   bot.command("browse", commands.handleBrowse);
   bot.command("status", commands.handleStatus);
 
+  // Voice and audio messages
+  bot.on("message:voice", commands.handleVoice);
+  bot.on("message:audio", commands.handleVoice);
+
   // Plain text messages go to agent
   bot.on("message:text", commands.handlePlainText);
 
