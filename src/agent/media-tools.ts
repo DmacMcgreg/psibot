@@ -60,7 +60,7 @@ export function createMediaTools() {
         "Generate an image using the Gemini API. Returns the file path to the saved PNG image.",
         {
           prompt: z.string().describe("Text prompt describing the image to generate"),
-          aspect_ratio: z.string().optional().describe("Aspect ratio (e.g. '16:9', '1:1', '4:3'). Default: '1:1'"),
+          aspect_ratio: z.string().optional().describe("Aspect ratio. Supported: 1:1 (default), 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9"),
         },
         async (args) => {
           ensureDir(IMAGES_DIR);
