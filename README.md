@@ -39,7 +39,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
   <tr>
     <td align="center"><p align="center"><img src="image_editing.gif" width="300"></p></td>
     <td align="center"><p align="center"><img src="agent_browser.gif" width="300"></p></td>
-    <td align="center"><p align="center"><video src="agentic_audio.mp4" width="300" autoplay loop muted playsinline></video></p></td>
+    <td align="center"><p align="center"><video src="https://github.com/DmacMcgreg/psibot/raw/main/agentic_audio.mp4" width="300" autoplay loop muted playsinline></video></p></td>
   </tr>
   <tr>
     <td align="center">Generate &bull; Edit &bull; Send</td>
