@@ -7,9 +7,11 @@ import { Scheduler } from "./scheduler/index.ts";
 import { HeartbeatRunner } from "./heartbeat/index.ts";
 import { createWebApp } from "./web/index.ts";
 import { createTelegramBot } from "./telegram/index.ts";
+import { startWebhookServer, stopWebhookServer } from "./telegram/webhook.ts";
 import { createLogger } from "./shared/logger.ts";
 import { writePid, removePid } from "./cli/pid.ts";
 import type { Bot } from "grammy";
+import type { Server } from "bun";
 
 const log = createLogger("main");
 
@@ -66,11 +68,20 @@ async function main() {
   // Wire up job completion notifications to Telegram
   executor.setNotifier(bot, config.ALLOWED_TELEGRAM_USER_IDS);
 
-  bot.start({
-    onStart: () => {
-      log.info("Telegram bot started");
-    },
-  });
+  let webhookServer: Server<undefined> | undefined;
+  if (config.TELEGRAM_WEBHOOK_ENABLED) {
+    // Webhook mode: initialize bot info without polling, start webhook server
+    await bot.init();
+    webhookServer = await startWebhookServer(bot, config);
+    log.info("Telegram bot started (webhook mode)");
+  } else {
+    // Polling mode: blocking long-poll connection to Telegram
+    bot.start({
+      onStart: () => {
+        log.info("Telegram bot started (polling mode)");
+      },
+    });
+  }
 
   // Start heartbeat system
   let heartbeat: HeartbeatRunner | null = null;
@@ -100,7 +111,11 @@ async function main() {
 
     heartbeat?.stop();
     scheduler.stop();
-    await bot.stop();
+    if (webhookServer) {
+      await stopWebhookServer(bot, webhookServer);
+    } else {
+      await bot.stop();
+    }
     server.stop(true);
     closeDb();
 

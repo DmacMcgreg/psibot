@@ -41,8 +41,13 @@ export function generatePlist(): string {
 }
 
 export function generateLauncher(bunPath: string, projectRoot: string): string {
+  const tailscalePath = "/opt/homebrew/bin/tailscale";
   return `#!/bin/bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# Ensure Tailscale Funnel is configured for webhook port (idempotent, runs in background)
+${tailscalePath} funnel --bg 8443 2>/dev/null || true
+
 exec "${bunPath}" --cwd "${projectRoot}" src/index.ts
 `;
 }

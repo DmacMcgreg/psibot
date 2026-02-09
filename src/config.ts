@@ -48,6 +48,28 @@ const envSchema = z.object({
   PSIBOT_DIR: z
     .string()
     .default(join(process.env.HOME ?? "/tmp", ".psibot")),
+  TELEGRAM_WEBHOOK_ENABLED: z
+    .string()
+    .default("false")
+    .transform((s) => s === "true"),
+  TELEGRAM_WEBHOOK_HOST: z.string().default(""),
+  TELEGRAM_WEBHOOK_PORT: z
+    .string()
+    .default("8443")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  TELEGRAM_WEBHOOK_SECRET: z
+    .string()
+    .default("")
+    .transform((s) =>
+      s || crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "")
+    ),
+  TELEGRAM_WEBHOOK_PATH_SECRET: z
+    .string()
+    .default("")
+    .transform((s) =>
+      s || crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "")
+    ),
 });
 
 export type Config = z.infer<typeof envSchema>;
