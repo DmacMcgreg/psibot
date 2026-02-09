@@ -14,7 +14,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 
 **Built on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk)** &mdash; uses OAuth with your existing Claude Max subscription. No separate API keys to manage, no per-token billing, no surprise costs. If you're already paying for Max, psibot is effectively free to run.
 
-## 🦉 Key Features
+## ✨ Key Features
 
 **Always On** &mdash; Runs as a macOS LaunchAgent daemon. Survives reboots, handles wake/sleep cycles, and stays connected to Telegram 24/7.
 
@@ -30,7 +30,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 
 **MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory management, browser automation, Telegram media, git worktrees, Google Workspace, Apple Reminders, and GitHub.
 
-## 🦉 Why Claude Agent SDK?
+## 💡 Why Claude Agent SDK?
 
 Most AI agent frameworks require you to manage API keys and pay per-token for every model call. psibot takes a different approach:
 
@@ -39,7 +39,7 @@ Most AI agent frameworks require you to manage API keys and pay per-token for ev
 - **No risk of unexpected bills** &mdash; unlike pay-per-use APIs, your costs are fixed and predictable
 - **Full model access** &mdash; use Opus, Sonnet, or Haiku for different subagents based on task complexity
 
-## 🦉 Architecture
+## 🏗️ Architecture
 
 ```
 Telegram ──> grammy Bot ──> AgentService ──> Claude Agent SDK
@@ -74,13 +74,22 @@ Scheduler ──> JobExecutor ───────┘
                     └──────────────────────────┘
 ```
 
-## 🦉 Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites
 
 - [Bun](https://bun.sh) runtime
 - [Claude CLI](https://github.com/anthropics/claude-code) (`npm install -g @anthropic-ai/claude-code`) &mdash; authenticated with `claude login`
 - A [Telegram bot token](https://core.telegram.org/bots#botfather)
+
+### Optional Dependencies
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| [uv](https://github.com/astral-sh/uv) | Python tool runner for audio tools | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| [mlx-audio](https://github.com/lucasnewman/mlx-audio) | TTS (Soprano) and STT (parakeet) on Apple Silicon | `uv tool install mlx-audio` |
+| [Gemini API key](https://ai.google.dev) | Image generation via Gemini | Set `GEMINI_API_KEY` in `.env` |
+| [Tailscale](https://tailscale.com) | Remote access to web dashboard + Funnel for webhooks + Wake-on-LAN packets | Install from [tailscale.com/download](https://tailscale.com/download) |
 
 ### 1. Clone and install
 
@@ -129,7 +138,7 @@ psibot status    # Check status
 psibot logs      # Tail logs
 ```
 
-## 🦉 Configuration
+## ⚙️ Configuration
 
 ### Environment Variables
 
@@ -157,7 +166,7 @@ TELEGRAM_WEBHOOK_HOST=your-machine.tailnet-name.ts.net
 TELEGRAM_WEBHOOK_PORT=8443
 ```
 
-## 🦉 Telegram Commands
+## 💬 Telegram Commands
 
 | Command | Description |
 |---------|-------------|
@@ -169,7 +178,7 @@ TELEGRAM_WEBHOOK_PORT=8443
 
 Send **voice messages** for automatic transcription and response. Send **photos** with optional captions for image-aware conversations.
 
-## 🦉 Project Structure
+## 📁 Project Structure
 
 ```
 src/
@@ -220,7 +229,7 @@ data/
   media/                    # Inbound Telegram media
 ```
 
-## 🦉 Stack
+## 🧱 Stack
 
 | Component | Technology |
 |-----------|-----------|
