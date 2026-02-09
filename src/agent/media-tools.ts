@@ -16,6 +16,15 @@ const TTS_VOICE = "sonia";
 const STT_CMD = "mlx_audio.stt.generate";
 const TTS_CMD = "mlx_audio.tts.generate";
 
+const MIME_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+};
+
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -57,9 +66,10 @@ export function createMediaTools() {
     tools: [
       tool(
         "image_generate",
-        "Generate an image using the Gemini API. Returns the file path to the saved PNG image.",
+        "Generate or edit images using the Gemini API. Returns the file path to the saved PNG image. To edit or use existing images as reference/inspiration, provide their file paths via image_paths.",
         {
-          prompt: z.string().describe("Text prompt describing the image to generate"),
+          prompt: z.string().describe("Text prompt describing the image to generate or the edit to apply"),
+          image_paths: z.array(z.string()).optional().describe("Absolute paths to input images for editing or inspiration. The images will be sent to Gemini alongside the prompt."),
           aspect_ratio: z.string().optional().describe("Aspect ratio. Supported: 1:1 (default), 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9"),
         },
         async (args) => {
@@ -69,7 +79,38 @@ export function createMediaTools() {
           const timestamp = Date.now();
           const outputPath = join(IMAGES_DIR, `${timestamp}.png`);
 
-          log.info("Generating image", { prompt: args.prompt.slice(0, 100) });
+          log.info("Generating image", {
+            prompt: args.prompt.slice(0, 100),
+            inputImages: args.image_paths?.length ?? 0,
+          });
+
+          // Build parts: text prompt + any input images
+          const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [
+            { text: args.prompt },
+          ];
+
+          if (args.image_paths) {
+            for (const imagePath of args.image_paths) {
+              if (!existsSync(imagePath)) {
+                return {
+                  content: [{ type: "text" as const, text: `Input image not found: ${imagePath}` }],
+                  isError: true,
+                };
+              }
+
+              const imageBytes = readFileSync(imagePath);
+              const base64Data = Buffer.from(imageBytes).toString("base64");
+              const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+              const mimeType = MIME_TYPES[ext] ?? "image/png";
+
+              parts.push({
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Data,
+                },
+              });
+            }
+          }
 
           const imageConfig: Record<string, string> = {};
           if (args.aspect_ratio) {
@@ -84,7 +125,7 @@ export function createMediaTools() {
               body: JSON.stringify({
                 contents: [
                   {
-                    parts: [{ text: args.prompt }],
+                    parts,
                   },
                 ],
                 generationConfig: {
@@ -206,14 +247,16 @@ export function createMediaTools() {
         "Generate speech audio from text using Soprano (local MLX TTS on Apple Silicon). Returns the file path to the generated WAV audio.",
         {
           text: z.string().describe("Text to convert to speech"),
+          name: z.string().optional().describe("Short descriptive name for the audio file (e.g. 'article', 'summary', 'greeting'). Will be formatted as psi-<name>-YYYY-MM-DD.wav"),
           speed: z.number().optional().describe("Speech speed multiplier (default: 1.0)"),
         },
         async (args) => {
           const ttsOutputDir = join(AUDIO_DIR, "tts");
           ensureDir(ttsOutputDir);
 
-          const timestamp = Date.now();
-          const filePrefix = join(ttsOutputDir, `${timestamp}`);
+          const date = new Date().toISOString().slice(0, 10);
+          const slug = args.name ? args.name.replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase() : "audio";
+          const filePrefix = join(ttsOutputDir, `psi-${slug}-${date}`);
           const expectedOutput = `${filePrefix}_000.wav`;
 
           const cleanText = args.text.replace(/\\/g, "");

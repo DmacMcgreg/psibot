@@ -9,7 +9,7 @@ const envSchema = z.object({
     .pipe(z.array(z.number().int().positive())),
   PORT: z
     .string()
-    .default("3000")
+    .default("3141")
     .transform(Number)
     .pipe(z.number().int().positive()),
   HOST: z.string().default("0.0.0.0"),

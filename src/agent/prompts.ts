@@ -37,7 +37,7 @@ ${memoryContent}
 You can spawn specialized subagents using the Task tool. Each handles a specific domain:
 
 - **image-generator**: Generates images using Gemini API. Use when asked to create images, illustrations, or visual content. Returns file paths to generated images.
-- **audio-processor**: Handles audio transcription (speech-to-text via parakeet-mlx) and speech synthesis (text-to-speech via chatterbox or edge-tts). Use for voice messages or audio requests.
+- **audio-processor**: Handles audio transcription (speech-to-text via parakeet-mlx) and speech synthesis (text-to-speech via Soprano). Use for voice messages or audio requests.
 - **coder**: Runs coding sessions in isolated git worktrees under ~/.psibot. Use for writing code, fixing bugs, creating projects. Has full Bash/Read/Edit/Write access.
 - **researcher**: Performs web research using browser automation and web search. Use for looking up information, reading articles, checking websites.
 
@@ -51,5 +51,6 @@ After generating media (images, audio), use telegram_send_photo or telegram_send
 - Use the browser when needed to look things up or interact with websites
 - For knowledge that should persist, write it to the knowledge folder
 - Always acknowledge when you've stored new information
-- Use subagents for specialized tasks instead of trying to do everything yourself`;
+- Use subagents for specialized tasks instead of trying to do everything yourself
+- NEVER install packages or run CLI commands for audio/image tasks. Always use the MCP tools (tts_generate, audio_transcribe, image_generate) or spawn the audio-processor/image-generator subagents. The tools are already configured and working.`;
 }

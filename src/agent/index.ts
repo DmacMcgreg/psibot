@@ -54,7 +54,8 @@ export class AgentService {
         model: config.DEFAULT_MODEL,
         permissionMode: "bypassPermissions",
         maxBudgetUsd: maxBudget,
-        allowedTools: options.allowedTools,
+        settingSources: ["project"],
+        allowedTools: [...(options.allowedTools ?? []), "Skill"],
         mcpServers: {
           "agent-tools": this.toolServer,
           "media-tools": this.mediaToolServer,

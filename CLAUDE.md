@@ -84,7 +84,7 @@ knowledge/
 data/
   app.db                    # SQLite database
   images/                   # Generated images (Gemini API)
-  audio/tts/                # Generated speech audio (Soprano/edge-tts)
+  audio/tts/                # Generated speech audio (Soprano TTS)
   stt/                      # Transcription output files (parakeet)
   media/inbound/            # Downloaded telegram voice messages
 public/
@@ -104,7 +104,7 @@ Tools are defined with `createSdkMcpServer` + `tool()` from the SDK. Each tool r
 `query()` accepts `agents: Record<string, AgentDefinition>`. The main agent spawns subagents via the built-in `Task` tool. Subagents inherit MCP servers from parent.
 
 ### Subprocess Pattern
-External tools (agent-browser, mlx_audio.stt.generate, mlx_audio.tts.generate, edge-tts) run via `Bun.spawn()` with piped stdout/stderr, captured via `new Response(proc.stdout).text()`. Audio tools installed via `uv tool install mlx-audio`.
+External tools (agent-browser, mlx_audio.stt.generate, mlx_audio.tts.generate) run via `Bun.spawn()` with piped stdout/stderr, captured via `new Response(proc.stdout).text()`. Audio tools installed via `uv tool install mlx-audio`.
 
 ## Key Environment Variables
 

@@ -18,7 +18,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 
 **Always On** &mdash; Runs as a macOS LaunchAgent daemon. Survives reboots, handles wake/sleep cycles, and stays connected to Telegram 24/7.
 
-**Multimodal** &mdash; Send text, voice messages, and photos through Telegram. Generates images (Gemini API), converts text-to-speech (Soprano/edge-tts), and transcribes audio (parakeet STT).
+**Multimodal** &mdash; Send text, voice messages, and photos through Telegram. Generates images (Gemini API), converts text-to-speech (Soprano), and transcribes audio (parakeet STT).
 
 **Persistent Memory** &mdash; Maintains knowledge files, daily logs, and structured memory across sessions. Learns about you over time and remembers context between conversations.
 
@@ -29,6 +29,21 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 **Web Dashboard** &mdash; HTMX + SSE streaming interface for real-time chat, job management, memory browsing, and log viewing.
 
 **MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory management, browser automation, Telegram media, git worktrees, Google Workspace, Apple Reminders, and GitHub.
+
+<table align="center">
+  <tr align="center">
+    <th><p align="center">🎨 Image Editing</p></th>
+    <th><p align="center">🌐 Browser Automation</p></th>
+  </tr>
+  <tr>
+    <td align="center"><p align="center"><img src="image_editing.gif" width="300"></p></td>
+    <td align="center"><p align="center"><img src="agent_browser.gif" width="300"></p></td>
+  </tr>
+  <tr>
+    <td align="center">Generate &bull; Edit &bull; Send</td>
+    <td align="center">Navigate &bull; Read &bull; Research</td>
+  </tr>
+</table>
 
 ## 💡 Why Claude Agent SDK?
 
@@ -113,7 +128,7 @@ TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 ALLOWED_TELEGRAM_USER_IDS=123456789
 
 # Server
-PORT=3000
+PORT=3141
 
 # Agent
 DEFAULT_MODEL=claude-opus-4-6
@@ -146,7 +161,7 @@ psibot logs      # Tail logs
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot API token |
 | `ALLOWED_TELEGRAM_USER_IDS` | (required) | Comma-separated authorized user IDs |
-| `PORT` | `3000` | Web dashboard port |
+| `PORT` | `3141` | Web dashboard port |
 | `DEFAULT_MODEL` | `claude-opus-4-6` | Model for the main agent |
 | `DEFAULT_MAX_BUDGET_USD` | `1.00` | Max cost per agent run |
 | `HEARTBEAT_ENABLED` | `true` | Enable periodic autonomous heartbeat |
@@ -241,7 +256,7 @@ data/
 | Scheduling | [croner](https://github.com/hexagon/croner) |
 | Validation | [Zod](https://zod.dev) |
 | Image Gen | [Gemini API](https://ai.google.dev) |
-| TTS | [Soprano](https://github.com/SWivid/F5-TTS) / [edge-tts](https://github.com/rany2/edge-tts) |
+| TTS | [Soprano](https://github.com/SWivid/F5-TTS) (via mlx-audio) |
 | STT | [parakeet](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/models.html#parakeet) (via mlx-audio) |
 | Browser | [agent-browser](https://github.com/anthropics/agent-browser) |
 
