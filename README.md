@@ -1,6 +1,6 @@
 <div align="center">
   <img src="psibot_logo.jpg" alt="psibot" width="500">
-  <h1>psibot: Personal AI Assistant for Telegram</h1>
+  <h1>🦉 psibot: Personal AI Assistant for Telegram</h1>
   <p>
     <img src="https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun" alt="Bun">
     <img src="https://img.shields.io/badge/agent-Claude_Agent_SDK-d4a574" alt="Claude Agent SDK">
@@ -14,7 +14,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 
 **Built on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk)** &mdash; uses OAuth with your existing Claude Max subscription. No separate API keys to manage, no per-token billing, no surprise costs. If you're already paying for Max, psibot is effectively free to run.
 
-## Key Features
+## 🦉 Key Features
 
 **Always On** &mdash; Runs as a macOS LaunchAgent daemon. Survives reboots, handles wake/sleep cycles, and stays connected to Telegram 24/7.
 
@@ -30,7 +30,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 
 **MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory management, browser automation, Telegram media, git worktrees, Google Workspace, Apple Reminders, and GitHub.
 
-## Why Claude Agent SDK?
+## 🦉 Why Claude Agent SDK?
 
 Most AI agent frameworks require you to manage API keys and pay per-token for every model call. psibot takes a different approach:
 
@@ -39,7 +39,7 @@ Most AI agent frameworks require you to manage API keys and pay per-token for ev
 - **No risk of unexpected bills** &mdash; unlike pay-per-use APIs, your costs are fixed and predictable
 - **Full model access** &mdash; use Opus, Sonnet, or Haiku for different subagents based on task complexity
 
-## Architecture
+## 🦉 Architecture
 
 ```
 Telegram ──> grammy Bot ──> AgentService ──> Claude Agent SDK
@@ -74,7 +74,7 @@ Scheduler ──> JobExecutor ───────┘
                     └──────────────────────────┘
 ```
 
-## Quick Start
+## 🦉 Quick Start
 
 ### Prerequisites
 
@@ -85,8 +85,8 @@ Scheduler ──> JobExecutor ───────┘
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/your-username/telegram-claude-code.git
-cd telegram-claude-code
+git clone https://github.com/DmacMcgreg/psibot.git
+cd psibot
 bun install
 ```
 
@@ -129,7 +129,7 @@ psibot status    # Check status
 psibot logs      # Tail logs
 ```
 
-## Configuration
+## 🦉 Configuration
 
 ### Environment Variables
 
@@ -157,7 +157,7 @@ TELEGRAM_WEBHOOK_HOST=your-machine.tailnet-name.ts.net
 TELEGRAM_WEBHOOK_PORT=8443
 ```
 
-## Telegram Commands
+## 🦉 Telegram Commands
 
 | Command | Description |
 |---------|-------------|
@@ -169,7 +169,7 @@ TELEGRAM_WEBHOOK_PORT=8443
 
 Send **voice messages** for automatic transcription and response. Send **photos** with optional captions for image-aware conversations.
 
-## Project Structure
+## 🦉 Project Structure
 
 ```
 src/
@@ -220,7 +220,7 @@ data/
   media/                    # Inbound Telegram media
 ```
 
-## Stack
+## 🦉 Stack
 
 | Component | Technology |
 |-----------|-----------|
@@ -236,7 +236,7 @@ data/
 | STT | [parakeet](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/models.html#parakeet) (via mlx-audio) |
 | Browser | [agent-browser](https://github.com/anthropics/agent-browser) |
 
-## Important Notes
+## Notes
 
 - **macOS Full Disk Access**: Bun needs FDA in System Settings if the project is in `~/Documents` (TCC-protected)
 - **LaunchAgent quirk**: The launcher script uses `bun --cwd` instead of plist `WorkingDirectory` to avoid a Bun `getcwd()` deadlock under launchd
