@@ -59,38 +59,9 @@ Most AI agent frameworks require you to manage API keys and pay per-token for ev
 
 ## 🏗️ Architecture
 
-```
-Telegram ──> grammy Bot ──> AgentService ──> Claude Agent SDK
-                                 │
-Web UI ───> Hono Server ─────────┤
-                                 │
-Scheduler ──> JobExecutor ───────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    │      MCP Servers         │
-                    ├──────────────────────────┤
-                    │  agent-tools             │
-                    │  - memory & knowledge    │
-                    │  - browser automation    │
-                    │  - job scheduling        │
-                    │  - telegram media        │
-                    │  - git worktrees         │
-                    ├──────────────────────────┤
-                    │  media-tools             │
-                    │  - image gen (Gemini)    │
-                    │  - TTS (Edge TTS)        │
-                    │  - STT (parakeet)        │
-                    └──────────────────────────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    │      Subagents           │
-                    ├──────────────────────────┤
-                    │  coder      (sonnet)     │
-                    │  researcher  (sonnet)     │
-                    │  image-gen   (haiku)      │
-                    │  audio-proc  (haiku)      │
-                    └──────────────────────────┘
-```
+<p align="center">
+  <img src="architecture.png" alt="psibot architecture" width="800">
+</p>
 
 ## 🚀 Quick Start
 
