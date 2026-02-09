@@ -75,7 +75,7 @@ export interface AgentRunOptions {
   allowedTools?: string[];
   useBrowser?: boolean;
   onText?: (text: string) => void;
-  onToolUse?: (toolName: string) => void;
+  onToolUse?: (toolName: string, input?: Record<string, unknown>) => void;
   onComplete?: (result: AgentRunResult) => void;
 }
 
@@ -84,4 +84,9 @@ export interface AgentRunResult {
   result: string;
   costUsd: number;
   durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  contextWindow: number;
+  numTurns: number;
 }

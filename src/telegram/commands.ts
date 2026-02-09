@@ -14,9 +14,12 @@ import {
 import {
   splitMessage,
   formatCost,
-  formatDuration,
   formatJobSummary,
+  formatRunMeta,
+  formatToolLine,
+  formatToolsSummary,
 } from "./format.ts";
+import { getConfig } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("telegram:commands");
@@ -61,8 +64,12 @@ export function registerCommands(deps: CommandDeps) {
   }
 
   async function runAgent(ctx: Context, prompt: string): Promise<void> {
+    const config = getConfig();
     const thinkingMsg = await ctx.reply("Thinking...");
     const chatId = String(ctx.chat?.id ?? "");
+
+    const toolLines: string[] = [];
+    let lastEditAt = 0;
 
     try {
       const sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
@@ -72,9 +79,26 @@ export function registerCommands(deps: CommandDeps) {
         sourceId: chatId,
         sessionId,
         useBrowser: true,
+        onToolUse: (toolName, input) => {
+          if (!config.VERBOSE_FEEDBACK) return;
+          toolLines.push(formatToolLine(toolName, input));
+          const now = Date.now();
+          if (now - lastEditAt >= 3000) {
+            lastEditAt = now;
+            ctx.api.editMessageText(
+              ctx.chat!.id,
+              thinkingMsg.message_id,
+              `Thinking...\n${formatToolsSummary(toolLines)}`
+            ).catch(() => {});
+          }
+        },
       });
 
-      const response = `${result.result}\n\n${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
+      const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
+      const toolsBlock = config.VERBOSE_FEEDBACK && toolLines.length > 0
+        ? `${formatToolsSummary(toolLines)}\n\n`
+        : "";
+      const response = `${toolsBlock}${result.result}\n\n${meta}`;
       const chunks = splitMessage(response);
 
       // Edit the first thinking message
@@ -260,7 +284,91 @@ export function registerCommands(deps: CommandDeps) {
 
   const INBOUND_MEDIA_DIR = resolve(process.cwd(), "data", "media", "inbound");
 
+  async function handlePhoto(ctx: Context): Promise<void> {
+    const config = getConfig();
+    const photos = ctx.message?.photo;
+    if (!photos || photos.length === 0) return;
+
+    const thinkingMsg = await ctx.reply("Thinking...");
+    const chatId = String(ctx.chat?.id ?? "");
+    const caption = ctx.message?.caption ?? "";
+
+    const toolLines: string[] = [];
+    let lastEditAt = 0;
+
+    try {
+      mkdirSync(INBOUND_MEDIA_DIR, { recursive: true });
+
+      // Get the highest resolution photo (last in array)
+      const photo = photos[photos.length - 1];
+      const file = await ctx.api.getFile(photo.file_id);
+      const fileUrl = `https://api.telegram.org/file/bot${ctx.api.token}/${file.file_path}`;
+
+      const response = await fetch(fileUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download photo: ${response.status}`);
+      }
+
+      const ext = file.file_path?.split(".").pop() ?? "jpg";
+      const localPath = join(INBOUND_MEDIA_DIR, `${Date.now()}.${ext}`);
+      const buffer = await response.arrayBuffer();
+      await Bun.write(localPath, buffer);
+
+      log.info("Photo saved", { localPath, size: buffer.byteLength });
+
+      const sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+      const captionPart = caption ? `\n\nThe user included this caption: ${caption}` : "";
+      const prompt = `The user sent a photo. The image file is saved at: ${localPath}${captionPart}\n\nAcknowledge receipt and respond to any caption or context.`;
+
+      const result = await agent.run({
+        prompt,
+        source: "telegram",
+        sourceId: chatId,
+        sessionId,
+        useBrowser: true,
+        onToolUse: (toolName, input) => {
+          if (!config.VERBOSE_FEEDBACK) return;
+          toolLines.push(formatToolLine(toolName, input));
+          const now = Date.now();
+          if (now - lastEditAt >= 3000) {
+            lastEditAt = now;
+            ctx.api.editMessageText(
+              ctx.chat!.id,
+              thinkingMsg.message_id,
+              `Thinking...\n${formatToolsSummary(toolLines)}`
+            ).catch(() => {});
+          }
+        },
+      });
+
+      const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
+      const toolsBlock = config.VERBOSE_FEEDBACK && toolLines.length > 0
+        ? `${formatToolsSummary(toolLines)}\n\n`
+        : "";
+      const responseText = `${toolsBlock}${result.result}\n\n${meta}`;
+      const chunks = splitMessage(responseText);
+
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        thinkingMsg.message_id,
+        chunks[0]
+      );
+
+      for (let i = 1; i < chunks.length; i++) {
+        await ctx.reply(chunks[i]);
+      }
+    } catch (err) {
+      log.error("Photo message error", { error: String(err) });
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        thinkingMsg.message_id,
+        `Photo error: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   async function handleVoice(ctx: Context): Promise<void> {
+    const config = getConfig();
     const voice = ctx.message?.voice ?? ctx.message?.audio;
     if (!voice) return;
 
@@ -296,7 +404,8 @@ export function registerCommands(deps: CommandDeps) {
         useBrowser: false,
       });
 
-      const responseText = `${result.result}\n\n${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
+      const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
+      const responseText = `${result.result}\n\n${meta}`;
       const chunks = splitMessage(responseText);
 
       await ctx.api.editMessageText(
@@ -329,6 +438,7 @@ export function registerCommands(deps: CommandDeps) {
     handleSearch,
     handleBrowse,
     handleStatus,
+    handlePhoto,
     handleVoice,
   };
 }

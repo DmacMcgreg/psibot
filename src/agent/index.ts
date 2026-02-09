@@ -71,6 +71,12 @@ export class AgentService {
     let resultText = "";
     let totalCost = 0;
     let durationMs = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let contextWindow = 0;
+    let numTurns = 0;
+    const toolCache = new Map<string, { name: string; input?: Record<string, unknown>; emitted: boolean }>();
     let lastMessageAt = Date.now();
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -131,9 +137,21 @@ export class AgentService {
                 if (block.type === "text") {
                   options.onText?.(block.text);
                 } else if (block.type === "tool_use") {
-                  options.onToolUse?.(block.name);
+                  const input = block.input as Record<string, unknown> | undefined;
+                  toolCache.set(block.id, { name: block.name, input, emitted: true });
+                  options.onToolUse?.(block.name, input);
                 }
               }
+            }
+            break;
+          }
+
+          case "tool_progress": {
+            // Deduplicate: only emit if assistant message hasn't already
+            const id = message.tool_use_id;
+            if (!toolCache.has(id)) {
+              toolCache.set(id, { name: message.tool_name, emitted: true });
+              options.onToolUse?.(message.tool_name);
             }
             break;
           }
@@ -142,12 +160,25 @@ export class AgentService {
             resultText = "result" in message ? String(message.result) : "";
             totalCost = message.total_cost_usd;
             durationMs = message.duration_ms;
+            numTurns = message.num_turns;
+
+            for (const usage of Object.values(message.modelUsage)) {
+              inputTokens += usage.inputTokens;
+              outputTokens += usage.outputTokens;
+              cacheReadTokens += usage.cacheReadInputTokens;
+              if (usage.contextWindow > contextWindow) {
+                contextWindow = usage.contextWindow;
+              }
+            }
 
             log.info("Agent run completed", {
               sessionId,
               cost: totalCost,
               durationMs,
               subtype: message.subtype,
+              inputTokens,
+              outputTokens,
+              numTurns,
             });
             break;
           }
@@ -179,6 +210,11 @@ export class AgentService {
         result: resultText,
         costUsd: totalCost,
         durationMs,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        contextWindow,
+        numTurns,
       };
 
       options.onComplete?.(result);

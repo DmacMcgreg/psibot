@@ -46,6 +46,66 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+export function formatRunMeta(result: { costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; numTurns: number }, verbose: boolean): string {
+  const base = `${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
+  if (!verbose) return base;
+  const totalIn = result.inputTokens + result.cacheReadTokens;
+  return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns`;
+}
+
+export function formatToolLine(toolName: string, input?: Record<string, unknown>): string {
+  // Strip MCP server prefix (e.g. "mcp__agent-tools__memory_read" -> "memory_read")
+  const short = toolName.replace(/^mcp__[^_]+__/, "");
+
+  // Extract detail based on tool type
+  const detail = extractToolDetail(short, input);
+  if (detail) return `\u{1F539} ${short} ${detail}`;
+  return `\u{1F539} ${short}`;
+}
+
+function extractToolDetail(toolName: string, input?: Record<string, unknown>): string | null {
+  if (!input) return null;
+
+  // File operations: show basename
+  const filePath = input.file_path ?? input.path ?? input.file ?? input.filename;
+  if (typeof filePath === "string") {
+    const name = filePath.split("/").pop() ?? filePath;
+    return `(${name})`;
+  }
+
+  // Bash: show truncated command
+  const command = input.command;
+  if (typeof command === "string") {
+    const trimmed = command.split("\n")[0].slice(0, 60);
+    return `(${trimmed}${command.length > 60 ? "..." : ""})`;
+  }
+
+  // Task: show description
+  const description = input.description;
+  if (typeof description === "string") {
+    return `(${description.slice(0, 40)}${description.length > 40 ? "..." : ""})`;
+  }
+
+  // Search/grep: show pattern or query
+  const pattern = input.pattern ?? input.query;
+  if (typeof pattern === "string") {
+    return `(${pattern.slice(0, 40)})`;
+  }
+
+  return null;
+}
+
+export function formatToolsSummary(toolLines: string[]): string {
+  if (toolLines.length === 0) return "";
+  return toolLines.join("\n");
+}
+
 export function formatJobSummary(job: {
   name: string;
   type: string;

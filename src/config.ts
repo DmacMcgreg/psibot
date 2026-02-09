@@ -70,6 +70,10 @@ const envSchema = z.object({
     .transform((s) =>
       s || crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "")
     ),
+  VERBOSE_FEEDBACK: z
+    .string()
+    .default("false")
+    .transform((s) => s === "true"),
 });
 
 export type Config = z.infer<typeof envSchema>;

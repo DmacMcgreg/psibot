@@ -59,8 +59,11 @@ export async function startWebhookServer(
   });
 
   // Webhook endpoint -- grammy validates the secret token header
+  // Agent runs can take minutes; disable grammy's default 10s timeout
+  // (the stale run watchdog in AgentService caps runs at 5 minutes)
   const handler = webhookCallback(bot, "hono", {
     secretToken: config.TELEGRAM_WEBHOOK_SECRET,
+    timeoutMilliseconds: Infinity,
   });
   app.post(webhookPath, handler);
 

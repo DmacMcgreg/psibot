@@ -4,6 +4,8 @@ import { getRecentMessages, getLatestSessionId } from "../../db/queries.ts";
 import { chatPage, chatStreamFragment, chatToolIndicator } from "../views/chat.ts";
 import { chatBubble } from "../views/components.ts";
 import { escapeHtml } from "../../shared/html.ts";
+import { formatRunMeta } from "../../telegram/format.ts";
+import { getConfig } from "../../config.ts";
 import { createLogger } from "../../shared/logger.ts";
 
 const log = createLogger("web:chat");
@@ -91,8 +93,9 @@ export function createChatRoutes() {
         onComplete: (result) => {
           try {
             if (stream.controller && !stream.done) {
+              const config = getConfig();
               stream.controller.enqueue(
-                sseEncode("meta", `$${result.costUsd.toFixed(4)} / ${(result.durationMs / 1000).toFixed(1)}s`)
+                sseEncode("meta", formatRunMeta(result, config.VERBOSE_FEEDBACK))
               );
               stream.controller.enqueue(sseEncode("done", "complete"));
               stream.done = true;
