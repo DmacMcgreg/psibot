@@ -1,11 +1,14 @@
 import { Hono } from "hono";
-import { webhookCallback } from "grammy";
 import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { Server } from "bun";
 
 const log = createLogger("webhook");
+
+// Track recently processed update IDs to prevent duplicate processing from Telegram retries
+const processedUpdates = new Set<number>();
+const MAX_PROCESSED_UPDATES = 1000;
 
 // Telegram's server IP ranges (IPv4 CIDR blocks)
 const TELEGRAM_CIDRS = [
@@ -58,14 +61,43 @@ export async function startWebhookServer(
     await next();
   });
 
-  // Webhook endpoint -- grammy validates the secret token header
-  // Agent runs can take minutes; disable grammy's default 10s timeout
-  // (the stale run watchdog in AgentService caps runs at 5 minutes)
-  const handler = webhookCallback(bot, "hono", {
-    secretToken: config.TELEGRAM_WEBHOOK_SECRET,
-    timeoutMilliseconds: Infinity,
+  // Webhook endpoint -- respond to Telegram immediately (200 OK) and process
+  // updates asynchronously. This prevents Telegram from retrying delivery
+  // when agent runs take minutes (Telegram times out after ~60s).
+  app.post(webhookPath, async (c) => {
+    // Validate secret token header (same check grammy's webhookCallback does)
+    const secretHeader = c.req.header("x-telegram-bot-api-secret-token");
+    if (secretHeader !== config.TELEGRAM_WEBHOOK_SECRET) {
+      log.warn("Invalid webhook secret token");
+      return c.text("Unauthorized", 403);
+    }
+
+    const update = await c.req.json();
+
+    // Deduplicate: skip if we've already processed this update_id
+    const updateId = update?.update_id;
+    if (updateId != null && processedUpdates.has(updateId)) {
+      log.info("Skipping duplicate update", { updateId });
+      return c.text("OK", 200);
+    }
+
+    // Track this update_id
+    if (updateId != null) {
+      processedUpdates.add(updateId);
+      // Evict old entries to prevent memory growth
+      if (processedUpdates.size > MAX_PROCESSED_UPDATES) {
+        const first = processedUpdates.values().next().value;
+        if (first !== undefined) processedUpdates.delete(first);
+      }
+    }
+
+    // Fire and forget: process update in background, respond immediately
+    bot.handleUpdate(update).catch((err) => {
+      log.error("Error processing webhook update", { updateId, error: String(err) });
+    });
+
+    return c.text("OK", 200);
   });
-  app.post(webhookPath, handler);
 
   // Everything else returns 404
   app.all("*", (c) => c.notFound());

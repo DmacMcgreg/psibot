@@ -11,10 +11,9 @@ const IMAGES_DIR = join(DATA_DIR, "images");
 const AUDIO_DIR = join(DATA_DIR, "audio");
 
 const STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3";
-const TTS_MODEL = "mlx-community/Soprano-80M-bf16";
-const TTS_VOICE = "sonia";
 const STT_CMD = "mlx_audio.stt.generate";
-const TTS_CMD = "mlx_audio.tts.generate";
+const TTS_CMD = "edge-tts";
+const TTS_VOICE = "en-GB-SoniaNeural";
 
 const MIME_TYPES: Record<string, string> = {
   png: "image/png",
@@ -244,11 +243,11 @@ export function createMediaTools() {
 
       tool(
         "tts_generate",
-        "Generate speech audio from text using Soprano (local MLX TTS on Apple Silicon). Returns the file path to the generated WAV audio.",
+        "Generate speech audio from text using Edge TTS (Microsoft neural voices). Returns the file path to the generated MP3 audio.",
         {
           text: z.string().describe("Text to convert to speech"),
-          name: z.string().optional().describe("Short descriptive name for the audio file (e.g. 'article', 'summary', 'greeting'). Will be formatted as psi-<name>-YYYY-MM-DD.wav"),
-          speed: z.number().optional().describe("Speech speed multiplier (default: 1.0)"),
+          name: z.string().optional().describe("Short descriptive name for the audio file (e.g. 'article', 'summary', 'greeting'). Will be formatted as psi-<name>-YYYY-MM-DD.mp3"),
+          rate: z.string().optional().describe("Speech rate adjustment (e.g. '+10%', '-20%', '+0%'). Default: '+0%'"),
         },
         async (args) => {
           const ttsOutputDir = join(AUDIO_DIR, "tts");
@@ -256,17 +255,14 @@ export function createMediaTools() {
 
           const date = new Date().toISOString().slice(0, 10);
           const slug = args.name ? args.name.replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase() : "audio";
-          const filePrefix = join(ttsOutputDir, `psi-${slug}-${date}`);
-          const expectedOutput = `${filePrefix}_000.wav`;
+          const outputPath = join(ttsOutputDir, `psi-${slug}-${date}.mp3`);
 
-          const cleanText = args.text.replace(/\\/g, "");
-
-          log.info("Generating TTS", { textLength: cleanText.length, model: TTS_MODEL, voice: TTS_VOICE });
+          log.info("Generating TTS", { textLength: args.text.length, voice: TTS_VOICE });
 
           try {
-            const cmdArgs = [TTS_CMD, "--model", TTS_MODEL, "--text", cleanText, "--voice", TTS_VOICE, "--file_prefix", filePrefix];
-            if (args.speed !== undefined) {
-              cmdArgs.push("--speed", String(args.speed));
+            const cmdArgs = [TTS_CMD, "-t", args.text, "-v", TTS_VOICE, "--write-media", outputPath];
+            if (args.rate) {
+              cmdArgs.push("--rate", args.rate);
             }
 
             const proc = Bun.spawn(cmdArgs, {
@@ -283,23 +279,23 @@ export function createMediaTools() {
             const exitCode = await proc.exited;
 
             if (exitCode !== 0) {
-              log.error("Soprano TTS failed", { exitCode, stderr: stderr.slice(0, 500) });
+              log.error("Edge TTS failed", { exitCode, stderr: stderr.slice(0, 500) });
               return {
                 content: [{ type: "text" as const, text: `TTS failed (exit ${exitCode}): ${stderr.slice(0, 500)}` }],
                 isError: true,
               };
             }
 
-            if (!existsSync(expectedOutput)) {
+            if (!existsSync(outputPath)) {
               return {
-                content: [{ type: "text" as const, text: `TTS completed but output file not found at ${expectedOutput}` }],
+                content: [{ type: "text" as const, text: `TTS completed but output file not found at ${outputPath}` }],
                 isError: true,
               };
             }
 
-            log.info("TTS complete", { outputPath: expectedOutput });
+            log.info("TTS complete", { outputPath });
             return {
-              content: [{ type: "text" as const, text: `Audio saved to: ${expectedOutput}` }],
+              content: [{ type: "text" as const, text: `Audio saved to: ${outputPath}` }],
             };
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

@@ -42,8 +42,9 @@ export function generatePlist(): string {
 
 export function generateLauncher(bunPath: string, projectRoot: string): string {
   const tailscalePath = "/opt/homebrew/bin/tailscale";
+  const homeDir = process.env.HOME ?? "/Users/" + (process.env.USER ?? "");
   return `#!/bin/bash
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="${homeDir}/Library/Application Support/fnm/node-versions/v23.10.0/installation/bin:${homeDir}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Ensure Tailscale Funnel is configured for webhook port (idempotent, runs in background)
 ${tailscalePath} funnel --bg 8443 2>/dev/null || true

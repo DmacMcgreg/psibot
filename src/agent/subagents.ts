@@ -28,11 +28,11 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
     },
     researcher: {
       description:
-        "Performs web research using browser automation. Use for looking up information, reading articles, checking websites.",
+        "Performs web research using browser automation. Use for looking up information, reading articles, checking websites. Returns findings as text for the caller to use.",
       prompt:
-        "You research topics using the browser_task tool and web search capabilities. Navigate to relevant pages, extract information, and return concise findings. Cite sources when possible.",
+        "You research topics using agent-browser (run via Bash) and web search. Navigate to relevant pages, extract information, and return concise findings. Cite sources when possible. You MUST return ALL findings as your final text response. The caller handles audio generation and Telegram delivery, so your only job is to gather and return the research text.",
       model: "sonnet",
-      maxTurns: 20,
+      maxTurns: 15,
     },
   };
 }

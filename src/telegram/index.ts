@@ -39,6 +39,8 @@ export function createTelegramBot(deps: TelegramDeps) {
   bot.command("remember", commands.handleRemember);
   bot.command("search", commands.handleSearch);
   bot.command("browse", commands.handleBrowse);
+  bot.command("new", commands.handleNew);
+  bot.command("clear", commands.handleNew);
   bot.command("status", commands.handleStatus);
 
   // Voice and audio messages

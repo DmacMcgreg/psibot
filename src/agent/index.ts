@@ -33,6 +33,7 @@ export class AgentService {
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
     const config = getConfig();
     const maxBudget = options.maxBudgetUsd ?? config.DEFAULT_MAX_BUDGET_USD;
+    const maxTurns = options.maxTurns ?? 30;
     const runId = crypto.randomUUID();
     const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = stale
 
@@ -53,6 +54,7 @@ export class AgentService {
         systemPrompt,
         model: config.DEFAULT_MODEL,
         permissionMode: "bypassPermissions",
+        maxTurns,
         maxBudgetUsd: maxBudget,
         settingSources: ["project"],
         allowedTools: [...(options.allowedTools ?? []), "Skill"],
@@ -140,7 +142,7 @@ export class AgentService {
                 } else if (block.type === "tool_use") {
                   const input = block.input as Record<string, unknown> | undefined;
                   toolCache.set(block.id, { name: block.name, input, emitted: true });
-                  options.onToolUse?.(block.name, input);
+                  options.onToolUse?.(block.name, input, false);
                 }
               }
             }
@@ -149,10 +151,11 @@ export class AgentService {
 
           case "tool_progress": {
             // Deduplicate: only emit if assistant message hasn't already
+            // Tools not in cache are from subagents (Task children)
             const id = message.tool_use_id;
             if (!toolCache.has(id)) {
               toolCache.set(id, { name: message.tool_name, emitted: true });
-              options.onToolUse?.(message.tool_name);
+              options.onToolUse?.(message.tool_name, undefined, true);
             }
             break;
           }

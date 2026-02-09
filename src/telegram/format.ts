@@ -59,14 +59,18 @@ export function formatRunMeta(result: { costUsd: number; durationMs: number; inp
   return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns`;
 }
 
-export function formatToolLine(toolName: string, input?: Record<string, unknown>): string {
+export function formatToolLine(toolName: string, input?: Record<string, unknown>, subagent?: boolean): string {
   // Strip MCP server prefix (e.g. "mcp__agent-tools__memory_read" -> "memory_read")
   const short = toolName.replace(/^mcp__[^_]+__/, "");
 
+  // Color by agent: main agent = blue diamond, subagent = purple diamond
+  const icon = subagent ? "\u{1F538}" : "\u{1F539}";
+  const indent = subagent ? "  " : "";
+
   // Extract detail based on tool type
   const detail = extractToolDetail(short, input);
-  if (detail) return `\u{1F539} ${short} ${detail}`;
-  return `\u{1F539} ${short}`;
+  if (detail) return `${indent}${icon} ${short} ${detail}`;
+  return `${indent}${icon} ${short}`;
 }
 
 function extractToolDetail(toolName: string, input?: Record<string, unknown>): string | null {

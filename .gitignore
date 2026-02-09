@@ -7,3 +7,4 @@ knowledge/
 *.db-wal
 *.db-shm
 .DS_Store
+.vscode/

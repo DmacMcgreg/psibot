@@ -72,10 +72,11 @@ export interface AgentRunOptions {
   sourceId?: string;
   sessionId?: string;
   maxBudgetUsd?: number;
+  maxTurns?: number;
   allowedTools?: string[];
   useBrowser?: boolean;
   onText?: (text: string) => void;
-  onToolUse?: (toolName: string, input?: Record<string, unknown>) => void;
+  onToolUse?: (toolName: string, input?: Record<string, unknown>, subagent?: boolean) => void;
   onComplete?: (result: AgentRunResult) => void;
 }
 

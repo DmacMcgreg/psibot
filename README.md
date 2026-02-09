@@ -18,7 +18,7 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
 
 **Always On** &mdash; Runs as a macOS LaunchAgent daemon. Survives reboots, handles wake/sleep cycles, and stays connected to Telegram 24/7.
 
-**Multimodal** &mdash; Send text, voice messages, and photos through Telegram. Generates images (Gemini API), converts text-to-speech (Soprano), and transcribes audio (parakeet STT).
+**Multimodal** &mdash; Send text, voice messages, and photos through Telegram. Generates images (Gemini API), converts text-to-speech (Edge TTS), and transcribes audio (parakeet STT).
 
 **Persistent Memory** &mdash; Maintains knowledge files, daily logs, and structured memory across sessions. Learns about you over time and remembers context between conversations.
 
@@ -34,14 +34,17 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
   <tr align="center">
     <th><p align="center">🎨 Image Editing</p></th>
     <th><p align="center">🌐 Browser Automation</p></th>
+    <th><p align="center">🔊 Agentic Audio</p></th>
   </tr>
   <tr>
     <td align="center"><p align="center"><img src="image_editing.gif" width="300"></p></td>
     <td align="center"><p align="center"><img src="agent_browser.gif" width="300"></p></td>
+    <td align="center"><p align="center"><video src="agentic_audio.mp4" width="300" autoplay loop muted playsinline></video></p></td>
   </tr>
   <tr>
     <td align="center">Generate &bull; Edit &bull; Send</td>
     <td align="center">Navigate &bull; Read &bull; Research</td>
+    <td align="center">Transcribe &bull; Speak &bull; Listen</td>
   </tr>
 </table>
 
@@ -75,7 +78,7 @@ Scheduler ──> JobExecutor ───────┘
                     ├──────────────────────────┤
                     │  media-tools             │
                     │  - image gen (Gemini)    │
-                    │  - TTS (Soprano/edge)    │
+                    │  - TTS (Edge TTS)        │
                     │  - STT (parakeet)        │
                     └──────────────────────────┘
                                  │
@@ -102,7 +105,8 @@ Scheduler ──> JobExecutor ───────┘
 | Tool | Purpose | Install |
 |------|---------|---------|
 | [uv](https://github.com/astral-sh/uv) | Python tool runner for audio tools | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| [mlx-audio](https://github.com/lucasnewman/mlx-audio) | TTS (Soprano) and STT (parakeet) on Apple Silicon | `uv tool install mlx-audio` |
+| [mlx-audio](https://github.com/lucasnewman/mlx-audio) | STT (parakeet) on Apple Silicon | `uv tool install mlx-audio` |
+| [edge-tts](https://github.com/rany2/edge-tts) | Text-to-speech via Microsoft Edge neural voices | `pip install edge-tts` |
 | [Gemini API key](https://ai.google.dev) | Image generation via Gemini | Set `GEMINI_API_KEY` in `.env` |
 | [Tailscale](https://tailscale.com) | Remote access to web dashboard + Funnel for webhooks + Wake-on-LAN packets | Install from [tailscale.com/download](https://tailscale.com/download) |
 
@@ -112,6 +116,7 @@ Scheduler ──> JobExecutor ───────┘
 git clone https://github.com/DmacMcgreg/psibot.git
 cd psibot
 bun install
+bun link          # Makes the 'psibot' command available globally
 ```
 
 ### 2. Configure
@@ -256,15 +261,16 @@ data/
 | Scheduling | [croner](https://github.com/hexagon/croner) |
 | Validation | [Zod](https://zod.dev) |
 | Image Gen | [Gemini API](https://ai.google.dev) |
-| TTS | [Soprano](https://github.com/SWivid/F5-TTS) (via mlx-audio) |
+| TTS | [Edge TTS](https://github.com/rany2/edge-tts) (Sonia British neural voice) |
 | STT | [parakeet](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/models.html#parakeet) (via mlx-audio) |
 | Browser | [agent-browser](https://github.com/anthropics/agent-browser) |
 
 ## Notes
 
-- **macOS Full Disk Access**: Bun needs FDA in System Settings if the project is in `~/Documents` (TCC-protected)
+- **macOS Full Disk Access**: If the project lives in `~/Documents` (or `~/Desktop`, `~/Downloads`), Bun needs Full Disk Access. Grant it in **System Settings > Privacy & Security > Full Disk Access**, then add the Bun binary (typically `/opt/homebrew/bin/bun`). Without this, the daemon will fail with TCC permission errors.
+- **mlx-audio PATH**: `uv tool install mlx-audio` places commands in `~/.local/bin/`. The launcher script includes this in PATH automatically, but your interactive shell also needs it &mdash; `uv` adds it to your shell profile during installation.
 - **LaunchAgent quirk**: The launcher script uses `bun --cwd` instead of plist `WorkingDirectory` to avoid a Bun `getcwd()` deadlock under launchd
-- **PATH for launchd**: The launcher exports `/opt/homebrew/bin` &mdash; the Agent SDK needs the `claude` CLI in PATH for OAuth
+- **PATH for launchd**: The launcher exports `~/.local/bin` and `/opt/homebrew/bin` &mdash; needed for mlx-audio commands and the `claude` CLI (Agent SDK OAuth)
 
 ## License
 

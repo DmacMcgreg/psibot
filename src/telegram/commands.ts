@@ -33,10 +33,17 @@ interface CommandDeps {
 export function registerCommands(deps: CommandDeps) {
   const { agent, memory, scheduler } = deps;
 
+  // Track which chats should start fresh sessions.
+  // On boot, every chat starts fresh (picks up new system prompt).
+  // After the first message, subsequent messages resume the new session.
+  const resetChats = new Set<string>();
+  const bootedChats = new Set<string>();
+
   async function handleStart(ctx: Context): Promise<void> {
     await ctx.reply(
       "Agent ready. Send me any message or use commands:\n\n" +
         "/ask <question> - Ask the agent\n" +
+        "/new - Start a fresh session\n" +
         "/jobs - List scheduled jobs\n" +
         "/newjob - Create a new job\n" +
         "/memory - View memory\n" +
@@ -72,16 +79,26 @@ export function registerCommands(deps: CommandDeps) {
     let lastEditAt = 0;
 
     try {
-      const sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+      // Start fresh session on boot or after /new, then resume normally
+      let sessionId: string | undefined;
+      if (resetChats.has(chatId) || !bootedChats.has(chatId)) {
+        resetChats.delete(chatId);
+        bootedChats.add(chatId);
+        sessionId = undefined;
+        log.info("Starting fresh session", { chatId, reason: resetChats.has(chatId) ? "reset" : "boot" });
+      } else {
+        sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+      }
+
       const result = await agent.run({
         prompt,
         source: "telegram",
         sourceId: chatId,
         sessionId,
         useBrowser: true,
-        onToolUse: (toolName, input) => {
+        onToolUse: (toolName, input, subagent) => {
           if (!config.VERBOSE_FEEDBACK) return;
-          toolLines.push(formatToolLine(toolName, input));
+          toolLines.push(formatToolLine(toolName, input, subagent));
           const now = Date.now();
           if (now - lastEditAt >= 3000) {
             lastEditAt = now;
@@ -261,6 +278,13 @@ export function registerCommands(deps: CommandDeps) {
     }
   }
 
+  async function handleNew(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat?.id ?? "");
+    resetChats.add(chatId);
+    bootedChats.delete(chatId);
+    await ctx.reply("Session cleared. Next message starts a fresh conversation.");
+  }
+
   async function handleStatus(ctx: Context): Promise<void> {
     const jobs = getAllJobs();
     const enabled = jobs.filter((j) => j.status === "enabled").length;
@@ -326,9 +350,9 @@ export function registerCommands(deps: CommandDeps) {
         sourceId: chatId,
         sessionId,
         useBrowser: true,
-        onToolUse: (toolName, input) => {
+        onToolUse: (toolName, input, subagent) => {
           if (!config.VERBOSE_FEEDBACK) return;
-          toolLines.push(formatToolLine(toolName, input));
+          toolLines.push(formatToolLine(toolName, input, subagent));
           const now = Date.now();
           if (now - lastEditAt >= 3000) {
             lastEditAt = now;
@@ -437,6 +461,7 @@ export function registerCommands(deps: CommandDeps) {
     handleRemember,
     handleSearch,
     handleBrowse,
+    handleNew,
     handleStatus,
     handlePhoto,
     handleVoice,
