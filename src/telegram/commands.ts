@@ -17,7 +17,6 @@ import {
   formatDuration,
   formatJobSummary,
 } from "./format.ts";
-import { takeScreenshot } from "../browser/index.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("telegram:commands");
@@ -202,16 +201,33 @@ export function registerCommands(deps: CommandDeps) {
     const msg = await ctx.reply("Taking screenshot...");
 
     try {
-      const screenshot = await takeScreenshot(url);
-      if (screenshot) {
-        await ctx.replyWithPhoto(new InputFile(new Uint8Array(screenshot), "screenshot.png"));
-      } else {
+      const tmpPath = join(INBOUND_MEDIA_DIR, `screenshot-${Date.now()}.png`);
+      mkdirSync(INBOUND_MEDIA_DIR, { recursive: true });
+
+      const proc = Bun.spawn(
+        ["agent-browser", "open", url, "--wait", "networkidle"],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      await proc.exited;
+
+      const shotProc = Bun.spawn(
+        ["agent-browser", "screenshot", tmpPath],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      const shotStderr = await new Response(shotProc.stderr).text();
+      const shotExit = await shotProc.exited;
+
+      if (shotExit !== 0 || !existsSync(tmpPath)) {
         await ctx.api.editMessageText(
           ctx.chat!.id,
           msg.message_id,
-          "Could not take screenshot. The browser task may have failed."
+          `Screenshot failed: ${shotStderr.slice(0, 500) || "unknown error"}`
         );
+        return;
       }
+
+      const fileData = await Bun.file(tmpPath).arrayBuffer();
+      await ctx.replyWithPhoto(new InputFile(new Uint8Array(fileData), "screenshot.png"));
     } catch (err) {
       await ctx.api.editMessageText(
         ctx.chat!.id,

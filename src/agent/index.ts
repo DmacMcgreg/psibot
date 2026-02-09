@@ -46,11 +46,6 @@ export class AgentService {
     const systemPrompt = buildSystemPrompt(this.memory);
     log.info("System prompt built", { runId, length: systemPrompt.length });
 
-    const disallowedTools: string[] = [];
-    if (!options.useBrowser) {
-      disallowedTools.push("browser_task");
-    }
-
     log.info("Calling query()", { runId, model: config.DEFAULT_MODEL });
     const agentQuery = query({
       prompt: options.prompt,
@@ -60,7 +55,6 @@ export class AgentService {
         permissionMode: "bypassPermissions",
         maxBudgetUsd: maxBudget,
         allowedTools: options.allowedTools,
-        disallowedTools: disallowedTools.length > 0 ? disallowedTools : undefined,
         mcpServers: {
           "agent-tools": this.toolServer,
           "media-tools": this.mediaToolServer,

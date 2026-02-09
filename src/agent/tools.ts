@@ -3,7 +3,6 @@ import { z } from "zod";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { MemorySystem } from "../memory/index.ts";
-import { runBrowserTask } from "../browser/index.ts";
 import {
   createJob,
   getAllJobs,
@@ -187,41 +186,6 @@ export function createAgentTools(deps: ToolDeps) {
                     : "No knowledge files found.",
               },
             ],
-          };
-        }
-      ),
-
-      // --- Browser tool ---
-      tool(
-        "browser_task",
-        "Execute a browser automation task using agent-browser. Can navigate to URLs, interact with pages, and extract information.",
-        {
-          instruction: z
-            .string()
-            .describe("Natural language instruction for the browser"),
-          url: z
-            .string()
-            .optional()
-            .describe("Starting URL to navigate to"),
-        },
-        async (args) => {
-          const result = await runBrowserTask(
-            args.instruction,
-            args.url
-          );
-          if (!result.success) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Browser task failed: ${result.error ?? "Unknown error"}\n\nOutput: ${result.output}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-          return {
-            content: [{ type: "text" as const, text: result.output }],
           };
         }
       ),
