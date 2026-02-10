@@ -1,34 +1,42 @@
 <div align="center">
   <img src="psibot_logo.jpg" alt="psibot" width="500">
-  <h1>🦉 psibot: Personal AI Assistant for Telegram</h1>
+  <h1>🦉 psibot: Always-On AI Agent for Telegram</h1>
+  <p><strong>Your own personal AI assistant that runs 24/7 on your Mac. Powered by Claude Agent SDK + your Max subscription. $0 API costs.</strong></p>
   <p>
+    <img src="https://img.shields.io/badge/Claude_Agent_SDK-Opus_4.6-d4a574" alt="Claude Agent SDK">
+    <img src="https://img.shields.io/badge/cost-$0_API_fees-brightgreen" alt="$0 API costs">
+    <img src="https://img.shields.io/badge/Telegram-bot-26A5E4?logo=telegram&logoColor=white" alt="Telegram bot">
     <img src="https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun" alt="Bun">
-    <img src="https://img.shields.io/badge/agent-Claude_Agent_SDK-d4a574" alt="Claude Agent SDK">
-    <img src="https://img.shields.io/badge/bot-Telegram-26A5E4?logo=telegram&logoColor=white" alt="Telegram">
-    <img src="https://img.shields.io/badge/typescript-5.7+-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+    <img src="https://img.shields.io/badge/TypeScript-5.7+-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
 </div>
 
-A persistent personal AI assistant that runs on your own hardware. Chat through Telegram, manage it through a web dashboard, and let it handle tasks autonomously on a schedule.
+A persistent, multimodal AI assistant that runs on your own hardware as a macOS daemon. Chat through Telegram with voice, images, and text. Manage scheduled tasks through a web dashboard. Let it work autonomously while you sleep.
 
-**Built on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk)** &mdash; uses OAuth with your existing Claude Max subscription. No separate API keys to manage, no per-token billing, no surprise costs. If you're already paying for Max, psibot is effectively free to run.
+**Built on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk)** &mdash; authenticates via OAuth with your existing Claude Max subscription. No API keys, no per-token billing, no surprise costs. If you're already paying for Max, psibot is effectively free to run.
+
+> **How is this different from [OpenClaw](https://github.com/openclaw/openclaw)?** OpenClaw is a general-purpose AI assistant framework. psibot is purpose-built for a single user running Claude on their own Mac &mdash; optimized for Telegram, designed as an always-on daemon, and requires zero API spend beyond your existing Max plan.
 
 ## ✨ Key Features
 
-**Always On** &mdash; Runs as a macOS LaunchAgent daemon. Survives reboots, handles wake/sleep cycles, and stays connected to Telegram 24/7.
+**$0 API Costs** &mdash; Uses your Claude Max subscription via OAuth. No API keys, no per-token billing. Run Opus, Sonnet, and Haiku across all agents at no additional cost.
 
-**Multimodal** &mdash; Send text, voice messages, and photos through Telegram. Generates images (Gemini API), converts text-to-speech (Edge TTS), and transcribes audio (parakeet STT).
+**Always-On Daemon** &mdash; Runs as a macOS LaunchAgent. Survives reboots, handles wake/sleep cycles, stays connected to Telegram 24/7, and runs autonomous tasks on a schedule.
+
+**Telegram-Native** &mdash; First-class Telegram bot with voice messages, photo understanding, text-to-speech replies, and inline command menus. Not a web wrapper &mdash; a real bot experience.
+
+**Multimodal AI** &mdash; Generates and edits images (Gemini), speaks with a neural voice (Edge TTS), transcribes voice messages (parakeet STT), and analyzes YouTube videos with semantic search.
 
 **Persistent Memory** &mdash; Maintains knowledge files, daily logs, and structured memory across sessions. Learns about you over time and remembers context between conversations.
 
-**Autonomous Agents** &mdash; Spawns specialized subagents for different tasks: a coder (works in isolated git worktrees), a researcher (browser automation), an image generator, and an audio processor.
+**Autonomous Subagents** &mdash; Spawns specialized agents: a coder (isolated git worktrees), a researcher (browser automation), an image generator, and an audio processor &mdash; each on the optimal model.
 
-**Scheduled Tasks** &mdash; Cron-based job scheduling with budget controls. Set up periodic maintenance, reminders, or any recurring prompt with configurable quiet hours.
+**Scheduled Tasks** &mdash; Cron-based job scheduling with budget controls. Periodic maintenance, reminders, or any recurring prompt with configurable quiet hours.
+
+**MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory, browser automation, Telegram media, git worktrees, YouTube analysis, and more.
 
 **Web Dashboard** &mdash; HTMX + SSE streaming interface for real-time chat, job management, memory browsing, and log viewing.
-
-**MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory management, browser automation, Telegram media, git worktrees, Google Workspace, Apple Reminders, and GitHub.
 
 <table align="center">
   <tr align="center">
@@ -48,14 +56,17 @@ A persistent personal AI assistant that runs on your own hardware. Chat through 
   </tr>
 </table>
 
-## 💡 Why Claude Agent SDK?
+## 💡 Why Claude Agent SDK + Max?
 
-Most AI agent frameworks require you to manage API keys and pay per-token for every model call. psibot takes a different approach:
+Most AI agent frameworks (OpenClaw, nanobot, etc.) require API keys and charge per-token. If you're already paying for Claude Max, that's wasted money. psibot takes a different approach:
 
-- **Uses your Claude Max subscription** via OAuth &mdash; the SDK authenticates through the `claude` CLI, so there's no `ANTHROPIC_API_KEY` to configure
-- **No per-token costs** &mdash; your Max subscription covers all agent runs, subagent spawns, and tool calls
-- **No risk of unexpected bills** &mdash; unlike pay-per-use APIs, your costs are fixed and predictable
-- **Full model access** &mdash; use Opus, Sonnet, or Haiku for different subagents based on task complexity
+| | API-based agents | psibot (Max subscription) |
+|---|---|---|
+| **Authentication** | API key management | OAuth via `claude` CLI |
+| **Cost model** | Pay per token | Fixed monthly subscription |
+| **Bill risk** | Uncapped, usage-dependent | Zero additional cost |
+| **Model access** | Depends on tier/budget | Opus, Sonnet, Haiku &mdash; all included |
+| **Setup** | Generate keys, set budgets, monitor spend | `claude login` and go |
 
 ## 🏗️ Architecture
 
@@ -342,6 +353,10 @@ data/
 - **mlx-audio PATH**: `uv tool install mlx-audio` places commands in `~/.local/bin/`. The launcher script includes this in PATH automatically, but your interactive shell also needs it &mdash; `uv` adds it to your shell profile during installation.
 - **LaunchAgent quirk**: The launcher script uses `bun --cwd` instead of plist `WorkingDirectory` to avoid a Bun `getcwd()` deadlock under launchd
 - **PATH for launchd**: The launcher exports `~/.local/bin` and `/opt/homebrew/bin` &mdash; needed for mlx-audio commands and the `claude` CLI (Agent SDK OAuth)
+
+## Acknowledgments
+
+Inspired by [OpenClaw](https://github.com/openclaw/openclaw) and [nanobot](https://github.com/HKUDS/nanobot). psibot started as an experiment to see how far you could push the Claude Agent SDK with just a Telegram bot and a Max subscription.
 
 ## License
 
