@@ -74,7 +74,7 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((s) => s === "true"),
-  YOUTUBE_CLIENT_ID: z.string().default("421292010689-ug6hhb6l6fh4fe86hf78mifjoruf0esf.apps.googleusercontent.com"),
+  YOUTUBE_CLIENT_ID: z.string().default(""),
   YOUTUBE_CLIENT_SECRET: z.string().default(""),
   YOUTUBE_SOURCE_PLAYLIST_ID: z.string().default(""),
   YOUTUBE_DESTINATION_PLAYLIST_ID: z.string().default(""),

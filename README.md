@@ -67,9 +67,92 @@ Most AI agent frameworks require you to manage API keys and pay per-token for ev
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) runtime
+- macOS (Apple Silicon or Intel)
+- Xcode Command Line Tools (`xcode-select --install`)
 - [Claude CLI](https://github.com/anthropics/claude-code) (`npm install -g @anthropic-ai/claude-code`) &mdash; authenticated with `claude login`
 - A [Telegram bot token](https://core.telegram.org/bots#botfather)
+
+### Automated Setup
+
+The setup script handles everything from a fresh clone: Homebrew, Bun, dependencies, `.env` configuration, CLI linking, and daemon installation.
+
+```bash
+git clone https://github.com/DmacMcgreg/psibot.git
+cd psibot
+bash scripts/setup.sh
+```
+
+The script will:
+1. Install Homebrew (if missing), then `bun`, `sqlite`, and `yt-dlp`
+2. Install `uv` (Python tool runner)
+3. Run `bun install` for node packages
+4. Create `.env` from template and prompt for your Telegram bot token and user IDs
+5. Link the `psibot` CLI and install the macOS LaunchAgent daemon
+6. Optionally install `edge-tts`, `mlx-audio`, and `tailscale`
+
+After setup, start the daemon:
+
+```bash
+psibot start
+```
+
+### Uninstall
+
+To fully remove psibot (daemon, CLI, and optionally data/dependencies):
+
+```bash
+bash scripts/uninstall.sh
+```
+
+### Manual Setup
+
+<details>
+<summary>If you prefer to set things up manually</summary>
+
+#### 1. Clone and install
+
+```bash
+git clone https://github.com/DmacMcgreg/psibot.git
+cd psibot
+bun install
+bun link          # Makes the 'psibot' command available globally
+```
+
+#### 2. Configure
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your settings:
+
+```env
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+ALLOWED_TELEGRAM_USER_IDS=123456789
+PORT=3141
+DEFAULT_MODEL=claude-opus-4-6
+```
+
+#### 3. Run
+
+```bash
+# Development (with hot reload)
+bun run dev
+
+# Production
+bun run start
+```
+
+#### 4. Deploy as daemon (macOS)
+
+```bash
+psibot install   # Install LaunchAgent
+psibot start     # Start the daemon
+psibot status    # Check status
+psibot logs      # Tail logs
+```
+
+</details>
 
 ### Optional Dependencies
 
@@ -80,54 +163,6 @@ Most AI agent frameworks require you to manage API keys and pay per-token for ev
 | [edge-tts](https://github.com/rany2/edge-tts) | Text-to-speech via Microsoft Edge neural voices | `pip install edge-tts` |
 | [Gemini API key](https://ai.google.dev) | Image generation via Gemini | Set `GEMINI_API_KEY` in `.env` |
 | [Tailscale](https://tailscale.com) | Remote access to web dashboard + Funnel for webhooks + Wake-on-LAN packets | Install from [tailscale.com/download](https://tailscale.com/download) |
-
-### 1. Clone and install
-
-```bash
-git clone https://github.com/DmacMcgreg/psibot.git
-cd psibot
-bun install
-bun link          # Makes the 'psibot' command available globally
-```
-
-### 2. Configure
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your settings:
-
-```env
-# Telegram
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-ALLOWED_TELEGRAM_USER_IDS=123456789
-
-# Server
-PORT=3141
-
-# Agent
-DEFAULT_MODEL=claude-opus-4-6
-```
-
-### 3. Run
-
-```bash
-# Development (with hot reload)
-bun run dev
-
-# Production
-bun run start
-```
-
-### 4. Deploy as daemon (macOS)
-
-```bash
-psibot install   # Install LaunchAgent
-psibot start     # Start the daemon
-psibot status    # Check status
-psibot logs      # Tail logs
-```
 
 ## ⚙️ Configuration
 
@@ -146,6 +181,11 @@ psibot logs      # Tail logs
 | `HEARTBEAT_QUIET_END` | `8` | Quiet hours end (hour, 24h) |
 | `HEARTBEAT_MAX_BUDGET_USD` | `0.50` | Max cost per heartbeat run |
 | `PSIBOT_DIR` | `~/.psibot` | Worktree and repo storage |
+| `YOUTUBE_CLIENT_ID` | (optional) | Google OAuth client ID for YouTube |
+| `YOUTUBE_CLIENT_SECRET` | (optional) | Google OAuth client secret |
+| `YOUTUBE_SOURCE_PLAYLIST_ID` | (optional) | Playlist to process videos from |
+| `YOUTUBE_DESTINATION_PLAYLIST_ID` | (optional) | Playlist to move processed videos to |
+| `GEMINI_API_KEY` | (optional) | Gemini API key for image gen + video embeddings |
 
 ### Webhook Mode (Optional)
 
@@ -156,6 +196,66 @@ TELEGRAM_WEBHOOK_ENABLED=true
 TELEGRAM_WEBHOOK_HOST=your-machine.tailnet-name.ts.net
 TELEGRAM_WEBHOOK_PORT=8443
 ```
+
+### YouTube Video Processing (Optional)
+
+psibot can analyze YouTube videos &mdash; extracting transcripts, generating structured summaries with Claude, and storing vector embeddings for semantic search. Transcripts are pulled via `yt-dlp` (no API quota), while playlist management uses the YouTube Data API via OAuth.
+
+#### 1. Create Google OAuth credentials
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project (or select an existing one)
+3. Enable the **YouTube Data API v3** under APIs & Services > Library
+4. Go to APIs & Services > Credentials > **Create Credentials** > OAuth client ID
+5. Application type: **Web application**
+6. Add an authorized redirect URI:
+   - With Tailscale Funnel: `https://your-machine.tailnet-name.ts.net/auth/youtube/callback`
+   - Local only: `http://127.0.0.1:3141/auth/youtube/callback` (use your `PORT` value)
+7. Copy the **Client ID** and **Client Secret**
+
+If your app is in "Testing" mode on the OAuth consent screen, add your Google account as a test user.
+
+#### 2. Add credentials to `.env`
+
+```env
+YOUTUBE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+YOUTUBE_CLIENT_SECRET=your-client-secret
+GEMINI_API_KEY=your-gemini-key   # Required for vector embeddings
+```
+
+#### 3. Authorize the app
+
+With psibot running, ask the agent to start YouTube OAuth setup (or use the `youtube_oauth_setup` tool). It will return a Google authorization URL. Open it in your browser, grant access, and the callback saves tokens to `~/.psibot/youtube-oauth.json`. Tokens auto-refresh; you only need to do this once.
+
+#### 4. Get playlist IDs
+
+Playlist IDs are the string after `list=` in a YouTube playlist URL:
+
+```
+https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                      This is the playlist ID
+```
+
+Add them to `.env`:
+
+```env
+YOUTUBE_SOURCE_PLAYLIST_ID=PLxxxxx      # Videos to process (e.g. "Watch Later")
+YOUTUBE_DESTINATION_PLAYLIST_ID=PLyyyyy  # Where processed videos are moved
+```
+
+The agent processes videos from the source playlist, analyzes them, and moves them to the destination. You can also analyze individual videos by URL without any playlist configuration.
+
+#### Agent tools
+
+| Tool | Description |
+|------|-------------|
+| `youtube_summarize` | Analyze a single video by URL or ID |
+| `youtube_search` | Semantic search across all stored video analyses |
+| `youtube_list` | List stored videos with keyword/channel filters |
+| `youtube_get` | Get full analysis for a specific video |
+| `youtube_process_playlist` | Batch-process videos from source playlist |
+| `youtube_playlist_status` | Show processing stats and pending videos |
 
 ## 💬 Telegram Commands
 
