@@ -20,6 +20,8 @@ export interface AgentSession {
   model: string;
   total_cost_usd: number;
   message_count: number;
+  label: string | null;
+  forked_from: string | null;
   created_at: string;
   updated_at: string;
 }

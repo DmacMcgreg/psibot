@@ -41,6 +41,9 @@ export function createTelegramBot(deps: TelegramDeps) {
   bot.command("browse", commands.handleBrowse);
   bot.command("new", commands.handleNew);
   bot.command("clear", commands.handleNew);
+  bot.command("sessions", commands.handleSessions);
+  bot.command("resume", commands.handleResume);
+  bot.command("fork", commands.handleFork);
   bot.command("status", commands.handleStatus);
 
   // Voice and audio messages

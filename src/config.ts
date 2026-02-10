@@ -15,7 +15,7 @@ const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
   DEFAULT_MAX_BUDGET_USD: z
     .string()
-    .default("1.00")
+    .default("20.00")
     .transform(Number)
     .pipe(z.number().positive()),
   DEFAULT_MODEL: z.string().default("claude-opus-4-6"),
@@ -74,6 +74,10 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((s) => s === "true"),
+  YOUTUBE_CLIENT_ID: z.string().default("421292010689-ug6hhb6l6fh4fe86hf78mifjoruf0esf.apps.googleusercontent.com"),
+  YOUTUBE_CLIENT_SECRET: z.string().default(""),
+  YOUTUBE_SOURCE_PLAYLIST_ID: z.string().default(""),
+  YOUTUBE_DESTINATION_PLAYLIST_ID: z.string().default(""),
 });
 
 export type Config = z.infer<typeof envSchema>;

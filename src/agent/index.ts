@@ -3,6 +3,7 @@ import { getConfig } from "../config.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { createAgentTools, type ToolDeps } from "./tools.ts";
 import { createMediaTools } from "./media-tools.ts";
+import { createYoutubeTools } from "./youtube-tools.ts";
 import { buildAgentDefinitions } from "./subagents.ts";
 import { buildSystemPrompt } from "./prompts.ts";
 import {
@@ -20,6 +21,7 @@ export class AgentService {
   private memory: MemorySystem;
   private toolServer: ReturnType<typeof createAgentTools>;
   private mediaToolServer: ReturnType<typeof createMediaTools>;
+  private youtubeToolServer: ReturnType<typeof createYoutubeTools>;
   private agentDefinitions: ReturnType<typeof buildAgentDefinitions>;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
 
@@ -27,6 +29,7 @@ export class AgentService {
     this.memory = deps.memory;
     this.toolServer = createAgentTools(deps);
     this.mediaToolServer = createMediaTools();
+    this.youtubeToolServer = createYoutubeTools();
     this.agentDefinitions = buildAgentDefinitions();
   }
 
@@ -36,6 +39,7 @@ export class AgentService {
     const maxTurns = options.maxTurns ?? 30;
     const runId = crypto.randomUUID();
     const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = stale
+    const MAX_LOOP_MESSAGES = maxTurns * 5; // Hard ceiling on total messages in the loop
 
     log.info("Starting agent run", {
       runId,
@@ -61,6 +65,7 @@ export class AgentService {
         mcpServers: {
           "agent-tools": this.toolServer,
           "media-tools": this.mediaToolServer,
+          "youtube-tools": this.youtubeToolServer,
         },
         agents: this.agentDefinitions,
         ...(options.sessionId ? { resume: options.sessionId } : {}),
@@ -111,8 +116,15 @@ export class AgentService {
 
       log.info("Entering message loop", { runId });
       resetStaleTimer();
+      let messageCount = 0;
       for await (const message of agentQuery) {
         resetStaleTimer();
+        messageCount++;
+        if (messageCount > MAX_LOOP_MESSAGES) {
+          log.warn("Message loop exceeded limit, interrupting", { runId, messageCount, maxTurns });
+          await agentQuery.interrupt();
+          break;
+        }
         log.info("Message received", { runId, type: message.type, subtype: "subtype" in message ? message.subtype : undefined });
         switch (message.type) {
           case "system":

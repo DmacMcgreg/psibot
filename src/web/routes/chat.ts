@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import { AgentService } from "../../agent/index.ts";
-import { getRecentMessages, getLatestSessionId } from "../../db/queries.ts";
-import { chatPage, chatStreamFragment, chatToolIndicator } from "../views/chat.ts";
+import {
+  getRecentMessages,
+  getLatestSessionId,
+  getRecentSessions,
+  getSessionPreview,
+  getMessagesBySession,
+} from "../../db/queries.ts";
+import { chatPage, chatStreamFragment, chatToolIndicator, sessionListPanel } from "../views/chat.ts";
 import { chatBubble } from "../views/components.ts";
 import { escapeHtml } from "../../shared/html.ts";
-import { formatRunMeta } from "../../telegram/format.ts";
+import { formatRunMeta, formatCost } from "../../telegram/format.ts";
 import { getConfig } from "../../config.ts";
 import { createLogger } from "../../shared/logger.ts";
 
@@ -24,6 +30,9 @@ function sseEncode(event: string, data: string): string {
 export function createChatRoutes() {
   const app = new Hono<ChatEnv>();
 
+  let activeWebSessionId: string | null = null;
+  let pendingWebFork: string | null = null;
+
   const streams = new Map<
     string,
     {
@@ -33,8 +42,14 @@ export function createChatRoutes() {
   >();
 
   app.get("/chat", (c) => {
-    const messages = getRecentMessages("web", null, 20);
-    return c.html(chatPage(messages));
+    const messages = activeWebSessionId
+      ? getMessagesBySession(activeWebSessionId).slice(-20)
+      : getRecentMessages("web", null, 20);
+    const sessions = getRecentSessions("web", null, 10);
+    const currentPreview = activeWebSessionId
+      ? (getSessionPreview(activeWebSessionId) ?? "Active session")
+      : null;
+    return c.html(chatPage(messages, currentPreview, sessions));
   });
 
   app.get("/api/chat/older", (c) => {
@@ -69,11 +84,35 @@ export function createChatRoutes() {
     const sseFragment = chatStreamFragment(streamId);
 
     const agent = c.get("agent");
-    const sessionId = getLatestSessionId("web", null) ?? undefined;
+
+    let sessionId: string | undefined;
+    let actualPrompt = message;
+
+    if (pendingWebFork) {
+      // Build fork preamble from the source session
+      const forkMessages = getMessagesBySession(pendingWebFork);
+      if (forkMessages.length > 0) {
+        const transcript = forkMessages
+          .map((m) => `<${m.role}>\n${m.content}\n</${m.role}>`)
+          .join("\n\n");
+        const maxChars = 50_000;
+        const trimmed = transcript.length > maxChars
+          ? "...\n" + transcript.slice(transcript.length - maxChars)
+          : transcript;
+        actualPrompt = `<prior_conversation session="${pendingWebFork}">\n${trimmed}\n</prior_conversation>\n\n${message}`;
+      }
+      pendingWebFork = null;
+      activeWebSessionId = null;
+      sessionId = undefined;
+    } else if (activeWebSessionId) {
+      sessionId = activeWebSessionId;
+    } else {
+      sessionId = getLatestSessionId("web", null) ?? undefined;
+    }
 
     agent
       .run({
-        prompt: message,
+        prompt: actualPrompt,
         source: "web",
         sessionId,
         onText: (text) => {
@@ -145,6 +184,38 @@ export function createChatRoutes() {
         Connection: "keep-alive",
       },
     });
+  });
+
+  app.get("/api/sessions", (c) => {
+    const sessions = getRecentSessions("web", null, 10);
+    return c.html(sessionListPanel(sessions, activeWebSessionId));
+  });
+
+  app.post("/api/chat/switch-session", async (c) => {
+    const body = await c.req.parseBody();
+    const sessionId = String(body.sessionId ?? "").trim();
+    if (!sessionId) return c.text("Missing sessionId", 400);
+    activeWebSessionId = sessionId;
+    pendingWebFork = null;
+    c.header("HX-Redirect", "/chat");
+    return c.text("ok");
+  });
+
+  app.post("/api/chat/new-session", (c) => {
+    activeWebSessionId = null;
+    pendingWebFork = null;
+    c.header("HX-Redirect", "/chat");
+    return c.text("ok");
+  });
+
+  app.post("/api/chat/fork-session", async (c) => {
+    const body = await c.req.parseBody();
+    const sessionId = String(body.sessionId ?? "").trim();
+    if (!sessionId) return c.text("Missing sessionId", 400);
+    pendingWebFork = sessionId;
+    activeWebSessionId = null;
+    c.header("HX-Redirect", "/chat");
+    return c.text("ok");
   });
 
   return app;

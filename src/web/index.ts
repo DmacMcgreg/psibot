@@ -7,6 +7,7 @@ import { createChatRoutes } from "./routes/chat.ts";
 import { createJobRoutes } from "./routes/jobs.ts";
 import { createMemoryRoutes } from "./routes/memory.ts";
 import { createLogRoutes } from "./routes/logs.ts";
+import { createAuthRoutes } from "./routes/auth.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("web");
@@ -22,8 +23,13 @@ export function createWebApp(deps: WebAppDeps) {
   const app = new Hono();
   const config = getConfig();
 
-  // IP allowlist middleware
+  // IP allowlist middleware (exempt OAuth callback - Funnel traffic has proxy IPs)
   app.use("*", async (c, next) => {
+    if (c.req.path.startsWith("/auth/youtube/callback")) {
+      await next();
+      return;
+    }
+
     const ip =
       c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
       c.req.header("x-real-ip") ??
@@ -62,6 +68,7 @@ export function createWebApp(deps: WebAppDeps) {
   app.route("/", createJobRoutes());
   app.route("/", createMemoryRoutes());
   app.route("/", createLogRoutes());
+  app.route("/", createAuthRoutes());
 
   return app;
 }

@@ -1,9 +1,15 @@
 import { layout } from "./layout.ts";
 import { chatBubble, typingIndicator, emptyState } from "./components.ts";
 import { escapeHtml } from "../../shared/html.ts";
-import type { ChatMessage } from "../../shared/types.ts";
+import { formatCost } from "../../telegram/format.ts";
+import type { ChatMessage, AgentSession } from "../../shared/types.ts";
+import { getSessionPreview } from "../../db/queries.ts";
 
-export function chatPage(messages: ChatMessage[] = []): string {
+export function chatPage(
+  messages: ChatMessage[] = [],
+  currentSessionPreview: string | null = null,
+  sessions: AgentSession[] = []
+): string {
   const messageHtml =
     messages.length > 0
       ? messages
@@ -17,10 +23,28 @@ export function chatPage(messages: ChatMessage[] = []): string {
           .join("\n")
       : emptyState("Send a message to get started");
 
+  const sessionLabel = currentSessionPreview
+    ? escapeHtml(currentSessionPreview)
+    : "Latest session";
+
   return layout(
     "Chat",
     "chat",
     `<div class="flex flex-col h-full">
+      <div class="shrink-0 border-b border-zinc-800 px-4 py-2 flex items-center gap-2 text-sm">
+        <span class="text-zinc-400 truncate flex-1">${sessionLabel}</span>
+        <button
+          hx-get="/api/sessions"
+          hx-target="#session-panel"
+          hx-swap="innerHTML"
+          class="text-indigo-400 hover:text-indigo-300 text-xs font-medium"
+        >Switch</button>
+        <button
+          hx-post="/api/chat/new-session"
+          class="text-zinc-400 hover:text-zinc-300 text-xs font-medium"
+        >New</button>
+      </div>
+      <div id="session-panel"></div>
       <div id="messages" class="chat-messages flex-1 overflow-y-auto p-4">
         ${messageHtml}
       </div>
@@ -79,6 +103,57 @@ export function chatPage(messages: ChatMessage[] = []): string {
       </form>
     </div>`
   );
+}
+
+export function sessionListPanel(
+  sessions: AgentSession[],
+  activeSessionId: string | null
+): string {
+  if (sessions.length === 0) {
+    return `<div class="p-3 text-sm text-zinc-500">No sessions yet.</div>`;
+  }
+
+  const rows = sessions
+    .map((s) => {
+      const preview = s.label ?? getSessionPreview(s.session_id) ?? "(empty)";
+      const shortId = s.session_id.slice(0, 8);
+      const date = s.updated_at.split(" ")[0];
+      const cost = formatCost(s.total_cost_usd);
+      const isActive = s.session_id === activeSessionId;
+      const activeBorder = isActive ? "border-indigo-500" : "border-zinc-700";
+
+      return `<div class="flex items-center gap-2 p-2 rounded-lg border ${activeBorder} hover:border-zinc-500 transition-colors">
+        <div class="flex-1 min-w-0">
+          <div class="text-sm text-zinc-200 truncate">${escapeHtml(preview)}</div>
+          <div class="text-xs text-zinc-500">${shortId} | ${date} | ${s.message_count} msgs | ${cost}</div>
+        </div>
+        <form class="shrink-0">
+          <input type="hidden" name="sessionId" value="${s.session_id}">
+          <button
+            hx-post="/api/chat/switch-session"
+            hx-include="closest form"
+            class="text-xs text-indigo-400 hover:text-indigo-300 px-2 py-1"
+          >${isActive ? "Active" : "Switch"}</button>
+        </form>
+        <form class="shrink-0">
+          <input type="hidden" name="sessionId" value="${s.session_id}">
+          <button
+            hx-post="/api/chat/fork-session"
+            hx-include="closest form"
+            class="text-xs text-amber-400 hover:text-amber-300 px-2 py-1"
+          >Fork</button>
+        </form>
+      </div>`;
+    })
+    .join("\n");
+
+  return `<div class="border-b border-zinc-800 p-3 space-y-2 max-h-64 overflow-y-auto bg-zinc-900/50">
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-xs text-zinc-400 font-medium uppercase tracking-wide">Sessions</span>
+      <button onclick="document.getElementById('session-panel').innerHTML=''" class="text-xs text-zinc-500 hover:text-zinc-300">Close</button>
+    </div>
+    ${rows}
+  </div>`;
 }
 
 export function chatStreamFragment(streamId: string): string {

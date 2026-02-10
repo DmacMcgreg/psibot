@@ -145,6 +145,37 @@ export function getLatestSessionId(
   return row?.session_id ?? null;
 }
 
+export function getRecentSessions(
+  source: MessageSource,
+  sourceId: string | null,
+  limit: number = 10
+): AgentSession[] {
+  const db = getDb();
+  if (sourceId) {
+    return db
+      .prepare<AgentSession, [string, string, number]>(
+        `SELECT * FROM agent_sessions WHERE source = ? AND source_id = ? ORDER BY updated_at DESC LIMIT ?`
+      )
+      .all(source, sourceId, limit);
+  }
+  return db
+    .prepare<AgentSession, [string, number]>(
+      `SELECT * FROM agent_sessions WHERE source = ? AND source_id IS NULL ORDER BY updated_at DESC LIMIT ?`
+    )
+    .all(source, limit);
+}
+
+export function getSessionPreview(sessionId: string): string | null {
+  const db = getDb();
+  const row = db
+    .prepare<Pick<ChatMessage, "content">, [string]>(
+      `SELECT content FROM chat_messages WHERE session_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1`
+    )
+    .get(sessionId);
+  if (!row) return null;
+  return row.content.length > 80 ? row.content.slice(0, 80) + "..." : row.content;
+}
+
 // --- Jobs ---
 
 export function createJob(params: {

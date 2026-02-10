@@ -64,4 +64,47 @@ export const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_chat_messages_source ON chat_messages(source, source_id)`,
   `CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job_id)`,
   `CREATE INDEX IF NOT EXISTS idx_memory_entries_path ON memory_entries(file_path)`,
+
+  // --- YouTube video summaries ---
+  `CREATE TABLE IF NOT EXISTS youtube_videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    channel_title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    markdown_summary TEXT NOT NULL,
+    analysis_json TEXT NOT NULL,
+    transcript_text TEXT NOT NULL,
+    processed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_youtube_videos_video_id ON youtube_videos(video_id)`,
+
+  // sqlite-vec virtual table for vector search (768-dim Gemini text-embedding-004)
+  `CREATE VIRTUAL TABLE IF NOT EXISTS youtube_vec USING vec0(
+    embedding float[768]
+  )`,
+
+  // Mapping table: vec rowid -> video chunk metadata
+  `CREATE TABLE IF NOT EXISTS youtube_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id TEXT NOT NULL REFERENCES youtube_videos(video_id) ON DELETE CASCADE,
+    chunk_type TEXT NOT NULL,
+    chunk_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_youtube_chunks_video ON youtube_chunks(video_id)`,
+
+  // Session resume & fork support
+  `ALTER TABLE agent_sessions ADD COLUMN label TEXT`,
+  `ALTER TABLE agent_sessions ADD COLUMN forked_from TEXT`,
+
+  // YouTube playlist processing support
+  `ALTER TABLE youtube_videos ADD COLUMN processing_status TEXT DEFAULT 'complete'`,
+  `ALTER TABLE youtube_videos ADD COLUMN playlist_item_id TEXT`,
+  `ALTER TABLE youtube_videos ADD COLUMN marking_attempts INTEGER DEFAULT 0`,
+  `ALTER TABLE youtube_videos ADD COLUMN last_mark_attempt_at TEXT`,
 ];

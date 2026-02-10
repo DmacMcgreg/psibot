@@ -10,6 +10,9 @@ import {
   getRecentRuns,
   getJob,
   getLatestSessionId,
+  getRecentSessions,
+  getSessionPreview,
+  getMessagesBySession,
 } from "../db/queries.ts";
 import {
   splitMessage,
@@ -38,12 +41,17 @@ export function registerCommands(deps: CommandDeps) {
   // After the first message, subsequent messages resume the new session.
   const resetChats = new Set<string>();
   const bootedChats = new Set<string>();
+  // Override session ID for /resume - cleared by /new
+  const resumeOverrides = new Map<string, string>();
 
   async function handleStart(ctx: Context): Promise<void> {
     await ctx.reply(
       "Agent ready. Send me any message or use commands:\n\n" +
         "/ask <question> - Ask the agent\n" +
         "/new - Start a fresh session\n" +
+        "/sessions - List recent sessions\n" +
+        "/resume [n] - Resume an older session\n" +
+        "/fork [n] [prompt] - Fork a session with new context\n" +
         "/jobs - List scheduled jobs\n" +
         "/newjob - Create a new job\n" +
         "/memory - View memory\n" +
@@ -86,6 +94,9 @@ export function registerCommands(deps: CommandDeps) {
         bootedChats.add(chatId);
         sessionId = undefined;
         log.info("Starting fresh session", { chatId, reason: resetChats.has(chatId) ? "reset" : "boot" });
+      } else if (resumeOverrides.has(chatId)) {
+        sessionId = resumeOverrides.get(chatId);
+        log.info("Resuming overridden session", { chatId, sessionId });
       } else {
         sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
       }
@@ -282,6 +293,7 @@ export function registerCommands(deps: CommandDeps) {
     const chatId = String(ctx.chat?.id ?? "");
     resetChats.add(chatId);
     bootedChats.delete(chatId);
+    resumeOverrides.delete(chatId);
     await ctx.reply("Session cleared. Next message starts a fresh conversation.");
   }
 
@@ -304,6 +316,128 @@ export function registerCommands(deps: CommandDeps) {
     }
 
     await ctx.reply(status);
+  }
+
+  function formatSessionList(
+    sessions: { session_id: string; label: string | null; message_count: number; total_cost_usd: number; updated_at: string }[],
+    chatId: string
+  ): string {
+    if (sessions.length === 0) return "No sessions found.";
+    const lines = sessions.map((s, i) => {
+      const preview = s.label ?? getSessionPreview(s.session_id) ?? "(empty)";
+      const shortId = s.session_id.slice(0, 8);
+      const cost = formatCost(s.total_cost_usd);
+      const date = s.updated_at.split(" ")[0];
+      const active = resumeOverrides.get(chatId) === s.session_id ? " [active]" : "";
+      return `${i + 1}. ${shortId} - ${preview}\n   ${date} | ${s.message_count} msgs | ${cost}${active}`;
+    });
+    return lines.join("\n\n");
+  }
+
+  function resolveSessionArg(
+    arg: string,
+    chatId: string
+  ): { sessionId: string } | { error: string } {
+    const sessions = getRecentSessions("telegram", chatId, 10);
+    if (sessions.length === 0) return { error: "No sessions found." };
+
+    // Try numeric index first (1-based)
+    const num = parseInt(arg, 10);
+    if (!isNaN(num) && num >= 1 && num <= sessions.length) {
+      return { sessionId: sessions[num - 1].session_id };
+    }
+
+    // Try prefix match on session_id
+    const match = sessions.find((s) => s.session_id.startsWith(arg));
+    if (match) return { sessionId: match.session_id };
+
+    return { error: `No session matching "${arg}". Use /sessions to see available sessions.` };
+  }
+
+  async function handleSessions(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat?.id ?? "");
+    const sessions = getRecentSessions("telegram", chatId, 10);
+    const header = "Recent sessions:\n\n";
+    await ctx.reply(header + formatSessionList(sessions, chatId));
+  }
+
+  async function handleResume(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat?.id ?? "");
+    const text = ctx.message?.text ?? "";
+    const arg = text.replace(/^\/resume\s*/i, "").trim();
+
+    if (!arg) {
+      const sessions = getRecentSessions("telegram", chatId, 10);
+      await ctx.reply(
+        "Usage: /resume <number or session id prefix>\n\n" +
+        formatSessionList(sessions, chatId)
+      );
+      return;
+    }
+
+    const result = resolveSessionArg(arg, chatId);
+    if ("error" in result) {
+      await ctx.reply(result.error);
+      return;
+    }
+
+    resumeOverrides.set(chatId, result.sessionId);
+    bootedChats.add(chatId);
+    resetChats.delete(chatId);
+    const preview = getSessionPreview(result.sessionId) ?? "(empty)";
+    await ctx.reply(`Resumed session ${result.sessionId.slice(0, 8)}: ${preview}\n\nNext messages will continue in this session. Use /new to start fresh.`);
+  }
+
+  async function handleFork(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat?.id ?? "");
+    const text = ctx.message?.text ?? "";
+    const args = text.replace(/^\/fork\s*/i, "").trim();
+
+    if (!args) {
+      const sessions = getRecentSessions("telegram", chatId, 10);
+      await ctx.reply(
+        "Usage: /fork <number or id> [prompt]\n\n" +
+        "Starts a new session with the prior conversation as context.\n\n" +
+        formatSessionList(sessions, chatId)
+      );
+      return;
+    }
+
+    // Split: first token is session ref, rest is prompt
+    const parts = args.split(/\s+/);
+    const sessionArg = parts[0];
+    const forkPrompt = parts.slice(1).join(" ") || "Continue from where this conversation left off.";
+
+    const result = resolveSessionArg(sessionArg, chatId);
+    if ("error" in result) {
+      await ctx.reply(result.error);
+      return;
+    }
+
+    const messages = getMessagesBySession(result.sessionId);
+    if (messages.length === 0) {
+      await ctx.reply("That session has no messages to fork from.");
+      return;
+    }
+
+    // Build context preamble from prior conversation (truncate from tail to 50k chars)
+    const transcript = messages
+      .map((m) => `<${m.role}>\n${m.content}\n</${m.role}>`)
+      .join("\n\n");
+    const maxChars = 50_000;
+    const trimmed = transcript.length > maxChars
+      ? "...\n" + transcript.slice(transcript.length - maxChars)
+      : transcript;
+
+    const preamble = `<prior_conversation session="${result.sessionId}">\n${trimmed}\n</prior_conversation>\n\n`;
+    const fullPrompt = preamble + forkPrompt;
+
+    // Force fresh session for the fork
+    resetChats.add(chatId);
+    bootedChats.delete(chatId);
+    resumeOverrides.delete(chatId);
+
+    await runAgent(ctx, fullPrompt);
   }
 
   const INBOUND_MEDIA_DIR = resolve(process.cwd(), "data", "media", "inbound");
@@ -465,5 +599,8 @@ export function registerCommands(deps: CommandDeps) {
     handleStatus,
     handlePhoto,
     handleVoice,
+    handleSessions,
+    handleResume,
+    handleFork,
   };
 }
