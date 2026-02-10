@@ -60,5 +60,21 @@ export function createTelegramBot(deps: TelegramDeps) {
     log.error("Telegram bot error", { error: String(err.error) });
   });
 
+  // Register command menu (shown when user types "/" in chat)
+  bot.api.setMyCommands([
+    { command: "ask", description: "Ask the agent a question" },
+    { command: "new", description: "Start a fresh session" },
+    { command: "sessions", description: "List recent sessions" },
+    { command: "resume", description: "Resume an older session" },
+    { command: "fork", description: "Fork a session with new context" },
+    { command: "jobs", description: "List scheduled jobs" },
+    { command: "newjob", description: "Create a new job" },
+    { command: "memory", description: "View agent memory" },
+    { command: "remember", description: "Store a fact in memory" },
+    { command: "search", description: "Search knowledge base" },
+    { command: "browse", description: "Screenshot a URL" },
+    { command: "status", description: "Agent status" },
+  ]).catch((err) => log.error("Failed to set bot commands", { error: String(err) }));
+
   return bot;
 }

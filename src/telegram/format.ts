@@ -52,11 +52,12 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
-export function formatRunMeta(result: { costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; numTurns: number }, verbose: boolean): string {
+export function formatRunMeta(result: { sessionId: string; costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; numTurns: number }, verbose: boolean): string {
   const base = `${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
-  if (!verbose) return base;
+  const shortSession = result.sessionId.slice(0, 8);
+  if (!verbose) return `${base} | ${shortSession}`;
   const totalIn = result.inputTokens + result.cacheReadTokens;
-  return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns`;
+  return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns | ${shortSession}`;
 }
 
 export function formatToolLine(toolName: string, input?: Record<string, unknown>, subagent?: boolean): string {
