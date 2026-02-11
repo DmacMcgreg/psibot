@@ -107,4 +107,11 @@ export const MIGRATIONS = [
   `ALTER TABLE youtube_videos ADD COLUMN playlist_item_id TEXT`,
   `ALTER TABLE youtube_videos ADD COLUMN marking_attempts INTEGER DEFAULT 0`,
   `ALTER TABLE youtube_videos ADD COLUMN last_mark_attempt_at TEXT`,
+
+  // Per-job model selection
+  `ALTER TABLE jobs ADD COLUMN model TEXT`,
+
+  // Job pause support
+  `ALTER TABLE jobs ADD COLUMN paused_until TEXT`,
+  `ALTER TABLE jobs ADD COLUMN skip_runs INTEGER DEFAULT 0`,
 ];

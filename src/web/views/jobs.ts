@@ -32,19 +32,44 @@ export function jobsPage(jobs: Job[]): string {
   );
 }
 
+function isPaused(job: Job): boolean {
+  if (job.paused_until) {
+    const until = new Date(job.paused_until.endsWith("Z") ? job.paused_until : job.paused_until + "Z");
+    if (until > new Date()) return true;
+  }
+  return job.skip_runs > 0;
+}
+
+function pauseBadges(job: Job): string {
+  const badges: string[] = [];
+  if (job.paused_until) {
+    const until = new Date(job.paused_until.endsWith("Z") ? job.paused_until : job.paused_until + "Z");
+    if (until > new Date()) {
+      badges.push(`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-900/50 text-amber-400">Paused until ${escapeHtml(job.paused_until)}</span>`);
+    }
+  }
+  if (job.skip_runs > 0) {
+    badges.push(`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-900/50 text-amber-400">Skipping ${job.skip_runs} runs</span>`);
+  }
+  return badges.join(" ");
+}
+
 function jobCard(job: Job): string {
   const typeLabel = job.type === "cron" ? `Cron: ${escapeHtml(job.schedule ?? "")}` : `Once: ${escapeHtml(job.run_at ?? "")}`;
+  const paused = isPaused(job);
   return `<div class="p-4 hover:bg-zinc-900/50">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2 mb-1">
+        <div class="flex items-center gap-2 mb-1 flex-wrap">
           <span class="font-medium text-sm text-white truncate">${escapeHtml(job.name)}</span>
           ${statusBadge(job.status)}
+          ${pauseBadges(job)}
         </div>
         <p class="text-xs text-zinc-400 truncate">${escapeHtml(job.prompt.slice(0, 100))}</p>
         <div class="flex items-center gap-3 mt-1.5 text-xs text-zinc-500">
           <span>${typeLabel}</span>
           <span>Budget: $${job.max_budget_usd.toFixed(2)}</span>
+          ${job.model ? `<span>Model: ${escapeHtml(job.model)}</span>` : ""}
           ${job.next_run_at ? `<span>Next: ${escapeHtml(job.next_run_at)}</span>` : ""}
         </div>
       </div>
@@ -55,6 +80,18 @@ function jobCard(job: Job): string {
           hx-swap="innerHTML"
           class="text-xs px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors"
         >Run</button>
+        ${paused
+          ? `<button
+              hx-post="/api/jobs/${job.id}/resume"
+              hx-target="#job-list"
+              hx-swap="innerHTML"
+              class="text-xs px-2 py-1 bg-amber-800 hover:bg-amber-700 text-amber-200 rounded transition-colors"
+            >Resume</button>`
+          : `<button
+              onclick="document.getElementById('pause-form-${job.id}').classList.toggle('hidden')"
+              class="text-xs px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors"
+            >Pause</button>`
+        }
         <button
           hx-post="/api/jobs/${job.id}/toggle"
           hx-target="#job-list"
@@ -69,6 +106,19 @@ function jobCard(job: Job): string {
           class="text-xs px-2 py-1 bg-zinc-800 hover:bg-red-900/50 text-zinc-300 hover:text-red-400 rounded transition-colors"
         >Del</button>
       </div>
+    </div>
+    <div id="pause-form-${job.id}" class="hidden mt-3 p-3 bg-zinc-800/50 rounded-lg">
+      <form hx-post="/api/jobs/${job.id}/pause" hx-target="#job-list" hx-swap="innerHTML" class="flex items-end gap-3 flex-wrap">
+        <div>
+          <label class="block text-[10px] text-zinc-400 mb-1">Pause until</label>
+          <input name="paused_until" type="datetime-local" class="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-white">
+        </div>
+        <div>
+          <label class="block text-[10px] text-zinc-400 mb-1">Skip runs</label>
+          <input name="skip_runs" type="number" min="0" placeholder="0" class="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-white w-20">
+        </div>
+        <button type="submit" class="text-xs px-3 py-1 bg-amber-700 hover:bg-amber-600 text-white rounded transition-colors">Apply</button>
+      </form>
     </div>
   </div>`;
 }
@@ -116,6 +166,10 @@ export function jobFormModal(job?: Job): string {
           <div>
             <label class="block text-xs text-zinc-400 mb-1">Run At (for one-off, ISO datetime)</label>
             <input name="run_at" type="datetime-local" value="${job?.run_at?.replace(" ", "T") ?? ""}" class="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white">
+          </div>
+          <div>
+            <label class="block text-xs text-zinc-400 mb-1">Model (blank = default)</label>
+            <input name="model" value="${escapeHtml(job?.model ?? "")}" placeholder="claude-sonnet-4-5-20250929" class="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white">
           </div>
           <div class="flex items-center gap-2">
             <input type="checkbox" name="use_browser" id="use_browser" ${job?.use_browser ? "checked" : ""} class="rounded border-zinc-600">

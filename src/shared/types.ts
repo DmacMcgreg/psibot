@@ -39,6 +39,9 @@ export interface Job {
   max_budget_usd: number;
   allowed_tools: string | null;
   use_browser: boolean;
+  model: string | null;
+  paused_until: string | null;
+  skip_runs: number;
   status: JobStatus;
   last_run_at: string | null;
   next_run_at: string | null;
@@ -77,6 +80,7 @@ export interface AgentRunOptions {
   maxTurns?: number;
   allowedTools?: string[];
   useBrowser?: boolean;
+  model?: string;
   onText?: (text: string) => void;
   onToolUse?: (toolName: string, input?: Record<string, unknown>, subagent?: boolean) => void;
   onComplete?: (result: AgentRunResult) => void;

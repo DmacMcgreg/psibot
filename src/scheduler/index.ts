@@ -34,7 +34,7 @@ export class Scheduler {
 
   trigger(jobId: number): void {
     log.info("Manually triggering job", { jobId });
-    this.executor.execute(jobId).catch((err) => {
+    this.executor.execute(jobId, { manualTrigger: true }).catch((err) => {
       log.error("Manual trigger failed", { jobId, error: String(err) });
     });
   }

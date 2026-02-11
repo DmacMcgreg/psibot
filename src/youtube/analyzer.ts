@@ -51,7 +51,8 @@ function formatTimestamp(seconds: number): string {
  */
 export async function analyzeTranscript(
   transcript: Transcript,
-  videoTitle: string
+  videoTitle: string,
+  options?: { model?: string }
 ): Promise<ParsedTranscript> {
   try {
     log.info("Analyzing transcript", { videoTitle, segments: transcript.segments.length });
@@ -114,7 +115,7 @@ Return the JSON in a markdown code block like this:
 \`\`\``;
 
     let response = "";
-    for await (const msg of query({ prompt, options: { maxTurns: 1 } })) {
+    for await (const msg of query({ prompt, options: { maxTurns: 1, ...(options?.model ? { model: options.model } : {}) } })) {
       if (msg.type === "assistant" && msg.message) {
         response += msg.message.content
           .map((block: { type: string; text?: string }) =>

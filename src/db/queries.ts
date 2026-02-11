@@ -187,12 +187,13 @@ export function createJob(params: {
   max_budget_usd?: number;
   allowed_tools?: string | null;
   use_browser?: boolean;
+  model?: string | null;
 }): Job {
   const db = getDb();
   return db
-    .prepare<Job, [string, string, string, string | null, string | null, number, string | null, number]>(
-      `INSERT INTO jobs (name, prompt, type, schedule, run_at, max_budget_usd, allowed_tools, use_browser)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    .prepare<Job, [string, string, string, string | null, string | null, number, string | null, number, string | null]>(
+      `INSERT INTO jobs (name, prompt, type, schedule, run_at, max_budget_usd, allowed_tools, use_browser, model)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`
     )
     .get(
@@ -203,7 +204,8 @@ export function createJob(params: {
       params.run_at ?? null,
       params.max_budget_usd ?? 1.0,
       params.allowed_tools ?? null,
-      params.use_browser ? 1 : 0
+      params.use_browser ? 1 : 0,
+      params.model ?? null
     )!;
 }
 
@@ -236,6 +238,9 @@ export function updateJob(
       | "max_budget_usd"
       | "allowed_tools"
       | "use_browser"
+      | "model"
+      | "paused_until"
+      | "skip_runs"
       | "status"
       | "last_run_at"
       | "next_run_at"

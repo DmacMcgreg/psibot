@@ -255,7 +255,7 @@ export function getVideosNeedingPlaylistUpdate(): StoredVideo[] {
   const db = getDb();
   return db
     .prepare<StoredVideo, []>(
-      `SELECT * FROM youtube_videos WHERE processing_status IN ('analyzed', 'failed_to_mark') ORDER BY marking_attempts ASC, processed_at ASC`
+      `SELECT * FROM youtube_videos WHERE processing_status IN ('analyzed', 'failed_to_mark') AND marking_attempts < 1 ORDER BY marking_attempts ASC, processed_at ASC`
     )
     .all();
 }

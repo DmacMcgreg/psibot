@@ -11,13 +11,39 @@ import {
   getVideosNeedingPlaylistUpdate,
 } from "../youtube/db.ts";
 import { processAndStoreVideo } from "../youtube/process.ts";
-import { processPlaylist } from "../youtube/playlist.ts";
+import { processPlaylist, type VideoDetail } from "../youtube/playlist.ts";
 import { getAuthUrl, loadTokens } from "../youtube/api.ts";
+import { getConfig } from "../config.ts";
+import { splitMessage } from "../telegram/format.ts";
 import type { ParsedTranscript } from "../youtube/analyzer.ts";
+import type { Bot } from "grammy";
 
 const log = createLogger("youtube-tools");
 
-export function createYoutubeTools() {
+export interface YoutubeDeps {
+  getBot: () => Bot | null;
+  defaultChatIds: number[];
+  keepAlive: () => void;
+}
+
+export function createYoutubeTools(deps: YoutubeDeps) {
+  const { getBot, defaultChatIds, keepAlive } = deps;
+
+  async function notifyTelegram(text: string): Promise<void> {
+    keepAlive();
+    const bot = getBot();
+    if (!bot || defaultChatIds.length === 0) return;
+    const chunks = splitMessage(text);
+    for (const userId of defaultChatIds) {
+      try {
+        for (const chunk of chunks) {
+          await bot.api.sendMessage(userId, chunk);
+        }
+      } catch (err) {
+        log.error("Failed to send progress notification", { userId, error: String(err) });
+      }
+    }
+  }
   return createSdkMcpServer({
     name: "youtube-tools",
     version: "1.0.0",
@@ -241,24 +267,39 @@ ${quotesStr}`;
         },
         async (args) => {
           try {
+            const config = getConfig();
             const result = await processPlaylist({
               sourcePlaylistId: args.source_playlist_id,
               destinationPlaylistId: args.destination_playlist_id,
               limit: args.limit,
               retryFailed: args.retry_failed,
+              model: config.YOUTUBE_ANALYSIS_MODEL,
+              onProgress: notifyTelegram,
             });
 
+            const statusIcon = (status: VideoDetail["status"]): string => {
+              switch (status) {
+                case "processed": return "[NEW]";
+                case "skipped": return "[SKIP]";
+                case "moved": return "[MOVE]";
+                case "failed_to_move": return "[MOVE_ERR]";
+                case "failed": return "[FAIL]";
+              }
+            };
+
             const lines = [
-              `Playlist processing complete:`,
-              `  Processed: ${result.processed}`,
-              `  Skipped (already done): ${result.skipped}`,
-              `  Moved to destination: ${result.moved}`,
-              `  Failed: ${result.failed}`,
+              `Playlist processing complete (${result.processed} new, ${result.skipped} skipped, ${result.moved} moved, ${result.failed} failed)`,
             ];
 
             if (result.retrySuccesses > 0 || result.retryFailures > 0) {
-              lines.push(`  Retry successes: ${result.retrySuccesses}`);
-              lines.push(`  Retry failures: ${result.retryFailures}`);
+              lines.push(`Retries: ${result.retrySuccesses} succeeded, ${result.retryFailures} failed`);
+            }
+
+            if (result.details.length > 0) {
+              lines.push("");
+              for (const d of result.details) {
+                lines.push(`${statusIcon(d.status)} ${d.title}`);
+              }
             }
 
             if (result.errors.length > 0) {

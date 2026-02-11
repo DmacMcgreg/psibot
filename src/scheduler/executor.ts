@@ -26,11 +26,29 @@ export class JobExecutor {
     this.notifyUserIds = userIds;
   }
 
-  async execute(jobId: number): Promise<void> {
+  async execute(jobId: number, options?: { manualTrigger?: boolean }): Promise<void> {
     const job = getJob(jobId);
     if (!job) {
       log.error("Job not found", { jobId });
       return;
+    }
+
+    // Check pause conditions (skipped for manual triggers)
+    if (!options?.manualTrigger) {
+      if (job.paused_until) {
+        const pausedUntil = new Date(job.paused_until.endsWith("Z") ? job.paused_until : job.paused_until + "Z");
+        if (pausedUntil > new Date()) {
+          log.info("Job paused until future date, skipping", { jobId, paused_until: job.paused_until });
+          return;
+        }
+        // Pause expired, clear it
+        updateJob(jobId, { paused_until: null });
+      }
+      if (job.skip_runs > 0) {
+        updateJob(jobId, { skip_runs: job.skip_runs - 1 });
+        log.info("Job skip_runs decremented, skipping execution", { jobId, remaining: job.skip_runs - 1 });
+        return;
+      }
     }
 
     log.info("Executing job", { jobId, name: job.name });
@@ -50,6 +68,7 @@ export class JobExecutor {
         maxBudgetUsd: job.max_budget_usd,
         allowedTools,
         useBrowser: Boolean(job.use_browser),
+        model: job.model ?? undefined,
       });
 
       let status: RunStatus = "success";

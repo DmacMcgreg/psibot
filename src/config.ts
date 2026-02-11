@@ -78,6 +78,7 @@ const envSchema = z.object({
   YOUTUBE_CLIENT_SECRET: z.string().default(""),
   YOUTUBE_SOURCE_PLAYLIST_ID: z.string().default(""),
   YOUTUBE_DESTINATION_PLAYLIST_ID: z.string().default(""),
+  YOUTUBE_ANALYSIS_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
 });
 
 export type Config = z.infer<typeof envSchema>;

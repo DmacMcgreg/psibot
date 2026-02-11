@@ -61,16 +61,22 @@ function seedDefaultJobs(db: Database): void {
 
   if (!existing) {
     db.prepare(
-      `INSERT INTO jobs (name, prompt, type, schedule, max_budget_usd, status) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO jobs (name, prompt, type, schedule, max_budget_usd, status, model) VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run(
       "YouTube Watchlist Processor",
       "Process the YouTube watchlist playlist using youtube_process_playlist.",
       "cron",
       "0 * * * *",
       5.0,
-      "enabled"
+      "enabled",
+      "claude-sonnet-4-5-20250929"
     );
     log.info("Seeded default YouTube Watchlist Processor job");
+  } else {
+    // Backfill model for existing jobs that don't have one set
+    db.prepare(
+      `UPDATE jobs SET model = ? WHERE name = ? AND model IS NULL`
+    ).run("claude-sonnet-4-5-20250929", "YouTube Watchlist Processor");
   }
 }
 

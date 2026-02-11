@@ -24,12 +24,17 @@ export class AgentService {
   private youtubeToolServer: ReturnType<typeof createYoutubeTools>;
   private agentDefinitions: ReturnType<typeof buildAgentDefinitions>;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
+  private _keepAlive: (() => void) | null = null;
 
   constructor(deps: AgentServiceDeps) {
     this.memory = deps.memory;
     this.toolServer = createAgentTools(deps);
     this.mediaToolServer = createMediaTools();
-    this.youtubeToolServer = createYoutubeTools();
+    this.youtubeToolServer = createYoutubeTools({
+      getBot: deps.getBot,
+      defaultChatIds: deps.defaultChatIds,
+      keepAlive: () => this._keepAlive?.(),
+    });
     this.agentDefinitions = buildAgentDefinitions();
   }
 
@@ -51,12 +56,13 @@ export class AgentService {
     const systemPrompt = buildSystemPrompt(this.memory);
     log.info("System prompt built", { runId, length: systemPrompt.length });
 
-    log.info("Calling query()", { runId, model: config.DEFAULT_MODEL });
+    const model = options.model ?? config.DEFAULT_MODEL;
+    log.info("Calling query()", { runId, model });
     const agentQuery = query({
       prompt: options.prompt,
       options: {
         systemPrompt,
-        model: config.DEFAULT_MODEL,
+        model,
         permissionMode: "bypassPermissions",
         maxTurns,
         maxBudgetUsd: maxBudget,
@@ -102,6 +108,7 @@ export class AgentService {
       }, STALE_TIMEOUT_MS);
     };
 
+    this._keepAlive = resetStaleTimer;
     try {
       // Store user message
       if (sessionId) {
@@ -217,7 +224,7 @@ export class AgentService {
         session_id: sessionId,
         source: options.source,
         source_id: options.sourceId,
-        model: config.DEFAULT_MODEL,
+        model,
         cost_usd: totalCost,
       });
 
@@ -241,6 +248,7 @@ export class AgentService {
       throw err;
     } finally {
       if (staleTimer) clearTimeout(staleTimer);
+      this._keepAlive = null;
       this.activeQueries.delete(runId);
     }
   }

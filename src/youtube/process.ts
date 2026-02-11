@@ -62,6 +62,7 @@ export async function processAndStoreVideo(
     playlistItemId?: string;
     processingStatus?: VideoProcessingStatus;
     forceReprocess?: boolean;
+    model?: string;
   }
 ): Promise<ProcessVideoResult> {
   const videoId = parseVideoId(videoInput);
@@ -97,7 +98,7 @@ export async function processAndStoreVideo(
 
   // Analyze with Claude
   log.info("Analyzing transcript", { videoId });
-  const analysis = await analyzeTranscript(transcript, meta.title);
+  const analysis = await analyzeTranscript(transcript, meta.title, { model: options?.model });
 
   // Store in database
   deleteVideoChunks(videoId);

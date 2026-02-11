@@ -14,6 +14,12 @@ import { processAndStoreVideo } from "./process.ts";
 
 const log = createLogger("youtube:playlist");
 
+export interface VideoDetail {
+  videoId: string;
+  title: string;
+  status: "processed" | "skipped" | "moved" | "failed_to_move" | "failed";
+}
+
 export interface PlaylistProcessingResult {
   processed: number;
   skipped: number;
@@ -22,6 +28,7 @@ export interface PlaylistProcessingResult {
   retrySuccesses: number;
   retryFailures: number;
   errors: Array<{ videoId: string; error: string }>;
+  details: VideoDetail[];
 }
 
 export interface PlaylistProcessingOptions {
@@ -29,6 +36,8 @@ export interface PlaylistProcessingOptions {
   destinationPlaylistId?: string;
   limit?: number;
   retryFailed?: boolean;
+  model?: string;
+  onProgress?: (message: string) => Promise<void>;
 }
 
 export async function processPlaylist(
@@ -38,7 +47,7 @@ export async function processPlaylist(
   const sourcePlaylistId = options.sourcePlaylistId || config.YOUTUBE_SOURCE_PLAYLIST_ID;
   const destinationPlaylistId = options.destinationPlaylistId || config.YOUTUBE_DESTINATION_PLAYLIST_ID;
   const limit = options.limit ?? 50;
-  const retryFailed = options.retryFailed ?? true;
+  const retryFailed = options.retryFailed ?? false;
 
   if (!sourcePlaylistId) {
     throw new Error("No source playlist ID configured. Set YOUTUBE_SOURCE_PLAYLIST_ID or pass source_playlist_id.");
@@ -52,6 +61,7 @@ export async function processPlaylist(
     retrySuccesses: 0,
     retryFailures: 0,
     errors: [],
+    details: [],
   };
 
   // Phase 1: Retry previously failed playlist moves
@@ -90,10 +100,17 @@ export async function processPlaylist(
   const itemsToProcess = items.slice(0, limit);
   log.info("Processing playlist items", { total: items.length, processing: itemsToProcess.length });
 
+  const notify = options.onProgress ?? (async () => {});
+  await notify(`Found ${itemsToProcess.length} video${itemsToProcess.length === 1 ? "" : "s"} to process`);
+
   // Phase 3: Process each video sequentially
+  let idx = 0;
   for (const item of itemsToProcess) {
+    idx++;
     const videoId = item.snippet.resourceId.videoId;
     const playlistItemId = item.id;
+    const videoTitle = item.snippet.title ?? videoId;
+    await notify(`(${idx}/${itemsToProcess.length}) Processing: ${videoTitle}`);
 
     try {
       // Check if already in DB
@@ -102,12 +119,11 @@ export async function processPlaylist(
         // Already fully processed, just remove from source playlist
         try {
           await removeFromPlaylist(playlistItemId);
-          result.skipped++;
-          log.info("Already processed, removed from source", { videoId });
-        } catch {
-          result.skipped++;
-          log.info("Already processed", { videoId });
-        }
+        } catch { /* ignore */ }
+        result.skipped++;
+        result.details.push({ videoId, title: existing.title, status: "skipped" });
+        await notify(`(${idx}/${itemsToProcess.length}) Skipped: ${existing.title}`);
+        log.info("Already processed", { videoId });
         continue;
       }
 
@@ -118,11 +134,15 @@ export async function processPlaylist(
           await moveVideo(videoId, playlistItemId, destinationPlaylistId);
           updateVideoProcessingStatus(videoId, "marked_processed");
           result.moved++;
+          result.details.push({ videoId, title: existing.title, status: "moved" });
+          await notify(`(${idx}/${itemsToProcess.length}) Moved: ${existing.title}`);
           log.info("Existing video moved to destination", { videoId });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           updateVideoProcessingStatus(videoId, "failed_to_mark");
           result.errors.push({ videoId, error: `Move failed: ${message}` });
+          result.details.push({ videoId, title: existing.title, status: "failed_to_move" });
+          await notify(`(${idx}/${itemsToProcess.length}) Move failed: ${existing.title}`);
           log.error("Failed to move existing video", { videoId, error: message });
         }
         continue;
@@ -133,10 +153,13 @@ export async function processPlaylist(
       const processResult = await processAndStoreVideo(videoId, {
         playlistItemId,
         processingStatus: "analyzed",
+        model: options.model,
       });
 
       if (processResult.skipped) {
         result.skipped++;
+        result.details.push({ videoId, title: processResult.title, status: "skipped" });
+        await notify(`(${idx}/${itemsToProcess.length}) Skipped: ${processResult.title}`);
         continue;
       }
 
@@ -147,10 +170,14 @@ export async function processPlaylist(
         await moveVideo(videoId, playlistItemId, destinationPlaylistId);
         updateVideoProcessingStatus(videoId, "marked_processed");
         result.moved++;
+        result.details.push({ videoId, title: processResult.title, status: "processed" });
+        await notify(`(${idx}/${itemsToProcess.length}) Done: ${processResult.title}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         updateVideoProcessingStatus(videoId, "failed_to_mark");
         result.errors.push({ videoId, error: `Move failed: ${message}` });
+        result.details.push({ videoId, title: processResult.title, status: "failed_to_move" });
+        await notify(`(${idx}/${itemsToProcess.length}) Processed but move failed: ${processResult.title}`);
         log.error("Failed to move video", { videoId, error: message });
       }
     } catch (err) {
@@ -158,6 +185,8 @@ export async function processPlaylist(
       updateVideoProcessingStatus(videoId, "failed");
       result.failed++;
       result.errors.push({ videoId, error: message });
+      result.details.push({ videoId, title: item.snippet.title ?? videoId, status: "failed" });
+      await notify(`(${idx}/${itemsToProcess.length}) Failed: ${videoTitle} - ${message}`);
       log.error("Failed to process video", { videoId, error: message });
     }
   }
@@ -170,6 +199,18 @@ export async function processPlaylist(
     retrySuccesses: result.retrySuccesses,
     retryFailures: result.retryFailures,
   });
+
+  // Final summary
+  const parts: string[] = [];
+  if (result.processed > 0) parts.push(`${result.processed} new`);
+  if (result.skipped > 0) parts.push(`${result.skipped} skipped`);
+  if (result.moved > 0) parts.push(`${result.moved} moved`);
+  if (result.failed > 0) parts.push(`${result.failed} failed`);
+  if (parts.length > 0) {
+    await notify(`Done: ${parts.join(", ")}`);
+  } else {
+    await notify("No videos to process");
+  }
 
   return result;
 }

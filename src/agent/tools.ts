@@ -202,6 +202,7 @@ export function createAgentTools(deps: ToolDeps) {
           run_at: z.string().optional().describe("ISO 8601 datetime for one-off jobs (e.g. '2026-02-08T10:00:00'). Required for type 'once'."),
           max_budget_usd: z.number().optional().describe("Maximum cost in USD per run (default: 1.0)"),
           use_browser: z.boolean().optional().describe("Whether the job can use browser automation (default: false)"),
+          model: z.string().optional().describe("Claude model to use for this job (e.g. 'claude-sonnet-4-5-20250929'). Defaults to DEFAULT_MODEL if not set."),
         },
         async (args) => {
           const job = createJob({
@@ -212,6 +213,7 @@ export function createAgentTools(deps: ToolDeps) {
             run_at: args.run_at ?? null,
             max_budget_usd: args.max_budget_usd,
             use_browser: args.use_browser,
+            model: args.model ?? null,
           });
           reloadScheduler();
           return {
@@ -234,7 +236,11 @@ export function createAgentTools(deps: ToolDeps) {
           }
           const lines = jobs.map((j) => {
             const sched = j.type === "cron" ? `cron: ${j.schedule}` : `once: ${j.run_at ?? "not set"}`;
-            return `- **${j.name}** (ID: ${j.id}) [${j.status}] ${sched} | budget: $${j.max_budget_usd} | last run: ${j.last_run_at ?? "never"}`;
+            const pauseInfo: string[] = [];
+            if (j.paused_until) pauseInfo.push(`paused until ${j.paused_until}`);
+            if (j.skip_runs > 0) pauseInfo.push(`skipping ${j.skip_runs} runs`);
+            const statusLabel = pauseInfo.length > 0 ? `${j.status}, ${pauseInfo.join(", ")}` : j.status;
+            return `- **${j.name}** (ID: ${j.id}) [${statusLabel}] ${sched} | budget: $${j.max_budget_usd} | last run: ${j.last_run_at ?? "never"}`;
           });
           return { content: [{ type: "text" as const, text: lines.join("\n") }] };
         }
@@ -255,12 +261,17 @@ export function createAgentTools(deps: ToolDeps) {
           const runsText = runs.length > 0
             ? runs.map((r) => `  - ${r.status} at ${r.started_at} (${r.cost_usd ? `$${r.cost_usd.toFixed(4)}` : "-"})`).join("\n")
             : "  No runs yet.";
+          const pauseParts: string[] = [];
+          if (job.paused_until) pauseParts.push(`Paused Until: ${job.paused_until}`);
+          if (job.skip_runs > 0) pauseParts.push(`Skip Runs: ${job.skip_runs}`);
+          const pauseSection = pauseParts.length > 0 ? `\n${pauseParts.join("\n")}` : "";
           const text = `**${job.name}** (ID: ${job.id})
 Status: ${job.status}
 Type: ${job.type}
 Schedule: ${job.schedule ?? job.run_at ?? "none"}
 Budget: $${job.max_budget_usd}
-Browser: ${job.use_browser ? "yes" : "no"}
+Model: ${job.model ?? "(default)"}
+Browser: ${job.use_browser ? "yes" : "no"}${pauseSection}
 Prompt: ${job.prompt}
 
 Recent runs:
@@ -280,6 +291,7 @@ ${runsText}`;
           run_at: z.string().optional().describe("New run_at datetime"),
           max_budget_usd: z.number().optional().describe("New budget limit"),
           use_browser: z.boolean().optional().describe("Enable/disable browser"),
+          model: z.string().optional().describe("Claude model to use (e.g. 'claude-sonnet-4-5-20250929')"),
           status: z.enum(["enabled", "disabled"]).optional().describe("Enable or disable the job"),
         },
         async (args) => {
@@ -313,7 +325,7 @@ ${runsText}`;
 
       tool(
         "job_trigger",
-        "Manually trigger a job to run immediately.",
+        "Manually trigger a job to run immediately. Bypasses any pause conditions.",
         {
           job_id: z.number().describe("Job ID to trigger"),
         },
@@ -324,6 +336,49 @@ ${runsText}`;
           }
           triggerJob(args.job_id);
           return { content: [{ type: "text" as const, text: `Triggered job "${job.name}" (ID: ${args.job_id}). It will run in the background.` }] };
+        }
+      ),
+
+      tool(
+        "job_pause",
+        "Pause a job. Provide 'until' (ISO datetime) to pause until a date, or 'skip_runs' to skip N scheduled executions. Both can be set together.",
+        {
+          job_id: z.number().describe("Job ID to pause"),
+          until: z.string().optional().describe("ISO 8601 datetime to pause until (e.g. '2026-02-15T09:00:00')"),
+          skip_runs: z.number().optional().describe("Number of scheduled runs to skip"),
+        },
+        async (args) => {
+          const job = getJob(args.job_id);
+          if (!job) {
+            return { content: [{ type: "text" as const, text: `Job ${args.job_id} not found.` }], isError: true };
+          }
+          if (!args.until && args.skip_runs === undefined) {
+            return { content: [{ type: "text" as const, text: "Provide 'until' and/or 'skip_runs' to pause the job." }], isError: true };
+          }
+          const updates: Record<string, string | number | null> = {};
+          if (args.until) updates.paused_until = args.until;
+          if (args.skip_runs !== undefined) updates.skip_runs = args.skip_runs;
+          updateJob(args.job_id, updates as Parameters<typeof updateJob>[1]);
+          const parts: string[] = [];
+          if (args.until) parts.push(`until ${args.until}`);
+          if (args.skip_runs !== undefined) parts.push(`skipping ${args.skip_runs} runs`);
+          return { content: [{ type: "text" as const, text: `Paused job "${job.name}" (ID: ${args.job_id}): ${parts.join(", ")}.` }] };
+        }
+      ),
+
+      tool(
+        "job_resume",
+        "Clear all pause conditions on a job, resuming normal execution.",
+        {
+          job_id: z.number().describe("Job ID to resume"),
+        },
+        async (args) => {
+          const job = getJob(args.job_id);
+          if (!job) {
+            return { content: [{ type: "text" as const, text: `Job ${args.job_id} not found.` }], isError: true };
+          }
+          updateJob(args.job_id, { paused_until: null, skip_runs: 0 });
+          return { content: [{ type: "text" as const, text: `Resumed job "${job.name}" (ID: ${args.job_id}). All pause conditions cleared.` }] };
         }
       ),
 
