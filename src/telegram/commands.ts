@@ -4,6 +4,13 @@ import { join, resolve } from "node:path";
 import { AgentService } from "../agent/index.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { Scheduler } from "../scheduler/index.ts";
+import type { ChatState } from "./state.ts";
+import {
+  agentResponseKeyboard,
+  modelPickerKeyboard,
+  sessionListKeyboard,
+  jobListKeyboard,
+} from "./keyboards.ts";
 import {
   getAllJobs,
   createJob,
@@ -31,18 +38,12 @@ interface CommandDeps {
   agent: AgentService;
   memory: MemorySystem;
   scheduler: Scheduler;
+  state: ChatState;
 }
 
 export function registerCommands(deps: CommandDeps) {
-  const { agent, memory, scheduler } = deps;
-
-  // Track which chats should start fresh sessions.
-  // On boot, every chat starts fresh (picks up new system prompt).
-  // After the first message, subsequent messages resume the new session.
-  const resetChats = new Set<string>();
-  const bootedChats = new Set<string>();
-  // Override session ID for /resume - cleared by /new
-  const resumeOverrides = new Map<string, string>();
+  const { agent, memory, scheduler, state } = deps;
+  const { resetChats, bootedChats, resumeOverrides, modelOverrides } = state;
 
   async function handleStart(ctx: Context): Promise<void> {
     await ctx.reply(
@@ -58,6 +59,7 @@ export function registerCommands(deps: CommandDeps) {
         "/remember <fact> - Store a fact\n" +
         "/search <query> - Search knowledge\n" +
         "/browse <url> - Screenshot a URL\n" +
+        "/model <name> - Switch model (opus/sonnet/haiku)\n" +
         "/status - Agent status"
     );
   }
@@ -101,12 +103,15 @@ export function registerCommands(deps: CommandDeps) {
         sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
       }
 
+      const model = modelOverrides.get(chatId);
+
       const result = await agent.run({
         prompt,
         source: "telegram",
         sourceId: chatId,
         sessionId,
         useBrowser: true,
+        ...(model ? { model } : {}),
         onToolUse: (toolName, input, subagent) => {
           if (!config.VERBOSE_FEEDBACK) return;
           toolLines.push(formatToolLine(toolName, input, subagent));
@@ -126,19 +131,31 @@ export function registerCommands(deps: CommandDeps) {
       const toolsBlock = config.VERBOSE_FEEDBACK && toolLines.length > 0
         ? `${formatToolsSummary(toolLines)}\n\n`
         : "";
-      const response = `${toolsBlock}${result.result}\n\n${meta}`;
+      const modelTag = model ? `[${model}] ` : "";
+      const response = `${toolsBlock}${modelTag}${result.result}\n\n${meta}`;
       const chunks = splitMessage(response);
 
       // Edit the first thinking message
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        thinkingMsg.message_id,
-        chunks[0]
-      );
-
-      // Send remaining chunks as new messages
-      for (let i = 1; i < chunks.length; i++) {
-        await ctx.reply(chunks[i]);
+      if (chunks.length === 1) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          thinkingMsg.message_id,
+          chunks[0],
+          { reply_markup: agentResponseKeyboard(result.sessionId) }
+        );
+      } else {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          thinkingMsg.message_id,
+          chunks[0]
+        );
+        // Send remaining chunks, keyboard on last
+        for (let i = 1; i < chunks.length; i++) {
+          const opts = i === chunks.length - 1
+            ? { reply_markup: agentResponseKeyboard(result.sessionId) }
+            : {};
+          await ctx.reply(chunks[i], opts);
+        }
       }
     } catch (err) {
       log.error("Telegram agent error", { error: String(err) });
@@ -160,7 +177,9 @@ export function registerCommands(deps: CommandDeps) {
     const lines = jobs.map(
       (j, i) => `${i + 1}. ${formatJobSummary(j)}`
     );
-    await ctx.reply(lines.join("\n"));
+    await ctx.reply(lines.join("\n"), {
+      reply_markup: jobListKeyboard(jobs),
+    });
   }
 
   async function handleNewJob(ctx: Context): Promise<void> {
@@ -297,6 +316,36 @@ export function registerCommands(deps: CommandDeps) {
     await ctx.reply("Session cleared. Next message starts a fresh conversation.");
   }
 
+  const MODEL_ALIASES: Record<string, string> = {
+    opus: "claude-opus-4-6",
+    sonnet: "claude-sonnet-4-5-20250929",
+    haiku: "claude-haiku-4-5-20251001",
+  };
+
+  async function handleModel(ctx: Context): Promise<void> {
+    const config = getConfig();
+    const chatId = String(ctx.chat?.id ?? "");
+    const text = ctx.message?.text ?? "";
+    const arg = text.replace(/^\/model\s*/i, "").trim().toLowerCase();
+
+    if (!arg) {
+      const current = modelOverrides.get(chatId) ?? config.DEFAULT_MODEL;
+      modelOverrides.delete(chatId);
+      const aliases = Object.entries(MODEL_ALIASES)
+        .map(([k, v]) => `  ${k} -> ${v}`)
+        .join("\n");
+      await ctx.reply(
+        `Model reset to default: ${config.DEFAULT_MODEL}\n\nAliases:\n${aliases}\n\nUsage: /model <name or alias>`,
+        { reply_markup: modelPickerKeyboard() }
+      );
+      return;
+    }
+
+    const resolved = MODEL_ALIASES[arg] ?? arg;
+    modelOverrides.set(chatId, resolved);
+    await ctx.reply(`Model set to: ${resolved}\nUse /model with no args to reset to default.`);
+  }
+
   async function handleStatus(ctx: Context): Promise<void> {
     const jobs = getAllJobs();
     const enabled = jobs.filter((j) => j.status === "enabled").length;
@@ -358,7 +407,9 @@ export function registerCommands(deps: CommandDeps) {
     const chatId = String(ctx.chat?.id ?? "");
     const sessions = getRecentSessions("telegram", chatId, 10);
     const header = "Recent sessions:\n\n";
-    await ctx.reply(header + formatSessionList(sessions, chatId));
+    await ctx.reply(header + formatSessionList(sessions, chatId), {
+      reply_markup: sessionListKeyboard(sessions),
+    });
   }
 
   async function handleResume(ctx: Context): Promise<void> {
@@ -506,14 +557,25 @@ export function registerCommands(deps: CommandDeps) {
       const responseText = `${toolsBlock}${result.result}\n\n${meta}`;
       const chunks = splitMessage(responseText);
 
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        thinkingMsg.message_id,
-        chunks[0]
-      );
-
-      for (let i = 1; i < chunks.length; i++) {
-        await ctx.reply(chunks[i]);
+      if (chunks.length === 1) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          thinkingMsg.message_id,
+          chunks[0],
+          { reply_markup: agentResponseKeyboard(result.sessionId) }
+        );
+      } else {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          thinkingMsg.message_id,
+          chunks[0]
+        );
+        for (let i = 1; i < chunks.length; i++) {
+          const opts = i === chunks.length - 1
+            ? { reply_markup: agentResponseKeyboard(result.sessionId) }
+            : {};
+          await ctx.reply(chunks[i], opts);
+        }
       }
     } catch (err) {
       log.error("Photo message error", { error: String(err) });
@@ -566,14 +628,25 @@ export function registerCommands(deps: CommandDeps) {
       const responseText = `${result.result}\n\n${meta}`;
       const chunks = splitMessage(responseText);
 
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        thinkingMsg.message_id,
-        chunks[0]
-      );
-
-      for (let i = 1; i < chunks.length; i++) {
-        await ctx.reply(chunks[i]);
+      if (chunks.length === 1) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          thinkingMsg.message_id,
+          chunks[0],
+          { reply_markup: agentResponseKeyboard(result.sessionId) }
+        );
+      } else {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          thinkingMsg.message_id,
+          chunks[0]
+        );
+        for (let i = 1; i < chunks.length; i++) {
+          const opts = i === chunks.length - 1
+            ? { reply_markup: agentResponseKeyboard(result.sessionId) }
+            : {};
+          await ctx.reply(chunks[i], opts);
+        }
       }
     } catch (err) {
       log.error("Voice message error", { error: String(err) });
@@ -602,5 +675,7 @@ export function registerCommands(deps: CommandDeps) {
     handleSessions,
     handleResume,
     handleFork,
+    handleModel,
+    runAgent,
   };
 }

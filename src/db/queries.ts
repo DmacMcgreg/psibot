@@ -358,3 +358,24 @@ export function getAllMemoryEntries(): MemoryEntry[] {
     .prepare<MemoryEntry, []>(`SELECT * FROM memory_entries ORDER BY file_path`)
     .all();
 }
+
+// --- Session Lookup ---
+
+export function resolveSessionByPrefix(prefix: string): AgentSession | null {
+  const db = getDb();
+  return db
+    .prepare<AgentSession, [string]>(
+      `SELECT * FROM agent_sessions WHERE session_id LIKE ? || '%' ORDER BY updated_at DESC LIMIT 1`
+    )
+    .get(prefix) ?? null;
+}
+
+export function getLastUserMessage(sessionId: string): string | null {
+  const db = getDb();
+  const row = db
+    .prepare<Pick<ChatMessage, "content">, [string]>(
+      `SELECT content FROM chat_messages WHERE session_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1`
+    )
+    .get(sessionId);
+  return row?.content ?? null;
+}

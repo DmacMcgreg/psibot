@@ -8,6 +8,7 @@ import { createJobRoutes } from "./routes/jobs.ts";
 import { createMemoryRoutes } from "./routes/memory.ts";
 import { createLogRoutes } from "./routes/logs.ts";
 import { createAuthRoutes } from "./routes/auth.ts";
+import { createMiniAppRoutes } from "./routes/mini-app.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("web");
@@ -25,7 +26,7 @@ export function createWebApp(deps: WebAppDeps) {
 
   // IP allowlist middleware (exempt OAuth callback - Funnel traffic has proxy IPs)
   app.use("*", async (c, next) => {
-    if (c.req.path.startsWith("/auth/youtube/callback")) {
+    if (c.req.path.startsWith("/auth/youtube/callback") || c.req.path.startsWith("/tma")) {
       await next();
       return;
     }
@@ -69,6 +70,11 @@ export function createWebApp(deps: WebAppDeps) {
   app.route("/", createMemoryRoutes());
   app.route("/", createLogRoutes());
   app.route("/", createAuthRoutes());
+
+  // Mini App routes
+  if (config.MINI_APP_ENABLED) {
+    app.route("/tma", createMiniAppRoutes());
+  }
 
   return app;
 }

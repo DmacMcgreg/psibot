@@ -1,4 +1,4 @@
-export type MessageSource = "web" | "telegram" | "job" | "heartbeat";
+export type MessageSource = "web" | "telegram" | "mini-app" | "job" | "heartbeat";
 
 export interface ChatMessage {
   id: number;

@@ -19,6 +19,11 @@ const envSchema = z.object({
     .transform(Number)
     .pipe(z.number().positive()),
   DEFAULT_MODEL: z.string().default("claude-opus-4-6"),
+  DEFAULT_MAX_TURNS: z
+    .string()
+    .default("300")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
   TAILSCALE_IP_PREFIX: z.string().default("100."),
   DB_PATH: z.string().default("./data/app.db"),
   HEARTBEAT_ENABLED: z
@@ -73,6 +78,10 @@ const envSchema = z.object({
   VERBOSE_FEEDBACK: z
     .string()
     .default("false")
+    .transform((s) => s === "true"),
+  MINI_APP_ENABLED: z
+    .string()
+    .default("true")
     .transform((s) => s === "true"),
   YOUTUBE_CLIENT_ID: z.string().default(""),
   YOUTUBE_CLIENT_SECRET: z.string().default(""),

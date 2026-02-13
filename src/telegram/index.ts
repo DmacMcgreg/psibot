@@ -3,7 +3,9 @@ import { getConfig } from "../config.ts";
 import { AgentService } from "../agent/index.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { Scheduler } from "../scheduler/index.ts";
+import { ChatState } from "./state.ts";
 import { registerCommands } from "./commands.ts";
+import { createCallbackHandler } from "./keyboards.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("telegram");
@@ -29,7 +31,19 @@ export function createTelegramBot(deps: TelegramDeps) {
     await next();
   });
 
-  const commands = registerCommands(deps);
+  // Shared chat state between commands and callback handler
+  const state = new ChatState();
+
+  const commands = registerCommands({ ...deps, state });
+
+  // Callback query handler (inline keyboard buttons) - must be registered before message handlers
+  const callbackHandler = createCallbackHandler({
+    agent: deps.agent,
+    scheduler: deps.scheduler,
+    state,
+    runAgent: commands.runAgent,
+  });
+  bot.on("callback_query:data", callbackHandler);
 
   bot.command("start", commands.handleStart);
   bot.command("ask", commands.handleAsk);
@@ -45,6 +59,7 @@ export function createTelegramBot(deps: TelegramDeps) {
   bot.command("resume", commands.handleResume);
   bot.command("fork", commands.handleFork);
   bot.command("status", commands.handleStatus);
+  bot.command("model", commands.handleModel);
 
   // Voice and audio messages
   bot.on("message:voice", commands.handleVoice);
@@ -73,8 +88,17 @@ export function createTelegramBot(deps: TelegramDeps) {
     { command: "remember", description: "Store a fact in memory" },
     { command: "search", description: "Search knowledge base" },
     { command: "browse", description: "Screenshot a URL" },
+    { command: "model", description: "Switch model (opus/sonnet/haiku)" },
     { command: "status", description: "Agent status" },
   ]).catch((err) => log.error("Failed to set bot commands", { error: String(err) }));
+
+  // Set Mini App menu button (Dashboard in Telegram)
+  if (config.MINI_APP_ENABLED && config.TELEGRAM_WEBHOOK_HOST) {
+    const miniAppUrl = `https://${config.TELEGRAM_WEBHOOK_HOST}/tma`;
+    bot.api.setChatMenuButton({
+      menu_button: { type: "web_app", text: "Dashboard", web_app: { url: miniAppUrl } },
+    }).catch((err) => log.error("Failed to set menu button", { error: String(err) }));
+  }
 
   return bot;
 }
