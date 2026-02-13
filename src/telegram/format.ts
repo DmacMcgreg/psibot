@@ -52,12 +52,24 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
-export function formatRunMeta(result: { sessionId: string; costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; numTurns: number }, verbose: boolean): string {
+export function formatRunMeta(result: { sessionId: string; costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; numTurns: number; stopReason?: string }, verbose: boolean): string {
   const base = `${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
   const shortSession = result.sessionId.slice(0, 8);
-  if (!verbose) return `${base} | ${shortSession}`;
+
+  const stopLabels: Record<string, string> = {
+    max_turns: "hit turn limit",
+    budget_exceeded: "hit budget limit",
+    stale_timeout: "timed out",
+    message_limit: "hit message limit",
+    interrupted: "interrupted",
+  };
+  const stopTag = result.stopReason && stopLabels[result.stopReason]
+    ? ` [${stopLabels[result.stopReason]}]`
+    : "";
+
+  if (!verbose) return `${base} | ${shortSession}${stopTag}`;
   const totalIn = result.inputTokens + result.cacheReadTokens;
-  return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns | ${shortSession}`;
+  return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns | ${shortSession}${stopTag}`;
 }
 
 export function formatToolLine(toolName: string, input?: Record<string, unknown>, subagent?: boolean): string {

@@ -86,6 +86,16 @@ export interface AgentRunOptions {
   onComplete?: (result: AgentRunResult) => void;
 }
 
+export type StopReason =
+  | "end_turn"
+  | "max_turns"
+  | "budget_exceeded"
+  | "interrupted"
+  | "stale_timeout"
+  | "message_limit"
+  | "error"
+  | "unknown";
+
 export interface AgentRunResult {
   sessionId: string;
   result: string;
@@ -96,4 +106,5 @@ export interface AgentRunResult {
   cacheReadTokens: number;
   contextWindow: number;
   numTurns: number;
+  stopReason: StopReason;
 }

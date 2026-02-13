@@ -11,7 +11,7 @@ import {
   upsertSession,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
-import type { AgentRunOptions, AgentRunResult } from "../shared/types.ts";
+import type { AgentRunOptions, AgentRunResult, StopReason } from "../shared/types.ts";
 
 const log = createLogger("agent");
 
@@ -41,7 +41,7 @@ export class AgentService {
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
     const config = getConfig();
     const maxBudget = options.maxBudgetUsd ?? config.DEFAULT_MAX_BUDGET_USD;
-    const maxTurns = options.maxTurns ?? 30;
+    const maxTurns = options.maxTurns ?? config.DEFAULT_MAX_TURNS;
     const runId = crypto.randomUUID();
     const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = stale
     const MAX_LOOP_MESSAGES = maxTurns * 5; // Hard ceiling on total messages in the loop
@@ -90,6 +90,7 @@ export class AgentService {
     let cacheReadTokens = 0;
     let contextWindow = 0;
     let numTurns = 0;
+    let stopReason: StopReason = "unknown";
     const toolCache = new Map<string, { name: string; input?: Record<string, unknown>; emitted: boolean }>();
     let lastMessageAt = Date.now();
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -100,6 +101,7 @@ export class AgentService {
       staleTimer = setTimeout(async () => {
         const staleSec = Math.round((Date.now() - lastMessageAt) / 1000);
         log.warn("Agent run stale, interrupting", { runId, staleSec });
+        stopReason = "stale_timeout";
         try {
           await agentQuery.interrupt();
         } catch {
@@ -129,6 +131,7 @@ export class AgentService {
         messageCount++;
         if (messageCount > MAX_LOOP_MESSAGES) {
           log.warn("Message loop exceeded limit, interrupting", { runId, messageCount, maxTurns });
+          stopReason = "message_limit";
           await agentQuery.interrupt();
           break;
         }
@@ -185,6 +188,17 @@ export class AgentService {
             durationMs = message.duration_ms;
             numTurns = message.num_turns;
 
+            // Only override stopReason from SDK if we didn't already set it
+            // (stale_timeout / message_limit take priority since they're our interrupts)
+            if (stopReason === "unknown") {
+              const subtype = message.subtype as string;
+              if (subtype === "end_turn") stopReason = "end_turn";
+              else if (subtype === "max_turns") stopReason = "max_turns";
+              else if (subtype === "budget_exceeded") stopReason = "budget_exceeded";
+              else if (subtype === "interrupted") stopReason = "interrupted";
+              else stopReason = "end_turn";
+            }
+
             for (const usage of Object.values(message.modelUsage)) {
               inputTokens += usage.inputTokens;
               outputTokens += usage.outputTokens;
@@ -199,6 +213,7 @@ export class AgentService {
               cost: totalCost,
               durationMs,
               subtype: message.subtype,
+              stopReason,
               inputTokens,
               outputTokens,
               numTurns,
@@ -206,6 +221,22 @@ export class AgentService {
             break;
           }
         }
+      }
+
+      // Generate fallback text if the agent didn't produce a response
+      if (!resultText.trim() && stopReason !== "end_turn") {
+        const reasons: Record<StopReason, string> = {
+          max_turns: `Agent reached the turn limit (${maxTurns} turns) before completing a response. Try simplifying your request or increasing the turn limit.`,
+          budget_exceeded: `Agent reached the budget limit ($${maxBudget.toFixed(2)}) before completing a response. The work done so far has been saved to the session.`,
+          interrupted: "Agent was interrupted before completing a response.",
+          stale_timeout: "Agent became unresponsive (no activity for 5 minutes) and was stopped.",
+          message_limit: `Agent exceeded the message processing limit and was stopped. Try breaking your request into smaller parts.`,
+          error: "Agent encountered an error before completing a response.",
+          end_turn: "",
+          unknown: "Agent stopped without producing a response.",
+        };
+        resultText = reasons[stopReason] || reasons.unknown;
+        log.warn("Agent produced no response text, using fallback", { runId, stopReason });
       }
 
       // Store assistant response
@@ -238,13 +269,29 @@ export class AgentService {
         cacheReadTokens,
         contextWindow,
         numTurns,
+        stopReason,
       };
 
       options.onComplete?.(result);
       return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error("Agent run failed", { runId, error: message });
+      const errMessage = err instanceof Error ? err.message : String(err);
+      log.error("Agent run failed", { runId, error: errMessage });
+
+      // If we have a session, store a fallback response so the user sees something
+      if (sessionId) {
+        const fallback = `Agent encountered an error: ${errMessage}`;
+        insertChatMessage({
+          session_id: sessionId,
+          role: "assistant",
+          content: fallback,
+          source: options.source,
+          source_id: options.sourceId,
+          cost_usd: totalCost,
+          duration_ms: Date.now() - (durationMs || Date.now()),
+        });
+      }
+
       throw err;
     } finally {
       if (staleTimer) clearTimeout(staleTimer);
