@@ -7,6 +7,7 @@ import { createYoutubeTools } from "./youtube-tools.ts";
 import { buildAgentDefinitions } from "./subagents.ts";
 import { buildSystemPrompt } from "./prompts.ts";
 import { getGlmMcpServers } from "./glm-mcp.ts";
+import { createTradingMcpServer } from "./trading-mcp.ts";
 import {
   insertChatMessage,
   upsertSession,
@@ -113,6 +114,7 @@ export class AgentService {
       "agent-tools": this.toolServer,
       "media-tools": this.mediaToolServer,
       "youtube-tools": this.youtubeToolServer,
+      "trading-bot": createTradingMcpServer(),
     };
     if (backend === "glm") {
       Object.assign(mcpServers, getGlmMcpServers());
