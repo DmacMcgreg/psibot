@@ -12,9 +12,16 @@ import {
 } from "../youtube/db.ts";
 import { processAndStoreVideo } from "../youtube/process.ts";
 import { processPlaylist, type VideoDetail } from "../youtube/playlist.ts";
-import { getAuthUrl, loadTokens } from "../youtube/api.ts";
+import { checkVaultStatus } from "../youtube/api.ts";
+import {
+  listTopics,
+  getTopicWithRelations,
+  getRelatedVideos,
+  getSharedTopics,
+  rebuildTopicGraph,
+} from "../youtube/graph.ts";
 import { getConfig } from "../config.ts";
-import { splitMessage } from "../telegram/format.ts";
+import { splitMessage, escapeMarkdownV2 } from "../telegram/format.ts";
 import type { ParsedTranscript } from "../youtube/analyzer.ts";
 import type { Bot } from "grammy";
 
@@ -37,7 +44,7 @@ export function createYoutubeTools(deps: YoutubeDeps) {
     for (const userId of defaultChatIds) {
       try {
         for (const chunk of chunks) {
-          await bot.api.sendMessage(userId, chunk);
+          await bot.api.sendMessage(userId, escapeMarkdownV2(chunk), { parse_mode: "MarkdownV2" });
         }
       } catch (err) {
         log.error("Failed to send progress notification", { userId, error: String(err) });
@@ -325,42 +332,44 @@ ${quotesStr}`;
 
       tool(
         "youtube_oauth_setup",
-        "Set up YouTube OAuth authorization. Without arguments, returns the authorization URL to visit. With check_status=true, verifies that tokens exist and are valid.",
+        "Check YouTube OAuth status via the OAuth vault. Shows whether Google is connected and tokens are valid.",
         {
-          check_status: z.boolean().optional().describe("If true, check token status instead of generating auth URL"),
+          check_status: z.boolean().optional().describe("Check token status (always true, kept for backwards compatibility)"),
         },
-        async (args) => {
+        async () => {
           try {
-            if (args.check_status) {
-              const tokens = loadTokens();
-              if (!tokens) {
-                return {
-                  content: [{ type: "text" as const, text: "No YouTube OAuth tokens found. Use youtube_oauth_setup (without check_status) to get the authorization URL." }],
-                };
-              }
+            const config = getConfig();
+            const status = await checkVaultStatus();
 
-              const expiresIn = Math.max(0, Math.floor((tokens.expires_at - Date.now()) / 1000));
-              const isExpired = expiresIn === 0;
-
+            if (!config.OAUTH_VAULT_URL) {
               return {
                 content: [{
                   type: "text" as const,
-                  text: `YouTube OAuth status:\n  Token type: ${tokens.token_type}\n  Refresh token: present\n  Access token: ${isExpired ? "expired" : `valid for ${expiresIn}s`}\n  ${isExpired ? "Token will auto-refresh on next API call." : "Ready to use."}`,
+                  text: "OAUTH_VAULT_URL is not configured. Set it in .env to point to your OAuth token vault.",
+                }],
+                isError: true,
+              };
+            }
+
+            if (!status.connected) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `Google is not connected in the OAuth vault.\n\nConnect it at: ${config.OAUTH_VAULT_URL}/?key=<API_KEY>\n\nClick "Connect" next to Google and complete the OAuth flow.`,
                 }],
               };
             }
 
-            const url = getAuthUrl();
             return {
               content: [{
                 type: "text" as const,
-                text: `Visit this URL to authorize YouTube access:\n\n${url}\n\nAfter authorizing, the callback will save tokens automatically. Use youtube_oauth_setup with check_status=true to verify.`,
+                text: `YouTube OAuth status (via vault):\n  Connected: yes\n  Expired: ${status.expired ? "yes (will auto-refresh)" : "no"}\n  Scopes: ${status.scopes ?? "unknown"}\n  Ready to use.`,
               }],
             };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return {
-              content: [{ type: "text" as const, text: `OAuth setup failed: ${message}` }],
+              content: [{ type: "text" as const, text: `OAuth status check failed: ${message}` }],
               isError: true,
             };
           }
@@ -406,6 +415,190 @@ ${quotesStr}`;
             const message = error instanceof Error ? error.message : String(error);
             return {
               content: [{ type: "text" as const, text: `Status check failed: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_topics",
+        `Search and browse the topic knowledge graph built from your YouTube video library.
+Each video's themes are extracted and deduplicated into a shared topic graph with co-occurrence relationships.
+
+USAGE GUIDE:
+- No arguments: lists all topics sorted by video count (most covered topics first)
+- query param: search topics by name (e.g. "machine learning", "productivity")
+- topic_id param: get a specific topic with its related topics and linked videos
+
+EXPLORATION STRATEGIES:
+1. "What do I know about X?" -> search topics for X, then check linked videos
+2. "What connects topic A to B?" -> get both topics, look at shared related_topics
+3. "What are my biggest knowledge areas?" -> list all topics, look at highest video_count
+4. "Suggest something to watch" -> find topics with low video_count (gaps in knowledge)
+5. Chain with youtube_get to dive deep into a specific video's full analysis
+6. Chain with youtube_search for semantic search within a topic's videos`,
+        {
+          query: z.string().optional().describe("Search topics by name"),
+          topic_id: z.number().optional().describe("Get a specific topic with its relations and videos"),
+          limit: z.number().optional().describe("Max results to return (default: 50)"),
+        },
+        async (args) => {
+          try {
+            if (args.topic_id !== undefined) {
+              const topic = getTopicWithRelations(args.topic_id);
+              if (!topic) {
+                return {
+                  content: [{ type: "text" as const, text: `Topic not found: ${args.topic_id}` }],
+                  isError: true,
+                };
+              }
+
+              const relatedStr = topic.related_topics.length > 0
+                ? topic.related_topics
+                    .map((r) => `  - ${r.display_name} (${r.co_occurrence_count} shared videos) [id:${r.id}]`)
+                    .join("\n")
+                : "  (none)";
+
+              const videosStr = topic.videos.length > 0
+                ? topic.videos
+                    .map((v) => `  - "${v.title}" by ${v.channel_title} [${v.video_id}]\n    Theme: ${v.theme_summary}`)
+                    .join("\n")
+                : "  (none)";
+
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `Topic: ${topic.display_name} (id:${topic.id}, ${topic.video_count} videos)\n${topic.description}\n\nRelated Topics:\n${relatedStr}\n\nVideos:\n${videosStr}`,
+                }],
+              };
+            }
+
+            const topics = listTopics(args.query, args.limit ?? 50);
+
+            if (topics.length === 0) {
+              const msg = args.query
+                ? `No topics found matching "${args.query}".`
+                : "No topics in the knowledge graph yet. Use youtube_summarize to add videos first.";
+              return {
+                content: [{ type: "text" as const, text: msg }],
+              };
+            }
+
+            const lines = topics.map(
+              (t) => `- ${t.display_name} (${t.video_count} videos) [id:${t.id}]`
+            );
+
+            const header = args.query
+              ? `${topics.length} topics matching "${args.query}":`
+              : `${topics.length} topics (sorted by video count):`;
+
+            return {
+              content: [{ type: "text" as const, text: `${header}\n\n${lines.join("\n")}` }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              content: [{ type: "text" as const, text: `Topics query failed: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_related",
+        `Find videos related to a given video through shared topics in the knowledge graph.
+
+USAGE GUIDE:
+- Pass a video_id to find other videos that share topics with it
+- Results ranked by number of shared topics (strongest connections first)
+- Each result shows which topics are shared, so you can explain WHY they're related
+
+EXPLORATION STRATEGIES:
+1. User mentions a video -> find related videos to suggest more content
+2. Compare two videos -> use compare_video_id to see shared topics between them
+3. "What else covers topic X?" -> use youtube_topics instead to get all videos for a topic
+4. Combine with youtube_search for hybrid discovery (topic-based + semantic)`,
+        {
+          video_id: z.string().describe("YouTube video ID to find related videos for"),
+          compare_video_id: z.string().optional().describe("Compare with another video to find shared topics"),
+          limit: z.number().optional().describe("Max results (default: 10)"),
+        },
+        async (args) => {
+          try {
+            if (args.compare_video_id) {
+              const shared = getSharedTopics(args.video_id, args.compare_video_id);
+
+              if (shared.length === 0) {
+                return {
+                  content: [{
+                    type: "text" as const,
+                    text: `No shared topics between ${args.video_id} and ${args.compare_video_id}.`,
+                  }],
+                };
+              }
+
+              const lines = shared.map(
+                (t) => `- ${t.display_name} (${t.video_count} total videos) [id:${t.id}]`
+              );
+
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `${shared.length} shared topics between ${args.video_id} and ${args.compare_video_id}:\n\n${lines.join("\n")}`,
+                }],
+              };
+            }
+
+            const related = getRelatedVideos(args.video_id, args.limit ?? 10);
+
+            if (related.length === 0) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `No related videos found for ${args.video_id}. The video may not be in the graph yet.`,
+                }],
+              };
+            }
+
+            const lines = related.map(
+              (r) => `- "${r.title}" by ${r.channel_title} (${r.shared_topic_count} shared topics) [${r.video_id}]\n  Topics: ${r.shared_topics}`
+            );
+
+            return {
+              content: [{
+                type: "text" as const,
+                text: `${related.length} videos related to ${args.video_id}:\n\n${lines.join("\n\n")}`,
+              }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              content: [{ type: "text" as const, text: `Related videos query failed: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_rebuild_graph",
+        "Rebuild the YouTube topic knowledge graph from all stored videos. Use this if the graph seems stale or after bulk-importing videos. Clears all existing topic data and re-extracts from every video's analysis_json.",
+        {},
+        async () => {
+          try {
+            const counts = rebuildTopicGraph();
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Topic graph rebuilt successfully.\n  Topics: ${counts.topicCount}\n  Video-topic links: ${counts.linkCount}\n  Topic co-occurrence relations: ${counts.relationCount}`,
+              }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              content: [{ type: "text" as const, text: `Graph rebuild failed: ${message}` }],
               isError: true,
             };
           }

@@ -16,7 +16,7 @@ export function tmaChatPage(messages: ChatMessage[] = []): string {
       hx-post="/tma/api/chat"
       hx-target="#messages"
       hx-swap="beforeend"
-      hx-on::after-request="this.reset(); document.getElementById('messages').scrollIntoView({block:'end'})"
+      hx-on::after-request="this.reset(); document.querySelector('.tma-main').scrollTop = document.querySelector('.tma-main').scrollHeight"
       style="position:sticky; bottom:0; padding:8px 16px; padding-bottom:calc(8px + env(safe-area-inset-bottom)); background:var(--tg-theme-bg-color,#fff); border-top:1px solid var(--tg-theme-hint-color,#ccc);"
     >
       <div style="display:flex; gap:8px;">
@@ -33,8 +33,8 @@ export function tmaChatPage(messages: ChatMessage[] = []): string {
       </div>
     </form>
     <script>
-      var msgs = document.getElementById('messages');
-      if (msgs) msgs.scrollIntoView({block:'end'});
+      var main = document.querySelector('.tma-main');
+      if (main) main.scrollTop = main.scrollHeight;
     </script>
   `);
 }
@@ -52,10 +52,13 @@ export function tmaChatStreamFragment(streamId: string): string {
     (function() {
       var el = document.getElementById('stream-${streamId}');
       var buf = '';
+      var main = document.querySelector('.tma-main');
+      function scrollBottom() { if (main) main.scrollTop = main.scrollHeight; }
       var es = new EventSource('/tma/api/chat/stream/${streamId}');
       es.addEventListener('chunk', function(e) {
         try { buf += JSON.parse(e.data); } catch(ex) { buf += e.data; }
         if (el) el.textContent = buf;
+        scrollBottom();
       });
       es.addEventListener('meta', function(e) {
         var val;
@@ -69,7 +72,7 @@ export function tmaChatStreamFragment(streamId: string): string {
       });
       es.addEventListener('done', function() {
         es.close();
-        el.scrollIntoView({block:'end'});
+        scrollBottom();
       });
       es.onerror = function() { es.close(); };
     })();

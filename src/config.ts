@@ -7,6 +7,11 @@ const envSchema = z.object({
     .string()
     .transform((s) => s.split(",").map(Number))
     .pipe(z.array(z.number().int().positive())),
+  TELEGRAM_GROUP_CHAT_IDS: z
+    .string()
+    .default("")
+    .transform((s) => (s ? s.split(",").map(Number) : []))
+    .pipe(z.array(z.number().int())),
   PORT: z
     .string()
     .default("3141")
@@ -83,11 +88,20 @@ const envSchema = z.object({
     .string()
     .default("true")
     .transform((s) => s === "true"),
-  YOUTUBE_CLIENT_ID: z.string().default(""),
-  YOUTUBE_CLIENT_SECRET: z.string().default(""),
+  OAUTH_VAULT_URL: z.string().default(""),
+  OAUTH_VAULT_API_KEY: z.string().default(""),
   YOUTUBE_SOURCE_PLAYLIST_ID: z.string().default(""),
   YOUTUBE_DESTINATION_PLAYLIST_ID: z.string().default(""),
   YOUTUBE_ANALYSIS_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+  REDDIT_FEED_TOKEN: z.string().default(""),
+  REDDIT_USERNAME: z.string().default("FunnyRocker"),
+  GITHUB_TOKEN: z.string().default(""),
+  // GLM backend (separate AI plan for spreading workload off Claude Max quota)
+  GLM_BASE_URL: z.string().default("https://api.z.ai/api/anthropic"),
+  GLM_AUTH_TOKEN: z.string().default(""),
+  GLM_HAIKU_MODEL: z.string().default("glm-4.7"),
+  GLM_SONNET_MODEL: z.string().default("glm-5-turbo"),
+  GLM_OPUS_MODEL: z.string().default("glm-5"),
 });
 
 export type Config = z.infer<typeof envSchema>;

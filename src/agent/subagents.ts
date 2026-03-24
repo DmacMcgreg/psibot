@@ -8,7 +8,7 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
       prompt:
         "You generate images using the image_generate tool. Given a description, call image_generate with an appropriate prompt. Return the file path of the generated image so the caller can send it to the user.",
       model: "haiku",
-      maxTurns: 3,
+      maxTurns: 99999,
     },
     "audio-processor": {
       description:
@@ -16,7 +16,7 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
       prompt:
         "You process audio using audio_transcribe (speech-to-text) and tts_generate (text-to-speech) tools. For transcription, take an audio file path and return the text. For TTS, take text and generate an audio file, returning the path.",
       model: "haiku",
-      maxTurns: 5,
+      maxTurns: 99999,
     },
     coder: {
       description:
@@ -24,7 +24,7 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
       prompt:
         "You are a coding agent. Use worktree_create to set up isolated workspaces for repositories, then use Bash, Read, Edit, and Write tools to implement code changes. Use worktree_list to check existing worktrees. Always commit your work before finishing.",
       model: "sonnet",
-      maxTurns: 50,
+      maxTurns: 99999,
     },
     researcher: {
       description:
@@ -32,7 +32,7 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
       prompt:
         "You research topics using agent-browser (run via Bash) and web search. Navigate to relevant pages, extract information, and return concise findings. Cite sources when possible. You MUST return ALL findings as your final text response. The caller handles audio generation and Telegram delivery, so your only job is to gather and return the research text.",
       model: "sonnet",
-      maxTurns: 15,
+      maxTurns: 99999,
     },
   };
 }

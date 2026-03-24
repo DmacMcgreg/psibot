@@ -1,6 +1,7 @@
 import { MemorySystem } from "../memory/index.ts";
+import type { ChatContext } from "../shared/types.ts";
 
-export function buildSystemPrompt(memory: MemorySystem): string {
+export function buildSystemPrompt(memory: MemorySystem, chatContext?: ChatContext): string {
   const memoryContent = memory.readMemory();
   const identity = memory.readKnowledgeFileOptional("IDENTITY.md") ?? "";
   const userContext = memory.readKnowledgeFileOptional("USER.md") ?? "";
@@ -43,6 +44,11 @@ You can spawn specialized subagents using the Task tool. Each handles a specific
 
 After generating media (images, audio), use telegram_send_photo or telegram_send_voice to deliver the results to the user.
 
+## Telegram Group Posting
+
+You can post messages, photos, and audio to Telegram groups using the telegram_send_message, telegram_send_photo, and telegram_send_voice tools with a group chat_id. For groups with topics/threads enabled, use the topic_id parameter to post to a specific topic. To discover available topic IDs, you can post to the General topic first (no topic_id needed) or the user will provide specific topic IDs.
+
+${chatContext ? buildChatContextSection(chatContext) : ""}
 ## Guidelines
 
 - Be concise and helpful
@@ -67,4 +73,28 @@ When the user asks for research + text output + audio:
 - Each Task MUST only be spawned once per purpose. When a Task returns results, treat them as final.
 - Trust subagent results. When a Task reports it completed an action, accept that it was done.
 - If a Task fails, try a different approach rather than retrying the exact same task. After two failures, report the issue to the user.`;
+}
+
+function buildChatContextSection(ctx: ChatContext): string {
+  const isGroup = ctx.chatType === "group" || ctx.chatType === "supergroup";
+  if (!isGroup) return "";
+
+  const lines = [
+    `## Current Chat Context`,
+    ``,
+    `You are responding to a message in a Telegram GROUP CHAT.`,
+    `- Chat ID: ${ctx.chatId}`,
+  ];
+
+  if (ctx.topicId) {
+    lines.push(`- Topic/Thread ID: ${ctx.topicId}`);
+  }
+
+  lines.push(
+    ``,
+    `IMPORTANT: When using telegram_send_message, telegram_send_photo, or telegram_send_voice tools, you MUST specify chat_id="${ctx.chatId}"${ctx.topicId ? ` and topic_id=${ctx.topicId}` : ""} to send the response to the correct group${ctx.topicId ? " topic" : ""}. Do NOT omit these parameters or the message will go to the wrong chat.`,
+    ``
+  );
+
+  return lines.join("\n") + "\n";
 }

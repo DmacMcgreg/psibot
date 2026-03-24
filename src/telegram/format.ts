@@ -1,9 +1,39 @@
+import telegramifyMarkdown from "telegramify-markdown";
+
 const MAX_MESSAGE_LENGTH = 4096;
 
-export function formatForTelegram(text: string): string {
-  // Escape markdown v2 special characters for plain text portions
-  return text
-    .replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+/**
+ * Escape all MarkdownV2 special characters so text renders as-is in Telegram.
+ * Use for static bot strings (commands, notifications, status messages).
+ * Reference: https://core.telegram.org/bots/api#markdownv2-style
+ */
+export function escapeMarkdownV2(text: string): string {
+  return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+}
+
+/**
+ * Convert Markdown tables to monospace code blocks since Telegram has no table support.
+ * Detects table blocks (header row + separator + data rows) and wraps them in ```.
+ */
+function convertTablesToCodeBlocks(text: string): string {
+  // Match table blocks: header | sep | rows, possibly with leading/trailing blank lines
+  const tablePattern = /(?:^|\n)((?:\|[^\n]+\|\s*\n)(?:\|[-| :]+\|\s*\n)((?:\|[^\n]+\|\s*\n?)*))/g;
+  return text.replace(tablePattern, (match, table: string) => {
+    // Strip the leading newline from the match, wrap table in code block
+    const trimmed = table.trimEnd();
+    return `\n\`\`\`\n${trimmed}\n\`\`\`\n`;
+  });
+}
+
+/**
+ * Convert standard Markdown (from Claude agent output) to Telegram MarkdownV2.
+ * Preserves formatting: bold, italic, code blocks, lists, links, headers.
+ * Converts tables to monospace code blocks (Telegram has no native table support).
+ * Use for agent responses that contain intentional Markdown formatting.
+ */
+export function markdownToTelegramV2(text: string): string {
+  const withCodeTables = convertTablesToCodeBlocks(text);
+  return telegramifyMarkdown(withCodeTables, "escape");
 }
 
 export function splitMessage(text: string): string[] {

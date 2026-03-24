@@ -9,6 +9,8 @@ import {
   getVideo,
   type VideoProcessingStatus,
 } from "./db.ts";
+import { indexVideoTopics } from "./graph.ts";
+import { insertPendingItem } from "../db/queries.ts";
 import type { ParsedTranscript } from "./analyzer.ts";
 
 const log = createLogger("youtube:process");
@@ -63,6 +65,7 @@ export async function processAndStoreVideo(
     processingStatus?: VideoProcessingStatus;
     forceReprocess?: boolean;
     model?: string;
+    onProgress?: (message: string) => Promise<void>;
   }
 ): Promise<ProcessVideoResult> {
   const videoId = parseVideoId(videoInput);
@@ -91,9 +94,9 @@ export async function processAndStoreVideo(
 
   // Extract transcript
   log.info("Extracting transcript", { videoId, title: meta.title });
-  const transcript = await extractTranscript(videoId);
+  const transcript = await extractTranscript(videoId, { onProgress: options?.onProgress });
   if (!transcript) {
-    throw new Error(`No transcript/captions available for: "${meta.title}"`);
+    throw new Error(`No transcript available for: "${meta.title}" (captions and audio fallback both failed — check logs for details)`);
   }
 
   // Analyze with Claude
@@ -127,6 +130,27 @@ export async function processAndStoreVideo(
       chunkType: chunks[i].type,
       chunkText: chunks[i].text,
       embedding: embeddings[i],
+    });
+  }
+
+  // Index topics into knowledge graph
+  const topicCount = indexVideoTopics(videoId, analysis);
+  log.info("Indexed topics", { videoId, topicCount });
+
+  // Queue for triage/research pipeline
+  try {
+    insertPendingItem({
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+      title: meta.title,
+      description: analysis.markdown_summary.slice(0, 500),
+      source: "youtube",
+      platform: "youtube",
+    });
+    log.info("Queued video for research pipeline", { videoId, title: meta.title });
+  } catch (err) {
+    log.warn("Failed to queue video for research pipeline", {
+      videoId,
+      error: err instanceof Error ? err.message : String(err),
     });
   }
 

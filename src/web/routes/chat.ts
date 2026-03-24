@@ -13,6 +13,7 @@ import { escapeHtml } from "../../shared/html.ts";
 import { formatRunMeta, formatCost } from "../../telegram/format.ts";
 import { getConfig } from "../../config.ts";
 import { createLogger } from "../../shared/logger.ts";
+import { PLIST_LABEL } from "../../cli/paths.ts";
 
 const log = createLogger("web:chat");
 
@@ -143,6 +144,16 @@ export function createChatRoutes() {
           } catch { /* client disconnected */ }
           streams.delete(streamId);
         },
+      })
+      .then(() => {
+        if (agent.consumeRestart()) {
+          const uid = process.getuid?.() ?? 501;
+          const target = `gui/${uid}/${PLIST_LABEL}`;
+          log.info("Executing deferred daemon restart (web)", { target });
+          Bun.spawn(["bash", "-c", `sleep 1 && launchctl kickstart -k ${target}`], {
+            stdout: "ignore", stderr: "ignore", stdin: "ignore",
+          });
+        }
       })
       .catch((err) => {
         log.error("Chat agent error", { error: String(err) });

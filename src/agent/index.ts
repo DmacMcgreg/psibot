@@ -6,14 +6,35 @@ import { createMediaTools } from "./media-tools.ts";
 import { createYoutubeTools } from "./youtube-tools.ts";
 import { buildAgentDefinitions } from "./subagents.ts";
 import { buildSystemPrompt } from "./prompts.ts";
+import { getGlmMcpServers } from "./glm-mcp.ts";
 import {
   insertChatMessage,
   upsertSession,
+  insertToolUse,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { AgentRunOptions, AgentRunResult, StopReason } from "../shared/types.ts";
 
 const log = createLogger("agent");
+
+function toolInputSummary(input?: Record<string, unknown>): string | null {
+  if (!input) return null;
+  // Serialize all string/number/boolean fields as key=value pairs
+  const parts: string[] = [];
+  for (const [key, val] of Object.entries(input)) {
+    if (val === null || val === undefined) continue;
+    if (typeof val === "string") {
+      // Truncate long values, collapse newlines
+      const short = val.replace(/\n/g, " ").slice(0, 120);
+      parts.push(`${key}=${short}${val.length > 120 ? "..." : ""}`);
+    } else if (typeof val === "number" || typeof val === "boolean") {
+      parts.push(`${key}=${val}`);
+    }
+  }
+  if (parts.length === 0) return null;
+  const summary = parts.join("; ");
+  return summary.slice(0, 500);
+}
 
 export type AgentServiceDeps = ToolDeps;
 
@@ -25,6 +46,21 @@ export class AgentService {
   private agentDefinitions: ReturnType<typeof buildAgentDefinitions>;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
   private _keepAlive: (() => void) | null = null;
+  private _pendingRestart = false;
+
+  get pendingRestart(): boolean {
+    return this._pendingRestart;
+  }
+
+  scheduleRestart(): void {
+    this._pendingRestart = true;
+  }
+
+  consumeRestart(): boolean {
+    const pending = this._pendingRestart;
+    this._pendingRestart = false;
+    return pending;
+  }
 
   constructor(deps: AgentServiceDeps) {
     this.memory = deps.memory;
@@ -44,6 +80,7 @@ export class AgentService {
     const maxTurns = options.maxTurns ?? config.DEFAULT_MAX_TURNS;
     const runId = crypto.randomUUID();
     const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = stale
+    const TOOL_STALE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes during tool execution
     const MAX_LOOP_MESSAGES = maxTurns * 5; // Hard ceiling on total messages in the loop
 
     log.info("Starting agent run", {
@@ -53,11 +90,35 @@ export class AgentService {
       maxBudget,
     });
 
-    const systemPrompt = buildSystemPrompt(this.memory);
+    const systemPrompt = buildSystemPrompt(this.memory, options.chatContext);
     log.info("System prompt built", { runId, length: systemPrompt.length });
 
     const model = options.model ?? config.DEFAULT_MODEL;
-    log.info("Calling query()", { runId, model });
+    const backend = options.backend ?? "claude";
+
+    // Build env overrides for GLM backend
+    const envOverride = backend === "glm" && config.GLM_AUTH_TOKEN
+      ? {
+          ...process.env,
+          ANTHROPIC_BASE_URL: config.GLM_BASE_URL,
+          ANTHROPIC_AUTH_TOKEN: config.GLM_AUTH_TOKEN,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: config.GLM_HAIKU_MODEL,
+          ANTHROPIC_DEFAULT_SONNET_MODEL: config.GLM_SONNET_MODEL,
+          ANTHROPIC_DEFAULT_OPUS_MODEL: config.GLM_OPUS_MODEL,
+        }
+      : undefined;
+
+    // Build MCP servers — add GLM-specific servers when using GLM backend
+    const mcpServers: Record<string, unknown> = {
+      "agent-tools": this.toolServer,
+      "media-tools": this.mediaToolServer,
+      "youtube-tools": this.youtubeToolServer,
+    };
+    if (backend === "glm") {
+      Object.assign(mcpServers, getGlmMcpServers());
+    }
+
+    log.info("Calling query()", { runId, model, backend });
     const agentQuery = query({
       prompt: options.prompt,
       options: {
@@ -65,16 +126,14 @@ export class AgentService {
         model,
         permissionMode: "bypassPermissions",
         maxTurns,
-        maxBudgetUsd: maxBudget,
-        settingSources: ["project"],
-        allowedTools: [...(options.allowedTools ?? []), "Skill"],
-        mcpServers: {
-          "agent-tools": this.toolServer,
-          "media-tools": this.mediaToolServer,
-          "youtube-tools": this.youtubeToolServer,
-        },
+        // Budget enforcement disabled — leave code for reference
+        // maxBudgetUsd: maxBudget,
+        settingSources: [],
+        ...(options.allowedTools ? { allowedTools: [...options.allowedTools, "Skill"] } : {}),
+        mcpServers: mcpServers as Record<string, ReturnType<typeof createAgentTools>>,
         agents: this.agentDefinitions,
         ...(options.sessionId ? { resume: options.sessionId } : {}),
+        ...(envOverride ? { env: envOverride } : {}),
       },
     });
     log.info("query() returned iterator", { runId });
@@ -95,19 +154,21 @@ export class AgentService {
     let lastMessageAt = Date.now();
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
 
+    let awaitingToolResult = false;
     const resetStaleTimer = () => {
       lastMessageAt = Date.now();
       if (staleTimer) clearTimeout(staleTimer);
+      const timeout = awaitingToolResult ? TOOL_STALE_TIMEOUT_MS : STALE_TIMEOUT_MS;
       staleTimer = setTimeout(async () => {
         const staleSec = Math.round((Date.now() - lastMessageAt) / 1000);
-        log.warn("Agent run stale, interrupting", { runId, staleSec });
+        log.warn("Agent run stale, interrupting", { runId, staleSec, awaitingToolResult });
         stopReason = "stale_timeout";
         try {
           await agentQuery.interrupt();
         } catch {
           // ignore interrupt errors
         }
-      }, STALE_TIMEOUT_MS);
+      }, timeout);
     };
 
     this._keepAlive = resetStaleTimer;
@@ -127,6 +188,7 @@ export class AgentService {
       resetStaleTimer();
       let messageCount = 0;
       for await (const message of agentQuery) {
+        awaitingToolResult = false;
         resetStaleTimer();
         messageCount++;
         if (messageCount > MAX_LOOP_MESSAGES) {
@@ -157,16 +219,32 @@ export class AgentService {
 
           case "assistant": {
             const content = message.message.content;
+            let hasToolUse = false;
             if (Array.isArray(content)) {
               for (const block of content) {
                 if (block.type === "text") {
                   options.onText?.(block.text);
                 } else if (block.type === "tool_use") {
+                  hasToolUse = true;
                   const input = block.input as Record<string, unknown> | undefined;
                   toolCache.set(block.id, { name: block.name, input, emitted: true });
                   options.onToolUse?.(block.name, input, false);
+                  if (sessionId) {
+                    try {
+                      insertToolUse({
+                        session_id: sessionId,
+                        tool_name: block.name,
+                        input_summary: toolInputSummary(input),
+                        is_subagent: false,
+                      });
+                    } catch { /* non-critical */ }
+                  }
                 }
               }
+            }
+            if (hasToolUse) {
+              awaitingToolResult = true;
+              resetStaleTimer(); // re-arm with longer timeout for tool execution
             }
             break;
           }
@@ -178,6 +256,15 @@ export class AgentService {
             if (!toolCache.has(id)) {
               toolCache.set(id, { name: message.tool_name, emitted: true });
               options.onToolUse?.(message.tool_name, undefined, true);
+              if (sessionId) {
+                try {
+                  insertToolUse({
+                    session_id: sessionId,
+                    tool_name: message.tool_name,
+                    is_subagent: true,
+                  });
+                } catch { /* non-critical */ }
+              }
             }
             break;
           }

@@ -6,6 +6,7 @@ export function layout(title: string, activePage: string, body: string): string 
     { href: "/jobs", label: "Jobs", id: "jobs" },
     { href: "/memory", label: "Memory", id: "memory" },
     { href: "/logs", label: "Logs", id: "logs" },
+    { href: "/youtube/graph", label: "Graph", id: "graph" },
   ];
 
   const nav = navItems

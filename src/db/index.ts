@@ -45,10 +45,75 @@ export function initDb(): Database {
     }
   }
 
+  expandSourceCheckConstraints(_db);
   seedDefaultJobs(_db);
 
   log.info("Database initialized", { path: config.DB_PATH });
   return _db;
+}
+
+function expandSourceCheckConstraints(db: Database): void {
+  const rebuilds = [
+    {
+      table: "chat_messages",
+      createSql: `CREATE TABLE chat_messages_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('web', 'telegram', 'job', 'mini-app', 'heartbeat')),
+        source_id TEXT,
+        cost_usd REAL,
+        duration_ms INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      indexes: [
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_source ON chat_messages(source, source_id)",
+      ],
+    },
+    {
+      table: "agent_sessions",
+      createSql: `CREATE TABLE agent_sessions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL CHECK(source IN ('web', 'telegram', 'job', 'mini-app', 'heartbeat')),
+        source_id TEXT,
+        model TEXT NOT NULL,
+        total_cost_usd REAL NOT NULL DEFAULT 0,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        label TEXT,
+        forked_from TEXT
+      )`,
+      indexes: [
+        "CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_sessions_source ON agent_sessions(source, source_id)",
+      ],
+    },
+  ];
+
+  for (const { table, createSql, indexes } of rebuilds) {
+    const row = db
+      .prepare<{ sql: string }, [string]>(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
+      )
+      .get(table);
+    if (!row || row.sql.includes("mini-app")) continue;
+
+    log.info(`Rebuilding ${table} to expand source CHECK constraint`);
+    db.exec(`DROP TABLE IF EXISTS ${table}_new`);
+    db.exec(createSql);
+    db.exec(`INSERT INTO ${table}_new SELECT * FROM ${table}`);
+    db.exec("BEGIN");
+    db.exec(`DROP TABLE ${table}`);
+    db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
+    db.exec("COMMIT");
+    for (const idx of indexes) {
+      db.exec(idx);
+    }
+  }
 }
 
 function seedDefaultJobs(db: Database): void {

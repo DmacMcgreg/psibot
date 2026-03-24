@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "PsiBot Capture",
+  "version": "1.0.0",
+  "description": "Capture pages, selections, and X bookmarks to PsiBot inbox",
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "notifications",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:3141/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/i/bookmarks*",
+        "https://twitter.com/i/bookmarks*"
+      ],
+      "js": ["content-x-bookmarks.js"],
+      "css": [],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "save-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Save current page to PsiBot"
+    }
+  }
+}

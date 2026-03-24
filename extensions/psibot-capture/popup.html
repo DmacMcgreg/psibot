@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PsiBot Capture</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PsiBot Capture</h1>
+      <div id="status" class="status status-unknown">
+        <span class="status-dot"></span>
+        <span id="status-text">Checking...</span>
+      </div>
+    </header>
+
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-value" id="daily-count">0</span>
+        <span class="stat-label">Today</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="total-count">0</span>
+        <span class="stat-label">Total</span>
+      </div>
+    </div>
+
+    <button id="save-btn" class="save-btn">Save This Page</button>
+
+    <div id="feedback" class="feedback hidden"></div>
+
+    <footer>
+      <span id="last-capture"></span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

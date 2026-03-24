@@ -154,6 +154,7 @@ export async function processPlaylist(
         playlistItemId,
         processingStatus: "analyzed",
         model: options.model,
+        onProgress: async (msg) => notify(`(${idx}/${itemsToProcess.length}) ${videoTitle}: ${msg}`),
       });
 
       if (processResult.skipped) {

@@ -1,21 +1,9 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
 import { getConfig } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("youtube:api");
 
-const OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube";
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3";
-
-interface OAuthTokens {
-  access_token: string;
-  refresh_token: string;
-  expires_at: number;
-  token_type: string;
-}
 
 interface PlaylistItem {
   id: string;
@@ -28,143 +16,97 @@ interface PlaylistItem {
   };
 }
 
-function getTokenPath(): string {
-  const config = getConfig();
-  return join(config.PSIBOT_DIR, "youtube-oauth.json");
+interface VaultTokenResponse {
+  provider: string;
+  access_token: string;
+  expires_at: string | null;
+  refreshed?: boolean;
+  error?: string;
+  reauth_required?: boolean;
+  reauth_url?: string;
 }
 
-export function loadTokens(): OAuthTokens | null {
-  const tokenPath = getTokenPath();
-  if (!existsSync(tokenPath)) return null;
-  try {
-    const raw = readFileSync(tokenPath, "utf-8");
-    return JSON.parse(raw) as OAuthTokens;
-  } catch {
-    log.error("Failed to read token file", { path: tokenPath });
-    return null;
+async function fetchAccessToken(forceRefresh = false): Promise<string> {
+  const config = getConfig();
+
+  if (!config.OAUTH_VAULT_URL || !config.OAUTH_VAULT_API_KEY) {
+    throw new Error(
+      "OAUTH_VAULT_URL and OAUTH_VAULT_API_KEY must be set. " +
+      "Connect Google at your vault dashboard first."
+    );
   }
-}
 
-export function saveTokens(tokens: OAuthTokens): void {
-  const tokenPath = getTokenPath();
-  const dir = dirname(tokenPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
-  log.info("Tokens saved", { path: tokenPath });
-}
+  const url = forceRefresh
+    ? `${config.OAUTH_VAULT_URL}/api/tokens/google?force_refresh=true`
+    : `${config.OAUTH_VAULT_URL}/api/tokens/google`;
 
-function getRedirectUri(): string {
-  const config = getConfig();
-  if (config.TELEGRAM_WEBHOOK_HOST) {
-    return `https://${config.TELEGRAM_WEBHOOK_HOST}/auth/youtube/callback`;
-  }
-  return `http://127.0.0.1:${config.PORT}/auth/youtube/callback`;
-}
-
-export function getAuthUrl(): string {
-  const config = getConfig();
-  const params = new URLSearchParams({
-    client_id: config.YOUTUBE_CLIENT_ID,
-    redirect_uri: getRedirectUri(),
-    response_type: "code",
-    scope: OAUTH_SCOPE,
-    access_type: "offline",
-    prompt: "consent",
-  });
-  return `${AUTH_ENDPOINT}?${params.toString()}`;
-}
-
-export async function exchangeCodeForTokens(code: string): Promise<OAuthTokens> {
-  const config = getConfig();
-
-  const response = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: config.YOUTUBE_CLIENT_ID,
-      client_secret: config.YOUTUBE_CLIENT_SECRET,
-      redirect_uri: getRedirectUri(),
-      grant_type: "authorization_code",
-    }),
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${config.OAUTH_VAULT_API_KEY}` },
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Token exchange failed (${response.status}): ${errorText}`);
+    const data = (await response.json().catch(() => null)) as VaultTokenResponse | null;
+    if (data?.reauth_required) {
+      throw new ReauthRequiredError(
+        `Google OAuth token expired. Re-authenticate at: ${config.OAUTH_VAULT_URL}${data.reauth_url ?? "/google/authorize"}`
+      );
+    }
+    const text = data?.error ?? `HTTP ${response.status}`;
+    throw new Error(`OAuth vault error (${response.status}): ${text}`);
   }
 
-  const data = (await response.json()) as {
-    access_token: string;
-    refresh_token: string;
-    expires_in: number;
-    token_type: string;
-  };
-
-  const tokens: OAuthTokens = {
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
-    expires_at: Date.now() + data.expires_in * 1000,
-    token_type: data.token_type,
-  };
-
-  saveTokens(tokens);
-  return tokens;
+  const data = (await response.json()) as VaultTokenResponse;
+  log.info("Fetched access token from vault", {
+    provider: data.provider,
+    refreshed: data.refreshed ?? false,
+    forceRefresh,
+  });
+  return data.access_token;
 }
 
-async function refreshAccessToken(tokens: OAuthTokens): Promise<OAuthTokens> {
+export class ReauthRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReauthRequiredError";
+  }
+}
+
+export async function checkVaultStatus(): Promise<{
+  connected: boolean;
+  expired: boolean;
+  scopes: string | null;
+}> {
   const config = getConfig();
 
-  const response = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: config.YOUTUBE_CLIENT_ID,
-      client_secret: config.YOUTUBE_CLIENT_SECRET,
-      refresh_token: tokens.refresh_token,
-      grant_type: "refresh_token",
-    }),
+  if (!config.OAUTH_VAULT_URL || !config.OAUTH_VAULT_API_KEY) {
+    return { connected: false, expired: false, scopes: null };
+  }
+
+  const response = await fetch(`${config.OAUTH_VAULT_URL}/api/tokens`, {
+    headers: { Authorization: `Bearer ${config.OAUTH_VAULT_API_KEY}` },
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Token refresh failed (${response.status}): ${errorText}`);
+    return { connected: false, expired: false, scopes: null };
   }
 
-  const data = (await response.json()) as {
-    access_token: string;
-    expires_in: number;
-    token_type: string;
+  const providers = (await response.json()) as Array<{
+    provider: string;
+    connected: boolean;
+    expired: boolean;
+    scopes: string | null;
+  }>;
+
+  const google = providers.find((p) => p.provider === "google");
+  if (!google) {
+    return { connected: false, expired: false, scopes: null };
+  }
+
+  return {
+    connected: google.connected,
+    expired: google.expired,
+    scopes: google.scopes,
   };
-
-  const updated: OAuthTokens = {
-    ...tokens,
-    access_token: data.access_token,
-    expires_at: Date.now() + data.expires_in * 1000,
-    token_type: data.token_type,
-  };
-
-  saveTokens(updated);
-  log.info("Access token refreshed");
-  return updated;
-}
-
-async function ensureValidToken(): Promise<OAuthTokens> {
-  const tokens = loadTokens();
-  if (!tokens) {
-    throw new Error("No YouTube OAuth tokens found. Run youtube_oauth_setup first.");
-  }
-
-  // Refresh if expiring within 5 minutes
-  const FIVE_MINUTES = 5 * 60 * 1000;
-  if (tokens.expires_at - Date.now() < FIVE_MINUTES) {
-    log.info("Token expiring soon, refreshing");
-    return refreshAccessToken(tokens);
-  }
-
-  return tokens;
 }
 
 async function youtubeApiRequest<T>(
@@ -175,27 +117,39 @@ async function youtubeApiRequest<T>(
     body?: Record<string, unknown>;
   } = {}
 ): Promise<T> {
-  const tokens = await ensureValidToken();
   const method = options.method ?? "GET";
 
-  const url = new URL(`${YOUTUBE_API_BASE}/${path}`);
-  if (options.params) {
-    for (const [key, value] of Object.entries(options.params)) {
-      url.searchParams.set(key, value);
-    }
-  }
+  const makeRequest = async (forceRefresh: boolean) => {
+    const accessToken = await fetchAccessToken(forceRefresh);
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${tokens.access_token}`,
+    const url = new URL(`${YOUTUBE_API_BASE}/${path}`);
+    if (options.params) {
+      for (const [key, value] of Object.entries(options.params)) {
+        url.searchParams.set(key, value);
+      }
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+    };
+
+    let bodyStr: string | undefined;
+    if (options.body) {
+      headers["Content-Type"] = "application/json";
+      bodyStr = JSON.stringify(options.body);
+    }
+
+    return fetch(url.toString(), { method, headers, body: bodyStr });
   };
 
-  let bodyStr: string | undefined;
-  if (options.body) {
-    headers["Content-Type"] = "application/json";
-    bodyStr = JSON.stringify(options.body);
-  }
+  // First attempt with cached token
+  let response = await makeRequest(false);
 
-  const response = await fetch(url.toString(), { method, headers, body: bodyStr });
+  // On 401, retry once with a force-refreshed token
+  if (response.status === 401) {
+    log.info("Got 401, retrying with force-refreshed token", { path, method });
+    response = await makeRequest(true);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
