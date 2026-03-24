@@ -32,9 +32,15 @@ A persistent, multimodal AI assistant that runs on your own hardware as a macOS 
 
 **Autonomous Subagents** &mdash; Spawns specialized agents: a coder (isolated git worktrees), a researcher (browser automation), an image generator, and an audio processor &mdash; each on the optimal model.
 
+**Intelligent Inbox** &mdash; Captures content from Chrome bookmarks, Reddit saves, GitHub stars, and Telegram messages. A multi-phase heartbeat pipeline triages items with value-extraction, enriches them with web research, detects thematic clusters, and surfaces a prioritized digest with action buttons.
+
+**On-Demand Research** &mdash; `/research` for quick scans (GLM + web search) or `/research deep` for full Claude-powered analysis. Research notes are saved to NotePlan with bidirectional wikilinks connecting related topics.
+
+**Progressive Autonomy** &mdash; Learns from your feedback on digest items. Starts manual, earns trust through consistent agreement, and gradually auto-archives or auto-researches items matching learned patterns. Resets to manual on any override.
+
 **Scheduled Tasks** &mdash; Cron-based job scheduling with budget controls. Periodic maintenance, reminders, or any recurring prompt with configurable quiet hours.
 
-**MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory, browser automation, Telegram media, git worktrees, YouTube analysis, and more.
+**MCP Tool Ecosystem** &mdash; Extensible via Model Context Protocol servers. Built-in tools for memory, browser automation, Telegram media, git worktrees, YouTube analysis, and more. Supports a secondary GLM backend (Z.AI) with web search, page reading, and GitHub repo analysis MCP servers.
 
 **Web Dashboard** &mdash; HTMX + SSE streaming interface for real-time chat, job management, memory browsing, and log viewing.
 
@@ -192,6 +198,9 @@ psibot logs      # Tail logs
 | `HEARTBEAT_QUIET_END` | `8` | Quiet hours end (hour, 24h) |
 | `HEARTBEAT_MAX_BUDGET_USD` | `0.50` | Max cost per heartbeat run |
 | `PSIBOT_DIR` | `~/.psibot` | Worktree and repo storage |
+| `GLM_AUTH_TOKEN` | (optional) | Z.AI API token for GLM backend (triage, quick scan, themes) |
+| `GLM_BASE_URL` | `https://api.z.ai/api/anthropic` | GLM API base URL |
+| `REDDIT_USERNAME` | (optional) | Reddit username for API User-Agent |
 | `YOUTUBE_CLIENT_ID` | (optional) | Google OAuth client ID for YouTube |
 | `YOUTUBE_CLIENT_SECRET` | (optional) | Google OAuth client secret |
 | `YOUTUBE_SOURCE_PLAYLIST_ID` | (optional) | Playlist to process videos from |
@@ -207,6 +216,21 @@ TELEGRAM_WEBHOOK_ENABLED=true
 TELEGRAM_WEBHOOK_HOST=your-machine.tailnet-name.ts.net
 TELEGRAM_WEBHOOK_PORT=8443
 ```
+
+### Heartbeat Pipeline
+
+The heartbeat orchestrator runs every 30 minutes (configurable) and executes a multi-phase pipeline:
+
+1. **Intake** &mdash; Triages pending items using GLM value-extraction (technique, tool, actionable, or drop)
+2. **Quick Scan** &mdash; Enriches top items with external context via web search (general) or zread (GitHub repos)
+3. **Signal Scoring** &mdash; Scores items against your dependencies, workflow gaps, momentum, and decay signals
+4. **Inbox Watcher** &mdash; Checks NotePlan inbox for user-tagged notes (research, watch) and dispatches actions
+5. **Theme Clustering** &mdash; Groups related items into auto-named themes via GLM batch analysis
+6. **Surfacing** &mdash; Sends a Telegram digest with per-item action buttons (Research, Watch, Archive, Drop)
+
+Items scoring above threshold (dependency match + workflow gap) are auto-queued for deep research. Each user action feeds back into the progressive autonomy system.
+
+Requires `GLM_AUTH_TOKEN` for triage, quick scan, and theme clustering. Without it, the pipeline skips GLM-dependent phases.
 
 ### YouTube Video Processing (Optional)
 
@@ -273,12 +297,18 @@ The agent processes videos from the source playlist, analyzes them, and moves th
 | Command | Description |
 |---------|-------------|
 | `/ask <prompt>` | Send a message to the agent |
-| `/jobs` | List scheduled jobs |
+| `/research <url\|id>` | Quick scan research on a URL or inbox item |
+| `/research deep <url\|id>` | Full deep research with NotePlan note creation |
+| `/new` | Start a fresh conversation session |
+| `/sessions` | List and resume previous sessions |
+| `/fork <id>` | Fork an existing session into a new conversation |
+| `/jobs` | List scheduled jobs with inline controls |
 | `/memory` | Browse agent memory |
 | `/status` | Show system status |
+| `/model <name>` | Switch model (opus, sonnet, haiku) |
 | `/verbose` | Toggle tool call feedback |
 
-Send **voice messages** for automatic transcription and response. Send **photos** with optional captions for image-aware conversations.
+Send **voice messages** for automatic transcription and response. Send **photos** with optional captions for image-aware conversations. **Reply to research messages** to ask follow-up questions with full context.
 
 ## 📁 Project Structure
 
@@ -290,19 +320,27 @@ src/
     index.ts                # AgentService (query with MCP + subagents)
     tools.ts                # agent-tools MCP server
     media-tools.ts          # media-tools MCP server
+    glm-mcp.ts              # Z.AI MCP servers (web search, zread)
     subagents.ts            # Subagent definitions
     prompts.ts              # System prompt builder
   telegram/
     index.ts                # Bot setup + auth middleware
     commands.ts             # Command & media handlers
+    keyboards.ts            # Inline keyboards + callback handlers
     format.ts               # Message formatting
     webhook.ts              # Webhook mode (Tailscale Funnel)
-  web/
-    index.ts                # Hono app + IP allowlist
-    routes/                 # Chat, jobs, memory, logs
-    views/                  # HTMX templates
   heartbeat/
-    index.ts                # Periodic autonomous tasks
+    index.ts                # Orchestrator pipeline (intake -> scan -> surface)
+    signals.ts              # Contextual intelligence signal scorer
+    inbox-watcher.ts        # NotePlan inbox tag-based actions
+    themes.ts               # Automatic theme clustering via GLM
+    autonomy.ts             # Progressive autonomy learning loop
+  research/
+    index.ts                # Deep research (GLM quick + Claude full)
+    quick-scan.ts           # Platform-aware enrichment (zread, web search)
+    knowledge-linker.ts     # Bidirectional wikilinks for research notes
+  triage/
+    index.ts                # Value-extraction triage via GLM
   scheduler/
     index.ts                # Cron + one-off job scheduling
     executor.ts             # Job execution via agent
@@ -314,14 +352,20 @@ src/
     index.ts                # SQLite (WAL mode)
     schema.ts               # Migrations
     queries.ts              # Prepared statements
+  web/
+    index.ts                # Hono app + IP allowlist
+    routes/                 # Chat, jobs, memory, logs, mini-app
+    views/                  # HTMX templates
   shared/
     types.ts                # Type definitions
     logger.ts               # Timestamped logging
+extensions/
+  psibot-capture/           # Chrome extension for X bookmarks capture
 knowledge/
   IDENTITY.md               # Agent persona
   USER.md                   # Learned user context
   TOOLS.md                  # Tool documentation
-  HEARTBEAT.md              # Maintenance task definitions
+  HEARTBEAT.md              # Orchestrator pipeline reference
   memory.md                 # Persistent memory
   memory/                   # Daily logs
 data/
