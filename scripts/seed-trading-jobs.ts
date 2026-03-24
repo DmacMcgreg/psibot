@@ -83,12 +83,13 @@ Merge all subagent results (core + discoveries). For each symbol with signals, c
 
 PHASE 5: VALIDATION (CRITICAL)
 Before outputting ANY claim, cross-check it against real data:
-- "Near 52-week low/high": verify by checking the actual 52-week price range from analyze_symbol. A stock at $302 that hit $350 recently is NOT near its 52-week low.
+- "Near 52-week low/high": The backend's 52-week range can be MISLEADING. A stock up 100% over 2 years with a tight 52-week range (e.g. GOOGL $294-$349) will show "2.7% from 52w low" even though it's at all-time highs in a strong uptrend. ALWAYS contextualize: check the CHART and longer-term trend. "Near 52w low in an uptrend" is a pullback, not a value play. Only call something "near 52w low" if it's meaningfully beaten down.
 - "Oversold/Overbought": verify actual RSI values, not just backend labels
-- "Undervalued": verify P/E, PEG vs sector averages — don't just parrot a label
+- "Undervalued": verify P/E, PEG vs sector averages — don't just parrot a label. A stock can have good fundamentals and still be fully valued.
 - Price targets: ensure they make sense relative to recent price action and ATR
 - If visual chart analysis (from technical-analyst screenshots) contradicts quantitative data, FLAG the discrepancy and trust the chart
 - NEVER include a claim you haven't verified with at least two data points
+- When describing a setup, lead with what the CHART shows, then layer on quantitative data as confirmation or contradiction
 
 PHASE 6: OUTPUT
 1. Save full detailed results to knowledge/trading/scans/ with today's date and time
