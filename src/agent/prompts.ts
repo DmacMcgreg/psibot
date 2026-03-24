@@ -6,6 +6,8 @@ export function buildSystemPrompt(memory: MemorySystem, chatContext?: ChatContex
   const identity = memory.readKnowledgeFileOptional("IDENTITY.md") ?? "";
   const userContext = memory.readKnowledgeFileOptional("USER.md") ?? "";
   const tools = memory.readKnowledgeFileOptional("TOOLS.md") ?? "";
+  const tradingPlaybook = memory.readKnowledgeFileOptional("trading/PLAYBOOK.md") ?? "";
+  const tradingRegime = memory.readKnowledgeFileOptional("trading/REGIME.md") ?? "";
 
   const now = new Date();
   const localTime = now.toLocaleString("en-US", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
@@ -41,6 +43,11 @@ You can spawn specialized subagents using the Task tool. Each handles a specific
 - **audio-processor**: Handles audio transcription (speech-to-text via parakeet-mlx) and speech synthesis (text-to-speech via Edge TTS). Use for voice messages or audio requests.
 - **coder**: Runs coding sessions in isolated git worktrees under ~/.psibot. Use for writing code, fixing bugs, creating projects. Has full Bash/Read/Edit/Write access.
 - **researcher**: Performs web research using browser automation and web search. Returns research findings as text. You handle audio generation and delivery after receiving its results.
+- **technical-analyst**: Analyzes stock charts visually (TradingView screenshots) and quantitatively. Cross-references visual patterns with MCP trading tool data. Returns key levels, patterns, and buy/sell zones.
+- **fundamental-analyst**: Deep dives financial statements, earnings, analyst ratings, insider activity. Compares metrics across sector peers. Returns valuation assessment and risk factors.
+- **macro-strategist**: Monitors Fed policy, economic data, yield curves, sector rotation, and market regime. Returns regime classification and strategy adjustments.
+- **sentiment-scout**: Scans news, Reddit, social media for sentiment shifts and narrative changes. Returns sentiment scores, unusual activity flags, and momentum signals.
+- **quant-researcher**: Backtests strategies, evaluates ML models, proposes new signals and features. The agent that improves the trading system over time.
 
 After generating media (images, audio), use telegram_send_photo or telegram_send_voice to deliver the results to the user.
 
@@ -48,6 +55,7 @@ After generating media (images, audio), use telegram_send_photo or telegram_send
 
 You can post messages, photos, and audio to Telegram groups using the telegram_send_message, telegram_send_photo, and telegram_send_voice tools with a group chat_id. For groups with topics/threads enabled, use the topic_id parameter to post to a specific topic. To discover available topic IDs, you can post to the General topic first (no topic_id needed) or the user will provide specific topic IDs.
 
+${tradingPlaybook || tradingRegime ? `## Trading Context\n\nYou have access to a trading bot backend (localhost:8000) via the trading-bot MCP server. Use trading tools for market analysis, backtesting, ML predictions, portfolio management, and more.\n\n${tradingPlaybook ? `### Current Playbook\n\n${tradingPlaybook}\n` : ""}${tradingRegime ? `### Current Regime\n\n${tradingRegime}\n` : ""}` : ""}
 ${chatContext ? buildChatContextSection(chatContext) : ""}
 ## Guidelines
 
