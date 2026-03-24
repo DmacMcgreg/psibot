@@ -11,10 +11,28 @@ import {
   deleteJob,
   getSessionPreview,
   getMessagesBySession,
+  getReminder,
+  completeReminder,
+  dismissReminder,
+  snoozeReminder,
+  updatePendingItem,
+  insertFeedbackLog,
 } from "../db/queries.ts";
+import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
+import { updateAutonomyFromFeedback } from "../heartbeat/autonomy.ts";
 
 const log = createLogger("telegram:keyboards");
+
+const MD2 = { parse_mode: "MarkdownV2" as const };
+
+/** Session key incorporating topic thread ID for isolated sessions per group topic. */
+function sessionKey(ctx: Context): string {
+  const chatId = String(ctx.chat?.id ?? "");
+  const threadId = ctx.message?.message_thread_id
+    ?? ctx.callbackQuery?.message?.message_thread_id;
+  return threadId ? `${chatId}:${threadId}` : chatId;
+}
 
 // --- Keyboard Builders ---
 
@@ -70,6 +88,24 @@ export function confirmDeleteKeyboard(jobId: number): InlineKeyboard {
     .text("Cancel", "cx");
 }
 
+export function briefingActionKeyboard(reminderId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("PAID", `bp:${reminderId}`)
+    .text("SKIP", `bs:${reminderId}`)
+    .row()
+    .text("1h", `bz:${reminderId}:1`)
+    .text("4h", `bz:${reminderId}:4`)
+    .text("24h", `bz:${reminderId}:24`)
+    .row()
+    .text("MORE", `bm:${reminderId}`);
+}
+
+export function approvalKeyboard(reminderId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("APPROVE", `ba:${reminderId}`)
+    .text("REJECT", `br:${reminderId}`);
+}
+
 // --- Callback Data Parser ---
 
 interface CallbackAction {
@@ -106,7 +142,7 @@ export function createCallbackHandler(deps: CallbackDeps) {
     if (!data) return;
 
     const { action, payload } = parseCallback(data);
-    const chatId = String(ctx.chat?.id ?? "");
+    const sKey = sessionKey(ctx);
 
     try {
       switch (action) {
@@ -124,9 +160,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
           }
           await ctx.answerCallbackQuery();
           // Start fresh session for regeneration
-          state.resetChats.add(chatId);
-          state.bootedChats.delete(chatId);
-          state.resumeOverrides.delete(chatId);
+          state.resetChats.add(sKey);
+          state.bootedChats.delete(sKey);
+          state.resumeOverrides.delete(sKey);
           await runAgent(ctx, lastMsg);
           break;
         }
@@ -139,9 +175,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
             return;
           }
           await ctx.answerCallbackQuery();
-          state.resumeOverrides.set(chatId, session.session_id);
-          state.bootedChats.add(chatId);
-          state.resetChats.delete(chatId);
+          state.resumeOverrides.set(sKey, session.session_id);
+          state.bootedChats.add(sKey);
+          state.resetChats.delete(sKey);
           await runAgent(ctx, "continue");
           break;
         }
@@ -160,7 +196,7 @@ export function createCallbackHandler(deps: CallbackDeps) {
             await ctx.answerCallbackQuery({ text: "Unknown model" });
             return;
           }
-          state.modelOverrides.set(chatId, resolved);
+          state.modelOverrides.set(sKey, resolved);
           await ctx.answerCallbackQuery({ text: `Model: ${payload}` });
           // Remove the model picker keyboard
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
@@ -174,12 +210,12 @@ export function createCallbackHandler(deps: CallbackDeps) {
             await ctx.answerCallbackQuery({ text: "Session not found" });
             return;
           }
-          state.resumeOverrides.set(chatId, session.session_id);
-          state.bootedChats.add(chatId);
-          state.resetChats.delete(chatId);
+          state.resumeOverrides.set(sKey, session.session_id);
+          state.bootedChats.add(sKey);
+          state.resetChats.delete(sKey);
           const preview = getSessionPreview(session.session_id) ?? "(empty)";
           await ctx.answerCallbackQuery({ text: `Resumed: ${payload}` });
-          await ctx.reply(`Resumed session ${payload}: ${preview}\n\nNext messages continue in this session. Use /new to start fresh.`);
+          await ctx.reply(escapeMarkdownV2(`Resumed session ${payload}: ${preview}\n\nNext messages continue in this session. Use /new to start fresh.`), MD2);
           break;
         }
 
@@ -204,9 +240,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
             ? "...\n" + transcript.slice(transcript.length - maxChars)
             : transcript;
           const preamble = `<prior_conversation session="${session.session_id}">\n${trimmed}\n</prior_conversation>\n\n`;
-          state.resetChats.add(chatId);
-          state.bootedChats.delete(chatId);
-          state.resumeOverrides.delete(chatId);
+          state.resetChats.add(sKey);
+          state.bootedChats.delete(sKey);
+          state.resumeOverrides.delete(sKey);
           await runAgent(ctx, preamble + "Continue from where this conversation left off.");
           break;
         }
@@ -293,7 +329,142 @@ export function createCallbackHandler(deps: CallbackDeps) {
           deleteJob(jobId);
           scheduler.reload();
           await ctx.answerCallbackQuery({ text: `Job "${job.name}" deleted` });
-          await ctx.editMessageText("Job deleted.").catch(() => {});
+          await ctx.editMessageText(escapeMarkdownV2("Job deleted."), MD2).catch(() => {});
+          break;
+        }
+
+        case "bp": {
+          // Bill PAID
+          const id = parseInt(payload, 10);
+          completeReminder(id);
+          await ctx.answerCallbackQuery({ text: "Marked as PAID" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "bs": {
+          // SKIP/dismiss
+          const id = parseInt(payload, 10);
+          dismissReminder(id);
+          await ctx.answerCallbackQuery({ text: "Dismissed" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "bz": {
+          // SNOOZE
+          // payload format: "reminderId:hours"
+          const [idStr, hoursStr] = payload.split(":");
+          const id = parseInt(idStr, 10);
+          const hours = parseInt(hoursStr, 10);
+          snoozeReminder(id, hours * 60 * 60 * 1000);
+          await ctx.answerCallbackQuery({ text: `Snoozed ${hours}h` });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "bm": {
+          // MORE details
+          const id = parseInt(payload, 10);
+          const reminder = getReminder(id);
+          if (reminder?.description) {
+            await ctx.answerCallbackQuery();
+            await ctx.reply(escapeMarkdownV2(reminder.description), MD2);
+          } else {
+            await ctx.answerCallbackQuery({ text: "No additional details" });
+          }
+          break;
+        }
+
+        case "ba": {
+          // APPROVE research/action
+          const id = parseInt(payload, 10);
+          completeReminder(id);
+          await ctx.answerCallbackQuery({ text: "Approved" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "br": {
+          // REJECT
+          const id = parseInt(payload, 10);
+          dismissReminder(id);
+          await ctx.answerCallbackQuery({ text: "Rejected" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+
+        case "rr": {
+          // Research — user wants to research this item
+          const id = parseInt(payload, 10);
+          insertFeedbackLog({ item_id: id, user_action: "research", system_recommendation: "triage" });
+          updateAutonomyFromFeedback({
+            signalType: "digest_item",
+            signalValue: "source:telegram",
+            systemRecommendation: "triage",
+            userAction: "research",
+          });
+          await ctx.answerCallbackQuery({ text: "Use /research " + id + " or /research deep " + id });
+          // Replace buttons with just the hint text
+          const hint = `Use <code>/research ${id}</code> for quick scan or <code>/research deep ${id}</code> for full dive`;
+          const origText = ctx.callbackQuery?.message && "text" in ctx.callbackQuery.message
+            ? ctx.callbackQuery.message.text ?? ""
+            : "";
+          try {
+            await ctx.editMessageText(origText + "\n\n" + hint, { parse_mode: "HTML" });
+          } catch {
+            // If edit fails, just remove the keyboard
+            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          }
+          break;
+        }
+
+        case "rw": {
+          // Watch — mark item for monitoring
+          const id = parseInt(payload, 10);
+          updatePendingItem(id, { watch_status: "watching" });
+          insertFeedbackLog({ item_id: id, user_action: "watch", system_recommendation: "triage" });
+          updateAutonomyFromFeedback({
+            signalType: "digest_item",
+            signalValue: "source:telegram",
+            systemRecommendation: "triage",
+            userAction: "watch",
+          });
+          await ctx.answerCallbackQuery({ text: "Watching this topic" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "rx": {
+          // Archive
+          const id = parseInt(payload, 10);
+          updatePendingItem(id, { status: "archived" });
+          insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
+          updateAutonomyFromFeedback({
+            signalType: "digest_item",
+            signalValue: "source:telegram",
+            systemRecommendation: "triage",
+            userAction: "archive",
+          });
+          await ctx.answerCallbackQuery({ text: "Archived" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "rd": {
+          // Drop — mark as deleted
+          const id = parseInt(payload, 10);
+          updatePendingItem(id, { status: "deleted" });
+          insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
+          updateAutonomyFromFeedback({
+            signalType: "digest_item",
+            signalValue: "source:telegram",
+            systemRecommendation: "triage",
+            userAction: "drop",
+          });
+          await ctx.answerCallbackQuery({ text: "Dropped" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
         }
 

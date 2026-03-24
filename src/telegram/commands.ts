@@ -1,10 +1,11 @@
-import { InputFile, type Context } from "grammy";
+import { InlineKeyboard, InputFile, type Context } from "grammy";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AgentService } from "../agent/index.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { Scheduler } from "../scheduler/index.ts";
 import type { ChatState } from "./state.ts";
+import type { ChatContext } from "../shared/types.ts";
 import {
   agentResponseKeyboard,
   modelPickerKeyboard,
@@ -18,11 +19,24 @@ import {
   getJob,
   getLatestSessionId,
   getRecentSessions,
+  getRecentSessionsBySourcePrefix,
   getSessionPreview,
   getMessagesBySession,
+  insertPendingItem,
+  getPendingItemCount,
+  getPendingItemById,
+  getPendingItems,
+  updatePendingItem,
 } from "../db/queries.ts";
 import {
+  preliminaryResearch,
+  deepResearch,
+  createResearchNote,
+} from "../research/index.ts";
+import {
   splitMessage,
+  escapeMarkdownV2,
+  markdownToTelegramV2,
   formatCost,
   formatJobSummary,
   formatRunMeta,
@@ -31,8 +45,77 @@ import {
 } from "./format.ts";
 import { getConfig } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
+import { PLIST_LABEL } from "../cli/paths.ts";
 
 const log = createLogger("telegram:commands");
+
+/** Execute a deferred daemon restart via launchctl kickstart -k. */
+function executeDeferredRestart(): void {
+  const uid = process.getuid?.() ?? 501;
+  const target = `gui/${uid}/${PLIST_LABEL}`;
+  log.info("Executing deferred daemon restart", { target });
+  // Spawn detached: sleep 1s to let current response flush, then kickstart
+  Bun.spawn(["bash", "-c", `sleep 1 && launchctl kickstart -k ${target}`], {
+    stdout: "ignore",
+    stderr: "ignore",
+    stdin: "ignore",
+  });
+}
+
+/**
+ * Session key for topic-isolated sessions.
+ * In groups with topics, returns "chatId:threadId" so each topic gets its own session.
+ * In DMs or groups without topics, returns just "chatId".
+ * Works for both regular messages and callback queries.
+ */
+function sessionKey(ctx: Context): string {
+  const chatId = String(ctx.chat?.id ?? "");
+  const threadId = ctx.message?.message_thread_id
+    ?? ctx.callbackQuery?.message?.message_thread_id;
+  return threadId ? `${chatId}:${threadId}` : chatId;
+}
+
+/** Base chat ID without topic suffix, for cross-topic session discovery. */
+function baseChatId(ctx: Context): string {
+  return String(ctx.chat?.id ?? "");
+}
+
+/** Build ChatContext from a grammy Context for routing agent responses. */
+function chatContext(ctx: Context): ChatContext | undefined {
+  const chat = ctx.chat;
+  if (!chat) return undefined;
+  const chatType = chat.type as ChatContext["chatType"];
+  if (chatType === "private") return undefined; // DMs don't need routing hints
+  const threadId = ctx.message?.message_thread_id
+    ?? ctx.callbackQuery?.message?.message_thread_id;
+  return {
+    chatId: String(chat.id),
+    chatType,
+    ...(threadId ? { topicId: threadId } : {}),
+  };
+}
+
+const MD2 = { parse_mode: "MarkdownV2" as const };
+
+/** Reply with MarkdownV2-escaped text. Merges extra options (reply_markup, etc). */
+async function replyMd2(ctx: Context, text: string, opts?: Record<string, unknown>): Promise<ReturnType<Context["reply"]>> {
+  return ctx.reply(escapeMarkdownV2(text), { ...MD2, ...opts });
+}
+
+/** Edit a message with MarkdownV2-escaped text. Merges extra options. */
+async function editMd2(ctx: Context, chatId: number, messageId: number, text: string, opts?: Record<string, unknown>): Promise<void> {
+  await ctx.api.editMessageText(chatId, messageId, escapeMarkdownV2(text), { ...MD2, ...opts });
+}
+
+/** Reply with agent output converted from standard Markdown to MarkdownV2. */
+async function replyAgentMd2(ctx: Context, text: string, opts?: Record<string, unknown>): Promise<ReturnType<Context["reply"]>> {
+  return ctx.reply(markdownToTelegramV2(text), { ...MD2, ...opts });
+}
+
+/** Edit a message with agent output converted from standard Markdown to MarkdownV2. */
+async function editAgentMd2(ctx: Context, chatId: number, messageId: number, text: string, opts?: Record<string, unknown>): Promise<void> {
+  await ctx.api.editMessageText(chatId, messageId, markdownToTelegramV2(text), { ...MD2, ...opts });
+}
 
 interface CommandDeps {
   agent: AgentService;
@@ -46,7 +129,7 @@ export function registerCommands(deps: CommandDeps) {
   const { resetChats, bootedChats, resumeOverrides, modelOverrides } = state;
 
   async function handleStart(ctx: Context): Promise<void> {
-    await ctx.reply(
+    await replyMd2(ctx,
       "Agent ready. Send me any message or use commands:\n\n" +
         "/ask <question> - Ask the agent\n" +
         "/new - Start a fresh session\n" +
@@ -59,6 +142,7 @@ export function registerCommands(deps: CommandDeps) {
         "/remember <fact> - Store a fact\n" +
         "/search <query> - Search knowledge\n" +
         "/browse <url> - Screenshot a URL\n" +
+        "/save <url> - Save a URL to inbox\n" +
         "/model <name> - Switch model (opus/sonnet/haiku)\n" +
         "/status - Agent status"
     );
@@ -68,7 +152,7 @@ export function registerCommands(deps: CommandDeps) {
     const text = ctx.message?.text ?? "";
     const prompt = text.replace(/^\/ask\s*/i, "").trim();
     if (!prompt) {
-      await ctx.reply("Usage: /ask <your question>");
+      await replyMd2(ctx, "Usage: /ask <your question>");
       return;
     }
     await runAgent(ctx, prompt);
@@ -77,39 +161,69 @@ export function registerCommands(deps: CommandDeps) {
   async function handlePlainText(ctx: Context): Promise<void> {
     const prompt = ctx.message?.text?.trim();
     if (!prompt) return;
+
+    // Check if replying to a research message — inject context
+    const replyMsg = ctx.message?.reply_to_message;
+    if (replyMsg && "text" in replyMsg && replyMsg.text) {
+      const match = replyMsg.text.match(/^Research: .+\nID: (\d+)/);
+      if (match) {
+        const itemId = Number(match[1]);
+        const item = getPendingItemById(itemId);
+        if (item) {
+          const context = [
+            `The user is asking about a recently researched item. Here is the context:`,
+            ``,
+            `Title: ${item.title ?? "Unknown"}`,
+            `URL: ${item.url}`,
+            `Description: ${item.description ?? "None"}`,
+            `Research Summary: ${item.triage_summary ?? "None"}`,
+            `NotePlan Note: ${item.noteplan_path ?? "None"}`,
+            ``,
+            `Previous research output:`,
+            replyMsg.text.slice(0, 3000),
+            ``,
+            `User question: ${prompt}`,
+          ].join("\n");
+          await runAgent(ctx, context);
+          return;
+        }
+      }
+    }
+
     await runAgent(ctx, prompt);
   }
 
   async function runAgent(ctx: Context, prompt: string): Promise<void> {
     const config = getConfig();
-    const thinkingMsg = await ctx.reply("Thinking...");
-    const chatId = String(ctx.chat?.id ?? "");
+    const thinkingMsg = await replyMd2(ctx, "Thinking...");
+    const sKey = sessionKey(ctx);
 
     const toolLines: string[] = [];
     let lastEditAt = 0;
 
     try {
-      // Start fresh session on boot or after /new, then resume normally
+      // Start fresh session after /new, otherwise resume latest
       let sessionId: string | undefined;
-      if (resetChats.has(chatId) || !bootedChats.has(chatId)) {
-        resetChats.delete(chatId);
-        bootedChats.add(chatId);
+      if (resetChats.has(sKey)) {
+        resetChats.delete(sKey);
         sessionId = undefined;
-        log.info("Starting fresh session", { chatId, reason: resetChats.has(chatId) ? "reset" : "boot" });
-      } else if (resumeOverrides.has(chatId)) {
-        sessionId = resumeOverrides.get(chatId);
-        log.info("Resuming overridden session", { chatId, sessionId });
+        log.info("Starting fresh session", { sessionKey: sKey });
+      } else if (resumeOverrides.has(sKey)) {
+        sessionId = resumeOverrides.get(sKey);
+        log.info("Resuming overridden session", { sessionKey: sKey, sessionId });
       } else {
-        sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+        sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
       }
+      bootedChats.add(sKey);
 
-      const model = modelOverrides.get(chatId);
+      const model = modelOverrides.get(sKey);
 
       const result = await agent.run({
         prompt,
         source: "telegram",
-        sourceId: chatId,
+        sourceId: sKey,
         sessionId,
+        chatContext: chatContext(ctx),
         useBrowser: true,
         ...(model ? { model } : {}),
         onToolUse: (toolName, input, subagent) => {
@@ -118,9 +232,7 @@ export function registerCommands(deps: CommandDeps) {
           const now = Date.now();
           if (now - lastEditAt >= 3000) {
             lastEditAt = now;
-            ctx.api.editMessageText(
-              ctx.chat!.id,
-              thinkingMsg.message_id,
+            editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
               `Thinking...\n${formatToolsSummary(toolLines)}`
             ).catch(() => {});
           }
@@ -137,31 +249,26 @@ export function registerCommands(deps: CommandDeps) {
 
       // Edit the first thinking message
       if (chunks.length === 1) {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          thinkingMsg.message_id,
-          chunks[0],
+        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0],
           { reply_markup: agentResponseKeyboard(result.sessionId) }
         );
       } else {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          thinkingMsg.message_id,
-          chunks[0]
-        );
+        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
         // Send remaining chunks, keyboard on last
         for (let i = 1; i < chunks.length; i++) {
           const opts = i === chunks.length - 1
             ? { reply_markup: agentResponseKeyboard(result.sessionId) }
             : {};
-          await ctx.reply(chunks[i], opts);
+          await replyAgentMd2(ctx, chunks[i], opts);
         }
+      }
+      // Check for pending restart after response is fully sent
+      if (agent.consumeRestart()) {
+        executeDeferredRestart();
       }
     } catch (err) {
       log.error("Telegram agent error", { error: String(err) });
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        thinkingMsg.message_id,
+      await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
         `Error: ${err instanceof Error ? err.message : String(err)}`
       );
     }
@@ -170,14 +277,14 @@ export function registerCommands(deps: CommandDeps) {
   async function handleJobs(ctx: Context): Promise<void> {
     const jobs = getAllJobs();
     if (jobs.length === 0) {
-      await ctx.reply("No jobs configured. Use /newjob to create one.");
+      await replyMd2(ctx, "No jobs configured. Use /newjob to create one.");
       return;
     }
 
     const lines = jobs.map(
       (j, i) => `${i + 1}. ${formatJobSummary(j)}`
     );
-    await ctx.reply(lines.join("\n"), {
+    await replyMd2(ctx, lines.join("\n"), {
       reply_markup: jobListKeyboard(jobs),
     });
   }
@@ -187,7 +294,7 @@ export function registerCommands(deps: CommandDeps) {
     const args = text.replace(/^\/newjob\s*/i, "").trim();
 
     if (!args) {
-      await ctx.reply(
+      await replyMd2(ctx,
         "Usage: /newjob <name> | <cron_expression> | <prompt>\n\nExample:\n/newjob Daily Summary | 0 9 * * * | Summarize my latest notes"
       );
       return;
@@ -195,7 +302,7 @@ export function registerCommands(deps: CommandDeps) {
 
     const parts = args.split("|").map((s) => s.trim());
     if (parts.length < 3) {
-      await ctx.reply("Format: /newjob <name> | <schedule> | <prompt>");
+      await replyMd2(ctx, "Format: /newjob <name> | <schedule> | <prompt>");
       return;
     }
 
@@ -210,18 +317,18 @@ export function registerCommands(deps: CommandDeps) {
     });
 
     scheduler.reload();
-    await ctx.reply(`Job created: ${job.name} (ID: ${job.id})\nSchedule: ${schedule}`);
+    await replyMd2(ctx, `Job created: ${job.name} (ID: ${job.id})\nSchedule: ${schedule}`);
   }
 
   async function handleMemory(ctx: Context): Promise<void> {
     const content = memory.readMemory();
     if (!content.trim()) {
-      await ctx.reply("Memory is empty.");
+      await replyMd2(ctx, "Memory is empty.");
       return;
     }
     const chunks = splitMessage(content);
     for (const chunk of chunks) {
-      await ctx.reply(chunk);
+      await replyMd2(ctx, chunk);
     }
   }
 
@@ -229,25 +336,25 @@ export function registerCommands(deps: CommandDeps) {
     const text = ctx.message?.text ?? "";
     const fact = text.replace(/^\/remember\s*/i, "").trim();
     if (!fact) {
-      await ctx.reply("Usage: /remember <fact to store>");
+      await replyMd2(ctx, "Usage: /remember <fact to store>");
       return;
     }
 
     memory.appendToSection("Key Facts", `- ${fact}`);
-    await ctx.reply(`Remembered: ${fact}`);
+    await replyMd2(ctx, `Remembered: ${fact}`);
   }
 
   async function handleSearch(ctx: Context): Promise<void> {
     const text = ctx.message?.text ?? "";
     const query = text.replace(/^\/search\s*/i, "").trim();
     if (!query) {
-      await ctx.reply("Usage: /search <query>");
+      await replyMd2(ctx, "Usage: /search <query>");
       return;
     }
 
     const results = memory.search(query);
     if (results.length === 0) {
-      await ctx.reply("No results found.");
+      await replyMd2(ctx, "No results found.");
       return;
     }
 
@@ -257,7 +364,7 @@ export function registerCommands(deps: CommandDeps) {
     const response = lines.join("\n\n");
     const chunks = splitMessage(response);
     for (const chunk of chunks) {
-      await ctx.reply(chunk);
+      await replyMd2(ctx, chunk);
     }
   }
 
@@ -265,11 +372,11 @@ export function registerCommands(deps: CommandDeps) {
     const text = ctx.message?.text ?? "";
     const url = text.replace(/^\/browse\s*/i, "").trim();
     if (!url) {
-      await ctx.reply("Usage: /browse <url>");
+      await replyMd2(ctx, "Usage: /browse <url>");
       return;
     }
 
-    const msg = await ctx.reply("Taking screenshot...");
+    const msg = await replyMd2(ctx, "Taking screenshot...");
 
     try {
       const tmpPath = join(INBOUND_MEDIA_DIR, `screenshot-${Date.now()}.png`);
@@ -289,9 +396,7 @@ export function registerCommands(deps: CommandDeps) {
       const shotExit = await shotProc.exited;
 
       if (shotExit !== 0 || !existsSync(tmpPath)) {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          msg.message_id,
+        await editMd2(ctx, ctx.chat!.id, msg.message_id,
           `Screenshot failed: ${shotStderr.slice(0, 500) || "unknown error"}`
         );
         return;
@@ -300,20 +405,18 @@ export function registerCommands(deps: CommandDeps) {
       const fileData = await Bun.file(tmpPath).arrayBuffer();
       await ctx.replyWithPhoto(new InputFile(new Uint8Array(fileData), "screenshot.png"));
     } catch (err) {
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        msg.message_id,
+      await editMd2(ctx, ctx.chat!.id, msg.message_id,
         `Screenshot error: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
 
   async function handleNew(ctx: Context): Promise<void> {
-    const chatId = String(ctx.chat?.id ?? "");
-    resetChats.add(chatId);
-    bootedChats.delete(chatId);
-    resumeOverrides.delete(chatId);
-    await ctx.reply("Session cleared. Next message starts a fresh conversation.");
+    const sKey = sessionKey(ctx);
+    resetChats.add(sKey);
+    bootedChats.delete(sKey);
+    resumeOverrides.delete(sKey);
+    await replyMd2(ctx, "Session cleared. Next message starts a fresh conversation.");
   }
 
   const MODEL_ALIASES: Record<string, string> = {
@@ -324,17 +427,17 @@ export function registerCommands(deps: CommandDeps) {
 
   async function handleModel(ctx: Context): Promise<void> {
     const config = getConfig();
-    const chatId = String(ctx.chat?.id ?? "");
+    const sKey = sessionKey(ctx);
     const text = ctx.message?.text ?? "";
     const arg = text.replace(/^\/model\s*/i, "").trim().toLowerCase();
 
     if (!arg) {
-      const current = modelOverrides.get(chatId) ?? config.DEFAULT_MODEL;
-      modelOverrides.delete(chatId);
+      const current = modelOverrides.get(sKey) ?? config.DEFAULT_MODEL;
+      modelOverrides.delete(sKey);
       const aliases = Object.entries(MODEL_ALIASES)
         .map(([k, v]) => `  ${k} -> ${v}`)
         .join("\n");
-      await ctx.reply(
+      await replyMd2(ctx,
         `Model reset to default: ${config.DEFAULT_MODEL}\n\nAliases:\n${aliases}\n\nUsage: /model <name or alias>`,
         { reply_markup: modelPickerKeyboard() }
       );
@@ -342,8 +445,8 @@ export function registerCommands(deps: CommandDeps) {
     }
 
     const resolved = MODEL_ALIASES[arg] ?? arg;
-    modelOverrides.set(chatId, resolved);
-    await ctx.reply(`Model set to: ${resolved}\nUse /model with no args to reset to default.`);
+    modelOverrides.set(sKey, resolved);
+    await replyMd2(ctx, `Model set to: ${resolved}\nUse /model with no args to reset to default.`);
   }
 
   async function handleStatus(ctx: Context): Promise<void> {
@@ -364,12 +467,49 @@ export function registerCommands(deps: CommandDeps) {
       }
     }
 
-    await ctx.reply(status);
+    await replyMd2(ctx, status);
+  }
+
+  async function handleSave(ctx: Context): Promise<void> {
+    const text = ctx.message?.text ?? "";
+    const arg = text.replace(/^\/save\s*/i, "").trim();
+
+    if (!arg) {
+      const count = getPendingItemCount("pending");
+      await replyMd2(ctx, `Usage: /save <url> [description]\n\nInbox: ${count} pending items`);
+      return;
+    }
+
+    // Extract URL (first token) and optional description (rest)
+    const parts = arg.split(/\s+/);
+    const url = parts[0];
+    const description = parts.length > 1 ? parts.slice(1).join(" ") : undefined;
+
+    // Basic URL validation
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      await replyMd2(ctx, "Please provide a valid URL starting with http:// or https://");
+      return;
+    }
+
+    const item = insertPendingItem({
+      url,
+      description,
+      source: "telegram",
+      platform: new URL(url).hostname.replace("www.", ""),
+      captured_at: new Date().toISOString(),
+    });
+
+    if (item) {
+      const pending = getPendingItemCount("pending");
+      await replyMd2(ctx, `Saved: ${item.title ?? url}\nInbox: ${pending} pending`);
+    } else {
+      await replyMd2(ctx, "Failed to save item (may already exist).");
+    }
   }
 
   function formatSessionList(
-    sessions: { session_id: string; label: string | null; message_count: number; total_cost_usd: number; updated_at: string }[],
-    chatId: string
+    sessions: { session_id: string; source_id: string | null; label: string | null; message_count: number; total_cost_usd: number; updated_at: string }[],
+    currentKey: string
   ): string {
     if (sessions.length === 0) return "No sessions found.";
     const lines = sessions.map((s, i) => {
@@ -377,7 +517,7 @@ export function registerCommands(deps: CommandDeps) {
       const shortId = s.session_id.slice(0, 8);
       const cost = formatCost(s.total_cost_usd);
       const date = s.updated_at.split(" ")[0];
-      const active = resumeOverrides.get(chatId) === s.session_id ? " [active]" : "";
+      const active = resumeOverrides.get(currentKey) === s.session_id ? " [active]" : "";
       return `${i + 1}. ${shortId} - ${preview}\n   ${date} | ${s.message_count} msgs | ${cost}${active}`;
     });
     return lines.join("\n\n");
@@ -385,9 +525,9 @@ export function registerCommands(deps: CommandDeps) {
 
   function resolveSessionArg(
     arg: string,
-    chatId: string
+    baseId: string
   ): { sessionId: string } | { error: string } {
-    const sessions = getRecentSessions("telegram", chatId, 10);
+    const sessions = getRecentSessionsBySourcePrefix("telegram", baseId, 10);
     if (sessions.length === 0) return { error: "No sessions found." };
 
     // Try numeric index first (1-based)
@@ -404,52 +544,55 @@ export function registerCommands(deps: CommandDeps) {
   }
 
   async function handleSessions(ctx: Context): Promise<void> {
-    const chatId = String(ctx.chat?.id ?? "");
-    const sessions = getRecentSessions("telegram", chatId, 10);
+    const sKey = sessionKey(ctx);
+    const baseId = baseChatId(ctx);
+    const sessions = getRecentSessionsBySourcePrefix("telegram", baseId, 10);
     const header = "Recent sessions:\n\n";
-    await ctx.reply(header + formatSessionList(sessions, chatId), {
+    await replyMd2(ctx, header + formatSessionList(sessions, sKey), {
       reply_markup: sessionListKeyboard(sessions),
     });
   }
 
   async function handleResume(ctx: Context): Promise<void> {
-    const chatId = String(ctx.chat?.id ?? "");
+    const sKey = sessionKey(ctx);
+    const baseId = baseChatId(ctx);
     const text = ctx.message?.text ?? "";
     const arg = text.replace(/^\/resume\s*/i, "").trim();
 
     if (!arg) {
-      const sessions = getRecentSessions("telegram", chatId, 10);
-      await ctx.reply(
+      const sessions = getRecentSessionsBySourcePrefix("telegram", baseId, 10);
+      await replyMd2(ctx,
         "Usage: /resume <number or session id prefix>\n\n" +
-        formatSessionList(sessions, chatId)
+        formatSessionList(sessions, sKey)
       );
       return;
     }
 
-    const result = resolveSessionArg(arg, chatId);
+    const result = resolveSessionArg(arg, baseId);
     if ("error" in result) {
-      await ctx.reply(result.error);
+      await replyMd2(ctx, result.error);
       return;
     }
 
-    resumeOverrides.set(chatId, result.sessionId);
-    bootedChats.add(chatId);
-    resetChats.delete(chatId);
+    resumeOverrides.set(sKey, result.sessionId);
+    bootedChats.add(sKey);
+    resetChats.delete(sKey);
     const preview = getSessionPreview(result.sessionId) ?? "(empty)";
-    await ctx.reply(`Resumed session ${result.sessionId.slice(0, 8)}: ${preview}\n\nNext messages will continue in this session. Use /new to start fresh.`);
+    await replyMd2(ctx, `Resumed session ${result.sessionId.slice(0, 8)}: ${preview}\n\nNext messages will continue in this session. Use /new to start fresh.`);
   }
 
   async function handleFork(ctx: Context): Promise<void> {
-    const chatId = String(ctx.chat?.id ?? "");
+    const sKey = sessionKey(ctx);
+    const baseId = baseChatId(ctx);
     const text = ctx.message?.text ?? "";
     const args = text.replace(/^\/fork\s*/i, "").trim();
 
     if (!args) {
-      const sessions = getRecentSessions("telegram", chatId, 10);
-      await ctx.reply(
+      const sessions = getRecentSessionsBySourcePrefix("telegram", baseId, 10);
+      await replyMd2(ctx,
         "Usage: /fork <number or id> [prompt]\n\n" +
         "Starts a new session with the prior conversation as context.\n\n" +
-        formatSessionList(sessions, chatId)
+        formatSessionList(sessions, sKey)
       );
       return;
     }
@@ -459,15 +602,15 @@ export function registerCommands(deps: CommandDeps) {
     const sessionArg = parts[0];
     const forkPrompt = parts.slice(1).join(" ") || "Continue from where this conversation left off.";
 
-    const result = resolveSessionArg(sessionArg, chatId);
+    const result = resolveSessionArg(sessionArg, baseId);
     if ("error" in result) {
-      await ctx.reply(result.error);
+      await replyMd2(ctx, result.error);
       return;
     }
 
     const messages = getMessagesBySession(result.sessionId);
     if (messages.length === 0) {
-      await ctx.reply("That session has no messages to fork from.");
+      await replyMd2(ctx, "That session has no messages to fork from.");
       return;
     }
 
@@ -484,9 +627,9 @@ export function registerCommands(deps: CommandDeps) {
     const fullPrompt = preamble + forkPrompt;
 
     // Force fresh session for the fork
-    resetChats.add(chatId);
-    bootedChats.delete(chatId);
-    resumeOverrides.delete(chatId);
+    resetChats.add(sKey);
+    bootedChats.delete(sKey);
+    resumeOverrides.delete(sKey);
 
     await runAgent(ctx, fullPrompt);
   }
@@ -498,8 +641,8 @@ export function registerCommands(deps: CommandDeps) {
     const photos = ctx.message?.photo;
     if (!photos || photos.length === 0) return;
 
-    const thinkingMsg = await ctx.reply("Thinking...");
-    const chatId = String(ctx.chat?.id ?? "");
+    const thinkingMsg = await replyMd2(ctx, "Thinking...");
+    const sKey = sessionKey(ctx);
     const caption = ctx.message?.caption ?? "";
 
     const toolLines: string[] = [];
@@ -525,15 +668,16 @@ export function registerCommands(deps: CommandDeps) {
 
       log.info("Photo saved", { localPath, size: buffer.byteLength });
 
-      const sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+      const sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
       const captionPart = caption ? `\n\nThe user included this caption: ${caption}` : "";
       const prompt = `The user sent a photo. The image file is saved at: ${localPath}${captionPart}\n\nAcknowledge receipt and respond to any caption or context.`;
 
       const result = await agent.run({
         prompt,
         source: "telegram",
-        sourceId: chatId,
+        sourceId: sKey,
         sessionId,
+        chatContext: chatContext(ctx),
         useBrowser: true,
         onToolUse: (toolName, input, subagent) => {
           if (!config.VERBOSE_FEEDBACK) return;
@@ -541,9 +685,7 @@ export function registerCommands(deps: CommandDeps) {
           const now = Date.now();
           if (now - lastEditAt >= 3000) {
             lastEditAt = now;
-            ctx.api.editMessageText(
-              ctx.chat!.id,
-              thinkingMsg.message_id,
+            editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
               `Thinking...\n${formatToolsSummary(toolLines)}`
             ).catch(() => {});
           }
@@ -558,30 +700,25 @@ export function registerCommands(deps: CommandDeps) {
       const chunks = splitMessage(responseText);
 
       if (chunks.length === 1) {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          thinkingMsg.message_id,
-          chunks[0],
+        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0],
           { reply_markup: agentResponseKeyboard(result.sessionId) }
         );
       } else {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          thinkingMsg.message_id,
-          chunks[0]
-        );
+        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
         for (let i = 1; i < chunks.length; i++) {
           const opts = i === chunks.length - 1
             ? { reply_markup: agentResponseKeyboard(result.sessionId) }
             : {};
-          await ctx.reply(chunks[i], opts);
+          await replyAgentMd2(ctx, chunks[i], opts);
         }
+      }
+
+      if (agent.consumeRestart()) {
+        executeDeferredRestart();
       }
     } catch (err) {
       log.error("Photo message error", { error: String(err) });
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        thinkingMsg.message_id,
+      await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
         `Photo error: ${err instanceof Error ? err.message : String(err)}`
       );
     }
@@ -592,8 +729,8 @@ export function registerCommands(deps: CommandDeps) {
     const voice = ctx.message?.voice ?? ctx.message?.audio;
     if (!voice) return;
 
-    const thinkingMsg = await ctx.reply("Transcribing voice message...");
-    const chatId = String(ctx.chat?.id ?? "");
+    const thinkingMsg = await replyMd2(ctx, "Transcribing voice message...");
+    const sKey = sessionKey(ctx);
 
     try {
       mkdirSync(INBOUND_MEDIA_DIR, { recursive: true });
@@ -613,14 +750,15 @@ export function registerCommands(deps: CommandDeps) {
 
       log.info("Voice message saved", { localPath, size: buffer.byteLength });
 
-      const sessionId = getLatestSessionId("telegram", chatId) ?? undefined;
+      const sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
       const prompt = `The user sent a voice message. The audio file is at: ${localPath}\n\nPlease transcribe it using the audio_transcribe tool, then respond to whatever they said.`;
 
       const result = await agent.run({
         prompt,
         source: "telegram",
-        sourceId: chatId,
+        sourceId: sKey,
         sessionId,
+        chatContext: chatContext(ctx),
         useBrowser: false,
       });
 
@@ -629,30 +767,25 @@ export function registerCommands(deps: CommandDeps) {
       const chunks = splitMessage(responseText);
 
       if (chunks.length === 1) {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          thinkingMsg.message_id,
-          chunks[0],
+        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0],
           { reply_markup: agentResponseKeyboard(result.sessionId) }
         );
       } else {
-        await ctx.api.editMessageText(
-          ctx.chat!.id,
-          thinkingMsg.message_id,
-          chunks[0]
-        );
+        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
         for (let i = 1; i < chunks.length; i++) {
           const opts = i === chunks.length - 1
             ? { reply_markup: agentResponseKeyboard(result.sessionId) }
             : {};
-          await ctx.reply(chunks[i], opts);
+          await replyAgentMd2(ctx, chunks[i], opts);
         }
+      }
+
+      if (agent.consumeRestart()) {
+        executeDeferredRestart();
       }
     } catch (err) {
       log.error("Voice message error", { error: String(err) });
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        thinkingMsg.message_id,
+      await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
         `Voice message error: ${err instanceof Error ? err.message : String(err)}`
       );
     }
@@ -676,6 +809,154 @@ export function registerCommands(deps: CommandDeps) {
     handleResume,
     handleFork,
     handleModel,
+    handleSave,
+    handleResearch,
     runAgent,
   };
+
+  async function handleResearch(ctx: Context): Promise<void> {
+    const text = ctx.message?.text ?? "";
+    const arg = text.replace(/^\/research\s*/i, "").trim();
+
+    if (!arg) {
+      // Show recent triaged items to pick from
+      const triaged = getPendingItems("triaged", 10);
+      if (triaged.length === 0) {
+        await replyMd2(ctx, "No triaged items. Use /research <url> or /research <id>");
+        return;
+      }
+      const lines = triaged.map((item) => {
+        const vt = item.value_type ?? item.category ?? "?";
+        const title = item.title ?? item.url;
+        return `${item.id}. [${vt}] P${item.priority ?? "?"} ${title}`;
+      });
+      await replyMd2(ctx, `Pick an item:\n\n${lines.join("\n")}\n\n/research <id> — quick scan\n/research deep <id> — full deep dive`);
+      return;
+    }
+
+    // Check for "deep" prefix
+    const isDeep = arg.startsWith("deep ");
+    const resolvedArg = isDeep ? arg.replace(/^deep\s+/, "") : arg;
+
+    // Find the item — by ID or URL
+    let item = null;
+    const asId = Number(resolvedArg);
+    if (Number.isFinite(asId) && asId > 0) {
+      item = getPendingItemById(asId);
+    }
+
+    if (!item && (resolvedArg.startsWith("http://") || resolvedArg.startsWith("https://"))) {
+      item = insertPendingItem({
+        url: resolvedArg,
+        source: "telegram",
+        platform: new URL(resolvedArg).hostname.replace("www.", ""),
+        captured_at: new Date().toISOString(),
+      });
+    }
+
+    if (!item) {
+      await replyMd2(ctx, "Item not found. Use /research <id> or /research <url>");
+      return;
+    }
+
+    if (isDeep) {
+      await runDeepResearch(ctx, item);
+    } else {
+      await runQuickResearch(ctx, item);
+    }
+  }
+
+  async function runQuickResearch(ctx: Context, item: NonNullable<ReturnType<typeof getPendingItemById>>): Promise<void> {
+    const statusMsg = await replyMd2(ctx, `Scanning: ${item.title ?? item.url}...`);
+
+    try {
+      const prelim = await preliminaryResearch(item);
+
+      updatePendingItem(item.id, {
+        status: "triaged",
+        quick_scan_summary: prelim.summary,
+      });
+
+      const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const findings = prelim.keyFindings.slice(0, 4).map((f) => `  - ${esc(f)}`).join("\n");
+
+      const result = [
+        `<b>Quick Scan:</b> ${esc(prelim.title)}`,
+        `ID: ${item.id}`,
+        ``,
+        esc(prelim.summary),
+        ``,
+        `<b>Key Findings</b>`,
+        findings,
+        ``,
+        `Reply to ask questions. Tap Go Deep for full research.`,
+      ].filter(Boolean).join("\n");
+
+      const kb = new InlineKeyboard()
+        .text("Watch", `rw:${item.id}`)
+        .text("Archive", `rx:${item.id}`);
+
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch { /* ignore */ }
+
+      await ctx.api.sendMessage(ctx.chat!.id, result, {
+        parse_mode: "HTML",
+        reply_markup: kb,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await editMd2(ctx, ctx.chat!.id, statusMsg.message_id, `Quick scan failed: ${message}`);
+    }
+  }
+
+  async function runDeepResearch(ctx: Context, item: NonNullable<ReturnType<typeof getPendingItemById>>): Promise<void> {
+    const statusMsg = await replyMd2(ctx, `Deep research: ${item.title ?? item.url}\n\nThis may take a minute...`);
+
+    try {
+      const deep = await deepResearch(item);
+      const notePath = createResearchNote(item, deep);
+
+      updatePendingItem(item.id, {
+        status: "triaged",
+        noteplan_path: notePath,
+      });
+
+      const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const findings = deep.keyFindings.slice(0, 6).map((f) => `  - ${esc(f)}`).join("\n");
+      const actions = deep.suggestedActions.map((a) => `  - ${esc(a)}`).join("\n");
+      const noteFile = notePath ? notePath.split("/").pop() : null;
+
+      const result = [
+        `<b>Deep Research:</b> ${esc(deep.title)}`,
+        `ID: ${item.id}`,
+        ``,
+        esc(deep.summary),
+        ``,
+        `<b>Key Findings</b>`,
+        findings,
+        ``,
+        `<b>Suggested Actions</b>`,
+        actions,
+        noteFile ? `\nNote saved: ${esc(noteFile)}` : "",
+        `\nReply to ask follow-up questions.`,
+      ].filter(Boolean).join("\n");
+
+      const kb = new InlineKeyboard()
+        .text("Watch", `rw:${item.id}`)
+        .text("Archive", `rx:${item.id}`);
+
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch { /* ignore */ }
+
+      await ctx.api.sendMessage(ctx.chat!.id, result, {
+        parse_mode: "HTML",
+        reply_markup: kb,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await editMd2(ctx, ctx.chat!.id, statusMsg.message_id, `Deep research failed: ${message}`);
+    }
+  }
 }

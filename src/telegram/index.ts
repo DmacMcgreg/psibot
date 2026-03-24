@@ -60,6 +60,8 @@ export function createTelegramBot(deps: TelegramDeps) {
   bot.command("fork", commands.handleFork);
   bot.command("status", commands.handleStatus);
   bot.command("model", commands.handleModel);
+  bot.command("save", commands.handleSave);
+  bot.command("research", commands.handleResearch);
 
   // Voice and audio messages
   bot.on("message:voice", commands.handleVoice);
@@ -89,6 +91,7 @@ export function createTelegramBot(deps: TelegramDeps) {
     { command: "search", description: "Search knowledge base" },
     { command: "browse", description: "Screenshot a URL" },
     { command: "model", description: "Switch model (opus/sonnet/haiku)" },
+    { command: "save", description: "Save a URL to inbox" },
     { command: "status", description: "Agent status" },
   ]).catch((err) => log.error("Failed to set bot commands", { error: String(err) }));
 
