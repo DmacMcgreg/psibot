@@ -254,16 +254,19 @@ export function createTradingMcpServer() {
         {
           strategy: z.string().describe("Strategy name (e.g. 'technical_momentum', 'rsi_mean_reversion', 'turtle_system1')"),
           symbols: z.array(z.string()).describe("Symbols to backtest on"),
-          days: z.number().optional().describe("Lookback period in days (default 365)"),
+          days: z.number().optional().describe("Lookback period in days (default 365). Converted to start_date/end_date."),
         },
         async (args) => {
           try {
+            const end = new Date();
+            const start = new Date(end.getTime() - (args.days ?? 365) * 86400000);
             const data = await api("/backtest/run", {
               method: "POST",
               body: JSON.stringify({
                 strategy_name: args.strategy,
                 symbols: args.symbols,
-                lookback_days: args.days ?? 365,
+                start_date: start.toISOString().slice(0, 10),
+                end_date: end.toISOString().slice(0, 10),
               }),
             });
             return ok(JSON.stringify(data, null, 2));
@@ -274,21 +277,74 @@ export function createTradingMcpServer() {
       ),
 
       tool(
+        "batch_backtest",
+        "Run backtests for many strategies at once on the same symbols. Much more efficient than calling run_backtest in a loop. Returns a batch ID to poll results.",
+        {
+          strategies: z.array(z.object({
+            name: z.string().describe("Strategy name"),
+            parameters: z.record(z.union([z.number(), z.string(), z.boolean()])).optional().describe("Optional parameter overrides"),
+          })).describe("Strategies to test"),
+          symbols: z.array(z.string()).describe("Symbols to backtest on"),
+          days: z.number().optional().describe("Lookback period in days (default 365)"),
+        },
+        async (args) => {
+          try {
+            const end = new Date();
+            const start = new Date(end.getTime() - (args.days ?? 365) * 86400000);
+            const data = await api("/backtest/batch", {
+              method: "POST",
+              body: JSON.stringify({
+                strategies: args.strategies.map((s) => ({
+                  strategy_name: s.name,
+                  ...(s.parameters ? { strategy_parameters: s.parameters } : {}),
+                })),
+                symbols: args.symbols,
+                start_date: start.toISOString().slice(0, 10),
+                end_date: end.toISOString().slice(0, 10),
+              }),
+            });
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Batch backtest failed: ${e}`);
+          }
+        }
+      ),
+
+      tool(
+        "get_batch_results",
+        "Get results for a batch backtest by batch ID.",
+        {
+          batch_id: z.string().describe("The batch ID returned by batch_backtest"),
+        },
+        async (args) => {
+          try {
+            const data = await api(`/backtest/batch/${args.batch_id}`);
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Failed to get batch results: ${e}`);
+          }
+        }
+      ),
+
+      tool(
         "compare_strategies",
         "Compare multiple strategies side-by-side on the same symbols. Returns comparative metrics.",
         {
-          strategies: z.array(z.string()).describe("Strategy names to compare"),
+          strategies: z.array(z.string()).describe("Strategy names to compare (2-10)"),
           symbols: z.array(z.string()).describe("Symbols to test on"),
           days: z.number().optional().describe("Lookback period in days (default 365)"),
         },
         async (args) => {
           try {
+            const end = new Date();
+            const start = new Date(end.getTime() - (args.days ?? 365) * 86400000);
             const data = await api("/backtest/compare", {
               method: "POST",
               body: JSON.stringify({
                 strategy_names: args.strategies,
                 symbols: args.symbols,
-                lookback_days: args.days ?? 365,
+                start_date: start.toISOString().slice(0, 10),
+                end_date: end.toISOString().slice(0, 10),
               }),
             });
             return ok(JSON.stringify(data, null, 2));
@@ -367,6 +423,37 @@ export function createTradingMcpServer() {
       // --- Strategy Evaluation ---
 
       tool(
+        "regime_matched_backtest",
+        "Backtest a strategy only on historical periods that match the current market regime. Fingerprints the current market (RSI, ATR, BB width, MACD, trend, volatility) and finds the most similar past periods to test on. Much more predictive than fixed-window backtesting.",
+        {
+          strategy: z.string().describe("Strategy name to test"),
+          symbols: z.array(z.string()).describe("Symbols to test on"),
+          reference_symbol: z.string().optional().describe("Symbol to fingerprint for regime (default: SPY)"),
+          lookback_years: z.number().optional().describe("How far back to search for similar periods (default: 5)"),
+          similar_periods: z.number().optional().describe("Top N similar periods to test on (default: 5)"),
+          window_days: z.number().optional().describe("Size of each matching window in days (default: 60)"),
+        },
+        async (args) => {
+          try {
+            const data = await api("/backtest/regime-matched", {
+              method: "POST",
+              body: JSON.stringify({
+                strategy_name: args.strategy,
+                symbols: args.symbols,
+                reference_symbol: args.reference_symbol ?? "SPY",
+                lookback_years: args.lookback_years ?? 5,
+                similar_periods: args.similar_periods ?? 5,
+                window_days: args.window_days ?? 60,
+              }),
+            });
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Regime-matched backtest failed: ${e}`);
+          }
+        }
+      ),
+
+      tool(
         "evaluate_strategies",
         "Run strategy evaluation: rankings, benchmarks, and performance history. Shows which strategies are currently performing best.",
         {},
@@ -379,6 +466,77 @@ export function createTradingMcpServer() {
             return ok(JSON.stringify({ rankings, benchmarks }, null, 2));
           } catch (e) {
             return err(`Strategy evaluation failed: ${e}`);
+          }
+        }
+      ),
+
+      // --- Composite Strategy ---
+
+      tool(
+        "composite_backtest",
+        "Combine multiple strategies into an ensemble and backtest it. Test strategy combinations with different voting rules to find synergies between strategies.",
+        {
+          strategies: z.array(z.object({
+            name: z.string().describe("Strategy name"),
+            weight: z.number().describe("Weight for this strategy (e.g. 1.0)"),
+          })).describe("Strategies to combine"),
+          symbols: z.array(z.string()).describe("Symbols to test on"),
+          days: z.number().optional().describe("Lookback period in days (default 365)"),
+          voting_mode: z.enum(["weighted", "majority", "unanimous", "any"]).optional().describe("How to combine signals (default: weighted)"),
+          buy_threshold: z.number().optional().describe("For weighted mode: threshold to trigger buy (default 0.5)"),
+          sell_threshold: z.number().optional().describe("For weighted mode: threshold to trigger sell (default -0.5)"),
+        },
+        async (args) => {
+          try {
+            const end = new Date();
+            const start = new Date(end.getTime() - (args.days ?? 365) * 86400000);
+            const data = await api("/backtest/composite", {
+              method: "POST",
+              body: JSON.stringify({
+                strategies: args.strategies,
+                symbols: args.symbols,
+                start_date: start.toISOString().slice(0, 10),
+                end_date: end.toISOString().slice(0, 10),
+                voting_mode: args.voting_mode ?? "weighted",
+                buy_threshold: args.buy_threshold,
+                sell_threshold: args.sell_threshold,
+              }),
+            });
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Composite backtest failed: ${e}`);
+          }
+        }
+      ),
+
+      // --- Universes ---
+
+      tool(
+        "list_universes",
+        "List all stock universes (watchlists) with their symbol counts. Use to discover available symbol groups for backtesting.",
+        {},
+        async () => {
+          try {
+            const data = await api("/universes");
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Universe list failed: ${e}`);
+          }
+        }
+      ),
+
+      tool(
+        "get_universe_symbols",
+        "Get all symbols in a specific universe by ID. Use after list_universes to get the actual tickers.",
+        {
+          universe_id: z.number().describe("Universe ID from list_universes"),
+        },
+        async (args) => {
+          try {
+            const data = await api(`/universes/${args.universe_id}/symbols`);
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Universe symbols failed: ${e}`);
           }
         }
       ),
