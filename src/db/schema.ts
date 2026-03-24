@@ -8,7 +8,7 @@ export const MIGRATIONS = [
     source_id TEXT,
     cost_usd REAL,
     duration_ms INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -19,8 +19,8 @@ export const MIGRATIONS = [
     model TEXT NOT NULL,
     total_cost_usd REAL NOT NULL DEFAULT 0,
     message_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE TABLE IF NOT EXISTS jobs (
@@ -36,8 +36,8 @@ export const MIGRATIONS = [
     status TEXT NOT NULL DEFAULT 'enabled' CHECK(status IN ('enabled', 'disabled', 'completed', 'failed')),
     last_run_at TEXT,
     next_run_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE TABLE IF NOT EXISTS job_runs (
@@ -48,7 +48,7 @@ export const MIGRATIONS = [
     error TEXT,
     cost_usd REAL,
     duration_ms INTEGER,
-    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     completed_at TEXT
   )`,
 
@@ -57,7 +57,7 @@ export const MIGRATIONS = [
     file_path TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)`,
@@ -76,8 +76,8 @@ export const MIGRATIONS = [
     markdown_summary TEXT NOT NULL,
     analysis_json TEXT NOT NULL,
     transcript_text TEXT NOT NULL,
-    processed_at TEXT NOT NULL DEFAULT (datetime('now')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    processed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE INDEX IF NOT EXISTS idx_youtube_videos_video_id ON youtube_videos(video_id)`,
@@ -93,7 +93,7 @@ export const MIGRATIONS = [
     video_id TEXT NOT NULL REFERENCES youtube_videos(video_id) ON DELETE CASCADE,
     chunk_type TEXT NOT NULL,
     chunk_text TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE INDEX IF NOT EXISTS idx_youtube_chunks_video ON youtube_chunks(video_id)`,
@@ -125,7 +125,7 @@ export const MIGRATIONS = [
     tool_name TEXT NOT NULL,
     input_summary TEXT,
     is_subagent INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tool_uses_session ON tool_uses(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_tool_uses_created ON tool_uses(created_at)`,
@@ -141,7 +141,7 @@ export const MIGRATIONS = [
     display_name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     video_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE INDEX IF NOT EXISTS idx_youtube_topics_name ON youtube_topics(name)`,
@@ -151,7 +151,7 @@ export const MIGRATIONS = [
     topic_id INTEGER NOT NULL REFERENCES youtube_topics(id) ON DELETE CASCADE,
     video_id TEXT NOT NULL REFERENCES youtube_videos(video_id) ON DELETE CASCADE,
     theme_summary TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(topic_id, video_id)
   )`,
 
@@ -163,7 +163,7 @@ export const MIGRATIONS = [
     topic_a_id INTEGER NOT NULL REFERENCES youtube_topics(id) ON DELETE CASCADE,
     topic_b_id INTEGER NOT NULL REFERENCES youtube_topics(id) ON DELETE CASCADE,
     co_occurrence_count INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(topic_a_id, topic_b_id)
   )`,
 
@@ -179,8 +179,8 @@ export const MIGRATIONS = [
     max_positions INTEGER NOT NULL DEFAULT 15,
     default_take_profit_pct REAL NOT NULL DEFAULT 10.0,
     rsi_exit_threshold REAL NOT NULL DEFAULT 70.0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE TABLE IF NOT EXISTS portfolio_positions (
@@ -204,8 +204,8 @@ export const MIGRATIONS = [
     exit_reasons TEXT,
     realized_pnl REAL,
     screener_date TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE TABLE IF NOT EXISTS portfolio_daily_snapshots (
@@ -220,7 +220,7 @@ export const MIGRATIONS = [
     total_pnl REAL NOT NULL DEFAULT 0,
     total_pnl_pct REAL NOT NULL DEFAULT 0,
     positions_json TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
 
   `CREATE INDEX IF NOT EXISTS idx_portfolio_positions_status ON portfolio_positions(status)`,
@@ -244,7 +244,7 @@ export const MIGRATIONS = [
     category TEXT,
     triage_summary TEXT,
     noteplan_path TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_pending_items_status ON pending_items(status)`,
   `CREATE INDEX IF NOT EXISTS idx_pending_items_url ON pending_items(url)`,
@@ -261,8 +261,8 @@ export const MIGRATIONS = [
     snooze_until TEXT,
     remind_count INTEGER DEFAULT 0,
     max_reminds INTEGER DEFAULT 5,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status)`,
 
@@ -280,8 +280,8 @@ export const MIGRATIONS = [
     next_report_at TEXT,
     report_interval TEXT DEFAULT 'biweekly'
       CHECK(report_interval IN ('weekly', 'biweekly', 'monthly')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_themes_status ON themes(status)`,
 
@@ -300,7 +300,7 @@ export const MIGRATIONS = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     theme_id INTEGER NOT NULL REFERENCES themes(id) ON DELETE CASCADE,
     item_id INTEGER NOT NULL REFERENCES pending_items(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(theme_id, item_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_theme_items_theme ON theme_items(theme_id)`,
@@ -316,7 +316,7 @@ export const MIGRATIONS = [
     system_recommendation TEXT,
     user_action TEXT NOT NULL,
     signal_snapshot TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_feedback_log_item ON feedback_log(item_id)`,
   `CREATE INDEX IF NOT EXISTS idx_feedback_log_created ON feedback_log(created_at)`,
@@ -331,9 +331,43 @@ export const MIGRATIONS = [
     decision_count INTEGER NOT NULL DEFAULT 0,
     level TEXT NOT NULL DEFAULT 'manual'
       CHECK(level IN ('manual', 'suggest', 'auto_report', 'silent')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(signal_type, signal_value)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_autonomy_rules_signal ON autonomy_rules(signal_type, signal_value)`,
+
+  // Job notification routing to group chat topics
+  `ALTER TABLE jobs ADD COLUMN notify_chat_id TEXT`,
+  `ALTER TABLE jobs ADD COLUMN notify_topic_id INTEGER`,
+
+  // Append 'Z' to all existing UTC timestamps so they're unambiguous ISO 8601
+  // Safe: WHERE NOT LIKE '%Z' prevents double-append; || 'Z' only appends a single character
+  `UPDATE chat_messages SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE agent_sessions SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE jobs SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE jobs SET paused_until = paused_until || 'Z' WHERE paused_until IS NOT NULL AND paused_until NOT LIKE '%Z'`,
+  `UPDATE jobs SET run_at = run_at || 'Z' WHERE run_at IS NOT NULL AND run_at NOT LIKE '%Z'`,
+  `UPDATE jobs SET last_run_at = last_run_at || 'Z' WHERE last_run_at IS NOT NULL AND last_run_at NOT LIKE '%Z'`,
+  `UPDATE jobs SET next_run_at = next_run_at || 'Z' WHERE next_run_at IS NOT NULL AND next_run_at NOT LIKE '%Z'`,
+  `UPDATE job_runs SET started_at = started_at || 'Z' WHERE started_at NOT LIKE '%Z'`,
+  `UPDATE job_runs SET completed_at = completed_at || 'Z' WHERE completed_at IS NOT NULL AND completed_at NOT LIKE '%Z'`,
+  `UPDATE memory_entries SET updated_at = updated_at || 'Z' WHERE updated_at NOT LIKE '%Z'`,
+  `UPDATE tool_uses SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE portfolio_config SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE portfolio_positions SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE portfolio_daily_snapshots SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE pending_items SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE reminders SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE reminders SET snooze_until = snooze_until || 'Z' WHERE snooze_until IS NOT NULL AND snooze_until NOT LIKE '%Z'`,
+  `UPDATE themes SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE theme_items SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE feedback_log SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE autonomy_rules SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE youtube_videos SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE youtube_videos SET processed_at = processed_at || 'Z' WHERE processed_at IS NOT NULL AND processed_at NOT LIKE '%Z'`,
+  `UPDATE youtube_chunks SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE youtube_topics SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE youtube_topic_links SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+  `UPDATE youtube_topic_relations SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
 ];

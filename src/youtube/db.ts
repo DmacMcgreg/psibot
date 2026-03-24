@@ -67,7 +67,7 @@ export function insertVideo(params: {
          transcript_text = excluded.transcript_text,
          processing_status = excluded.processing_status,
          playlist_item_id = COALESCE(excluded.playlist_item_id, youtube_videos.playlist_item_id),
-         processed_at = datetime('now')
+         processed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        RETURNING *`
     )
     .get(
@@ -238,7 +238,7 @@ export function updateVideoProcessingStatus(
   const db = getDb();
   if (status === "failed_to_mark") {
     db.prepare(
-      `UPDATE youtube_videos SET processing_status = ?, marking_attempts = marking_attempts + 1, last_mark_attempt_at = datetime('now') WHERE video_id = ?`
+      `UPDATE youtube_videos SET processing_status = ?, marking_attempts = marking_attempts + 1, last_mark_attempt_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE video_id = ?`
     ).run(status, videoId);
   } else if (playlistItemId) {
     db.prepare(

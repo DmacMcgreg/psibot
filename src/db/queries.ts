@@ -116,7 +116,7 @@ export function upsertSession(params: {
      ON CONFLICT(session_id) DO UPDATE SET
        total_cost_usd = total_cost_usd + excluded.total_cost_usd,
        message_count = message_count + 1,
-       updated_at = datetime('now')`
+       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`
   ).run(
     params.session_id,
     params.source,
@@ -313,7 +313,7 @@ export function updateJob(
   }
   if (sets.length === 0) return;
 
-  sets.push(`updated_at = datetime('now')`);
+  sets.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`);
   values.push(id);
 
   db.prepare(`UPDATE jobs SET ${sets.join(", ")} WHERE id = ?`).run(...values);
@@ -348,7 +348,7 @@ export function completeJobRun(
 ): void {
   const db = getDb();
   db.prepare(
-    `UPDATE job_runs SET status = ?, result = ?, error = ?, cost_usd = ?, duration_ms = ?, session_id = ?, completed_at = datetime('now')
+    `UPDATE job_runs SET status = ?, result = ?, error = ?, cost_usd = ?, duration_ms = ?, session_id = ?, completed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
      WHERE id = ?`
   ).run(
     params.status,
@@ -393,7 +393,7 @@ export function upsertMemoryEntry(params: {
      ON CONFLICT(file_path) DO UPDATE SET
        title = excluded.title,
        content = excluded.content,
-       updated_at = datetime('now')`
+       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`
   ).run(params.file_path, params.title, params.content);
 }
 
@@ -630,7 +630,7 @@ export function updatePortfolioConfig(
   }
   if (sets.length === 0) return;
 
-  sets.push(`updated_at = datetime('now')`);
+  sets.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`);
   values.push(1); // WHERE id = 1
 
   db.prepare(`UPDATE portfolio_config SET ${sets.join(", ")} WHERE id = ?`).run(
@@ -681,7 +681,7 @@ export function openPosition(params: {
 
   // Deduct cash
   db.prepare(
-    `UPDATE portfolio_config SET current_cash = current_cash - ?, updated_at = datetime('now') WHERE id = 1`
+    `UPDATE portfolio_config SET current_cash = current_cash - ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = 1`
   ).run(cost);
 
   return position;
@@ -721,7 +721,7 @@ export function closePosition(params: {
         realized_pnl = ?,
         current_price = ?,
         current_pnl_pct = ?,
-        updated_at = datetime('now')
+        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE id = ?
        RETURNING *`
     )
@@ -738,7 +738,7 @@ export function closePosition(params: {
 
   // Add proceeds back to cash
   db.prepare(
-    `UPDATE portfolio_config SET current_cash = current_cash + ?, updated_at = datetime('now') WHERE id = 1`
+    `UPDATE portfolio_config SET current_cash = current_cash + ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = 1`
   ).run(proceeds);
 
   return updated;
@@ -750,7 +750,7 @@ export function updatePositionPrice(id: number, price: number): void {
     `UPDATE portfolio_positions SET
       current_price = ?,
       current_pnl_pct = ((? - entry_price) / entry_price) * 100,
-      updated_at = datetime('now')
+      updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
      WHERE id = ? AND status = 'open'`
   ).run(price, price, id);
 }
@@ -1007,7 +1007,7 @@ export function updateReminder(
   }
   if (sets.length === 0) return;
 
-  sets.push(`updated_at = datetime('now')`);
+  sets.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`);
   values.push(id);
 
   db.prepare(`UPDATE reminders SET ${sets.join(", ")} WHERE id = ?`).run(
@@ -1035,7 +1035,7 @@ export function getDueReminders(): Reminder[] {
       `SELECT * FROM reminders
        WHERE status IN ('active', 'snoozed')
          AND remind_count < max_reminds
-         AND (snooze_until IS NULL OR snooze_until <= datetime('now'))
+         AND (snooze_until IS NULL OR snooze_until <= strftime('%Y-%m-%dT%H:%M:%SZ','now'))
        ORDER BY priority ASC, created_at ASC`
     )
     .all();
@@ -1097,7 +1097,7 @@ export function updateTheme(
   }
   if (sets.length === 0) return;
 
-  sets.push("updated_at = datetime('now')");
+  sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')");
   values.push(id);
   db.prepare(`UPDATE themes SET ${sets.join(", ")} WHERE id = ?`).run(...values);
 }
@@ -1204,7 +1204,7 @@ export function upsertAutonomyRule(params: {
        confidence = excluded.confidence,
        decision_count = excluded.decision_count,
        level = excluded.level,
-       updated_at = datetime('now')`
+       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`
   ).run(
     params.signal_type,
     params.signal_value,

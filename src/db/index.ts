@@ -65,7 +65,7 @@ function expandSourceCheckConstraints(db: Database): void {
         source_id TEXT,
         cost_usd REAL,
         duration_ms INTEGER,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
       )`,
       indexes: [
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)",
@@ -82,8 +82,8 @@ function expandSourceCheckConstraints(db: Database): void {
         model TEXT NOT NULL,
         total_cost_usd REAL NOT NULL DEFAULT 0,
         message_count INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
         label TEXT,
         forked_from TEXT
       )`,
