@@ -93,13 +93,33 @@ Before outputting ANY claim, cross-check it against real data:
 
 PHASE 6: OUTPUT
 1. Save full detailed results to knowledge/trading/scans/ with today's date and time
-2. Send ONE concise Telegram message (under 3000 chars) with:
-   - Market regime summary (1 line)
-   - Top 5 buy setups: ticker, price, composite score, key signal, buy/stop/target levels
-   - Top 5 avoid/sell: ticker, price, why
-   - Notable: earnings this week, unusual options flow, sentiment shifts
-   - Next key event on calendar
-   - Use plain text, no markdown`;
+2. Send ONE concise Telegram message (under 4000 chars) GROUPED BY STRATEGY. Each recommendation MUST name its strategy. Format:
+
+REGIME: [1-line summary] | Next event: [event]
+
+MOMENTUM (weight: X% per regime)
+LONG: [top 3 symbols with entry/stop/target + 1-line reason]
+SHORT: [top 3 or "none" if no setups]
+
+MEAN REVERSION (weight: X% per regime)
+LONG: [top 3]
+SHORT: [top 3 or "none"]
+
+BREAKOUT (weight: X% per regime)
+LONG: [top 3]
+SHORT: [top 3 or "none"]
+
+WILDCARDS (dynamic discoveries not fitting above)
+[up to 3 unusual setups from trending/opportunities with the strategy that best applies]
+
+CALENDAR: [key events this week]
+
+Rules for output:
+- Every recommendation MUST specify which strategy generated it
+- Strategy weights MUST match PLAYBOOK regime weights (e.g. if regime is range-bound, mean reversion gets 60%)
+- If a strategy has 0% weight in current regime, say "INACTIVE (current regime)" instead of forcing picks
+- Do NOT recommend a stock under a strategy that doesn't apply (e.g. don't put an overbought RSI 77 stock in Momentum without flagging it)
+- Use plain text, no markdown`;
 
 // ---------------------------------------------------------------------------
 // PORTFOLIO MANAGER PROMPT
