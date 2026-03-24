@@ -45,6 +45,7 @@ export class AgentService {
   private mediaToolServer: ReturnType<typeof createMediaTools>;
   private youtubeToolServer: ReturnType<typeof createYoutubeTools>;
   private agentDefinitions: ReturnType<typeof buildAgentDefinitions>;
+  private tradingServer: ReturnType<typeof createTradingMcpServer>;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
   private _keepAlive: (() => void) | null = null;
   private _pendingRestart = false;
@@ -73,6 +74,7 @@ export class AgentService {
       keepAlive: () => this._keepAlive?.(),
     });
     this.agentDefinitions = buildAgentDefinitions();
+    this.tradingServer = createTradingMcpServer();
   }
 
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -114,7 +116,7 @@ export class AgentService {
       "agent-tools": this.toolServer,
       "media-tools": this.mediaToolServer,
       "youtube-tools": this.youtubeToolServer,
-      "trading-bot": createTradingMcpServer(),
+      "trading-bot": this.tradingServer,
     };
     if (backend === "glm") {
       Object.assign(mcpServers, getGlmMcpServers());
