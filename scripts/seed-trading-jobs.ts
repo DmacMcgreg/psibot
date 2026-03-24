@@ -81,7 +81,16 @@ Merge all subagent results (core + discoveries). For each symbol with signals, c
 - Options flow (10%): put/call ratio, unusual flow, GEX regime
 - ML prediction (10%): ml_predict confidence and direction
 
-PHASE 4: OUTPUT
+PHASE 5: VALIDATION (CRITICAL)
+Before outputting ANY claim, cross-check it against real data:
+- "Near 52-week low/high": verify by checking the actual 52-week price range from analyze_symbol. A stock at $302 that hit $350 recently is NOT near its 52-week low.
+- "Oversold/Overbought": verify actual RSI values, not just backend labels
+- "Undervalued": verify P/E, PEG vs sector averages — don't just parrot a label
+- Price targets: ensure they make sense relative to recent price action and ATR
+- If visual chart analysis (from technical-analyst screenshots) contradicts quantitative data, FLAG the discrepancy and trust the chart
+- NEVER include a claim you haven't verified with at least two data points
+
+PHASE 6: OUTPUT
 1. Save full detailed results to knowledge/trading/scans/ with today's date and time
 2. Send ONE concise Telegram message (under 3000 chars) with:
    - Market regime summary (1 line)
