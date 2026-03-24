@@ -1,7 +1,8 @@
 node_modules/
 dist/
 data/
-knowledge/
+knowledge/*
+!knowledge/trading/
 .env
 *.db
 *.db-wal
