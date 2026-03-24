@@ -37,35 +37,49 @@ Dispatch the macro-strategist subagent to assess current conditions:
 - Economic calendar, Fed stance, sector rotation, regime classification
 - Update knowledge/trading/REGIME.md with findings
 
-PHASE 2: PARALLEL SCAN
-Dispatch subagents in parallel on the stock universe:
+PHASE 2: DYNAMIC DISCOVERY
+Before scanning the core watchlist, pull in dynamic discoveries:
+1. Call get_trending to find symbols with unusual social/news momentum
+2. Call get_opportunities to get the backend's scored setups
+3. Call intelligence_scan to surface cross-source signals
+Add any symbols from these results that aren't already in the core watchlist to a "discovery" list.
 
-A) technical-analyst: Run market_scan on all 50 symbols. For the top 10 signals, take TradingView chart screenshots (daily + 4h timeframes). Identify key levels, patterns, and buy/sell zones.
+PHASE 3: PARALLEL SCAN
+Dispatch subagents in parallel on the FULL universe (core watchlist + discoveries):
+
+A) technical-analyst: Run market_scan on all symbols in batches (20 at a time). For the top 15 signals, take TradingView chart screenshots (daily + 4h timeframes). Identify key levels, patterns, and buy/sell zones.
 
 B) fundamental-analyst: Run get_fundamentals on any symbol with a strong technical signal. Check earnings dates, analyst ratings, insider activity.
 
 C) sentiment-scout: Run get_trending + get_sentiment on top signal symbols. Check for unusual social/news activity, narrative shifts.
 
-STOCK UNIVERSE:
-TECH: AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, AMD, CRM, PLTR
-FINANCE: JPM, BAC, GS, V, MA, BRK-B, C, SCHW
-HEALTHCARE: UNH, JNJ, LLY, PFE, ABBV, MRK
-ENERGY: XOM, CVX, COP, SLB, OXY
-INDUSTRIALS: CAT, GE, BA, HON, UNP
-CONSUMER: WMT, COST, HD, MCD, NKE, SBUX
-COMMODITIES: GLD, SLV, GDX, USO
-SEMIS: AVGO, QCOM, MU, INTC, MRVL
-ETFS (reference only): SPY, QQQ, IWM, XLF
+CORE WATCHLIST (~150 symbols):
 
-PHASE 3: COMPOSITE SCORING
-Merge all subagent results. For each symbol with signals, compute a composite score:
+MEGA CAP TECH: AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, NFLX, ORCL, ADBE
+GROWTH TECH: CRM, PLTR, NOW, SNOW, DDOG, NET, CRWD, PANW, ZS, SHOP, SQ, COIN, MELI, SE
+SEMIS: AMD, AVGO, QCOM, MU, INTC, MRVL, LRCX, KLAC, AMAT, ON, ARM, TSM, ASML
+AI/ROBOTICS: SMCI, DELL, HPE, VRT, ASTS, IONQ, RGTI, SERV
+FINANCE: JPM, BAC, GS, MS, V, MA, BRK-B, C, SCHW, AXP, BX, KKR, APO
+HEALTHCARE: UNH, JNJ, LLY, PFE, ABBV, MRK, TMO, ISRG, DXCM, MRNA, BIIB
+BIOTECH: AMGN, GILD, VRTX, REGN, BMY
+ENERGY: XOM, CVX, COP, SLB, OXY, EOG, DVN, HAL, MPC, VLO, PSX
+INDUSTRIALS: CAT, GE, BA, HON, UNP, RTX, LMT, NOC, DE, WM, RSG
+CONSUMER DISCRETIONARY: WMT, COST, HD, MCD, NKE, SBUX, TGT, LULU, CMG, ABNB, BKNG, UBER, LYFT
+CONSUMER STAPLES: PG, KO, PEP, CL, PM, MO, MDLZ
+REAL ESTATE: AMT, PLD, CCI, EQIX, SPG, O
+UTILITIES: NEE, DUK, SO, D, AEP
+TELECOM/MEDIA: DIS, CMCSA, T, VZ, TMUS
+COMMODITIES: GLD, SLV, GDX, USO, UNG, COPX, WEAT, DBA
+CRYPTO-ADJACENT: MSTR, MARA, RIOT, CLSK, HUT
+ETFS (reference/regime): SPY, QQQ, IWM, DIA, XLF, XLK, XLE, XLV, XLI, XLP, XLU, ARKK, TLT, HYG, LQD
+
+PHASE 4: COMPOSITE SCORING
+Merge all subagent results (core + discoveries). For each symbol with signals, compute a composite score:
 - Technical score (40%): confluence, multi-timeframe alignment, volume confirmation
 - Fundamental score (20%): valuation, growth, analyst consensus
 - Sentiment score (20%): news + social sentiment, unusual activity
 - Options flow (10%): put/call ratio, unusual flow, GEX regime
 - ML prediction (10%): ml_predict confidence and direction
-
-Also check: get_opportunities from the backend for any additional setups.
 
 PHASE 4: OUTPUT
 1. Save full detailed results to knowledge/trading/scans/ with today's date and time
