@@ -1,0 +1,1 @@
+/Users/davidmcgregor/Documents/NotePlan-Notes/Notes/20 - Areas/personal-ai-context.md

@@ -106,12 +106,19 @@ Tools are defined with `createSdkMcpServer` + `tool()` from the SDK. Each tool r
 ### Subprocess Pattern
 External tools (agent-browser, mlx_audio.stt.generate, edge-tts) run via `Bun.spawn()` with piped stdout/stderr, captured via `new Response(proc.stdout).text()`. STT installed via `uv tool install mlx-audio`, TTS via `pip install edge-tts`.
 
+### Network Access
+The daemon uses **Tailscale serve** (not funnel) to expose `/tma` (Mini App) over HTTPS within the tailnet only. No public internet exposure. The web dashboard (`/chat`, `/jobs`, `/memory`, `/logs`) is protected by an IP allowlist (localhost + Tailscale IPs). Mini App API routes (`/tma/api/*`) require Telegram HMAC-SHA256 auth.
+
+### Shared User Context
+`knowledge/USER.md` is a symlink to `~/Documents/NotePlan-Notes/Notes/20 - Areas/personal-ai-context.md`. This file is the single source of truth for user context, shared across PsiBot, Claude Code, and Claude Desktop (via MCP filesystem server).
+
 ## Key Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot API token |
 | `ALLOWED_TELEGRAM_USER_IDS` | (required) | Comma-separated user IDs |
+| `TELEGRAM_GROUP_CHAT_IDS` | "" | Comma-separated group chat IDs (negative numbers) |
 | `PORT` | 3000 | Web server port |
 | `DEFAULT_MODEL` | claude-opus-4-6 | Model for agent |
 | `HEARTBEAT_ENABLED` | true | Enable periodic heartbeat |

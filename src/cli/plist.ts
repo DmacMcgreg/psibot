@@ -46,8 +46,8 @@ export function generateLauncher(bunPath: string, projectRoot: string): string {
   return `#!/bin/bash
 export PATH="${homeDir}/Library/Application Support/fnm/node-versions/v23.10.0/installation/bin:${homeDir}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Ensure Tailscale Funnel is configured for webhook port (idempotent, runs in background)
-${tailscalePath} funnel --bg 8443 2>/dev/null || true
+# Expose Mini App via Tailscale serve (tailnet-only, no public funnel)
+${tailscalePath} serve --bg --set-path /tma http://localhost:3141/tma 2>/dev/null || true
 
 exec "${bunPath}" --cwd "${projectRoot}" src/index.ts
 `;
