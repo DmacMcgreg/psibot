@@ -21,8 +21,40 @@ import {
 import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
 import { updateAutonomyFromFeedback } from "../heartbeat/autonomy.ts";
+import { getPendingItemById } from "../db/queries.ts";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const log = createLogger("telegram:keyboards");
+
+/** Update a tag in a NotePlan note's YAML frontmatter. */
+function addNoteplanTag(noteplanPath: string | null, tag: string): void {
+  if (!noteplanPath || !existsSync(noteplanPath)) return;
+  try {
+    const content = readFileSync(noteplanPath, "utf-8");
+    if (!content.startsWith("---")) return;
+    const endIdx = content.indexOf("---", 3);
+    if (endIdx === -1) return;
+    const frontmatter = content.slice(0, endIdx + 3);
+    const body = content.slice(endIdx + 3);
+
+    // Check if tag already exists
+    if (frontmatter.includes(`- ${tag}`)) return;
+
+    // Insert tag after existing tags
+    const tagsMatch = frontmatter.match(/^tags:\n((?:\s+-\s+.+\n)*)/m);
+    if (tagsMatch) {
+      const insertPos = frontmatter.indexOf(tagsMatch[0]) + tagsMatch[0].length;
+      const updated = frontmatter.slice(0, insertPos) + `  - ${tag}\n` + frontmatter.slice(insertPos);
+      writeFileSync(noteplanPath, updated + body, "utf-8");
+    } else {
+      // No tags section — add one before closing ---
+      const updated = frontmatter.slice(0, endIdx) + `tags:\n  - ${tag}\n` + frontmatter.slice(endIdx);
+      writeFileSync(noteplanPath, updated + body, "utf-8");
+    }
+  } catch (err) {
+    log.error("Failed to update NotePlan tag", { noteplanPath, tag, error: String(err) });
+  }
+}
 
 const MD2 = { parse_mode: "MarkdownV2" as const };
 
@@ -398,6 +430,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
         case "rr": {
           // Research — user wants to research this item
           const id = parseInt(payload, 10);
+          const rrItem = getPendingItemById(id);
+          updatePendingItem(id, { status: "archived", auto_decision: "research_requested" });
+          addNoteplanTag(rrItem?.noteplan_path ?? null, "research");
           insertFeedbackLog({ item_id: id, user_action: "research", system_recommendation: "triage" });
           updateAutonomyFromFeedback({
             signalType: "digest_item",
@@ -405,7 +440,7 @@ export function createCallbackHandler(deps: CallbackDeps) {
             systemRecommendation: "triage",
             userAction: "research",
           });
-          await ctx.answerCallbackQuery({ text: "Use /research " + id + " or /research deep " + id });
+          await ctx.answerCallbackQuery({ text: "Queued for research" });
           // Replace buttons with just the hint text
           const hint = `Use <code>/research ${id}</code> for quick scan or <code>/research deep ${id}</code> for full dive`;
           const origText = ctx.callbackQuery?.message && "text" in ctx.callbackQuery.message
@@ -421,9 +456,11 @@ export function createCallbackHandler(deps: CallbackDeps) {
         }
 
         case "rw": {
-          // Watch — mark item for monitoring
+          // Watch — mark item for monitoring, remove from digest
           const id = parseInt(payload, 10);
-          updatePendingItem(id, { watch_status: "watching" });
+          const rwItem = getPendingItemById(id);
+          updatePendingItem(id, { status: "archived", watch_status: "watching" });
+          addNoteplanTag(rwItem?.noteplan_path ?? null, "watch");
           insertFeedbackLog({ item_id: id, user_action: "watch", system_recommendation: "triage" });
           updateAutonomyFromFeedback({
             signalType: "digest_item",
@@ -439,7 +476,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
         case "rx": {
           // Archive
           const id = parseInt(payload, 10);
+          const rxItem = getPendingItemById(id);
           updatePendingItem(id, { status: "archived" });
+          addNoteplanTag(rxItem?.noteplan_path ?? null, "archived");
           insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
           updateAutonomyFromFeedback({
             signalType: "digest_item",
@@ -455,7 +494,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
         case "rd": {
           // Drop — mark as deleted
           const id = parseInt(payload, 10);
+          const rdItem = getPendingItemById(id);
           updatePendingItem(id, { status: "deleted" });
+          addNoteplanTag(rdItem?.noteplan_path ?? null, "dropped");
           insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
           updateAutonomyFromFeedback({
             signalType: "digest_item",

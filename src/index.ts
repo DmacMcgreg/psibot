@@ -91,6 +91,10 @@ async function main() {
     heartbeat = new HeartbeatRunner({
       getBot: () => bot ?? null,
       defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
+      digestChatId: config.TELEGRAM_GROUP_CHAT_IDS.length > 0
+        ? String(config.TELEGRAM_GROUP_CHAT_IDS[0])
+        : undefined,
+      digestTopicId: 49, // News topic
       config: {
         intervalMinutes: config.HEARTBEAT_INTERVAL_MINUTES,
         quietStart: config.HEARTBEAT_QUIET_START,

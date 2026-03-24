@@ -9,6 +9,7 @@ knowledge/*
 *.db-shm
 .DS_Store
 .vscode/
+INSTANCE.md
 
 # Temp/personal files
 cookies.txt

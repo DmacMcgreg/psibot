@@ -128,10 +128,38 @@ The daemon uses **Tailscale serve** (not funnel) to expose `/tma` (Mini App) ove
 | `HEARTBEAT_MAX_BUDGET_USD` | 0.50 | Max cost per heartbeat run |
 | `PSIBOT_DIR` | ~/.psibot | Worktree + repo storage |
 
+## Instance Config
+
+See @INSTANCE.md for deployment-specific configuration (Telegram group/topic IDs, job routing, Tailscale hostname, NotePlan paths). This file is gitignored.
+
+## Telegram Group Topic Routing
+
+Jobs can route notifications to specific group chat topics via `notify_chat_id` and `notify_topic_id` columns in the `jobs` table. If unset, notifications go to the user's DM. The heartbeat digest also supports topic routing via `digestChatId` and `digestTopicId` on `HeartbeatRunner`.
+
+If the group topic send fails, notifications fall back to DM.
+
+## Inbox Triage & NotePlan Tag Flow
+
+Items flow: **captured** → `pending` → **triaged** → `triaged` → **surfaced in digest** → **user action** → `archived`/`deleted`
+
+User actions come from two sources — Telegram inline buttons and manual NotePlan tags. Both must stay in sync:
+
+| Tag | Telegram Button | DB Effect | NotePlan Effect |
+|-----|----------------|-----------|-----------------|
+| `research` | Research | `status: archived`, `auto_decision: deep_research_queued` | Tag added to frontmatter |
+| `watch` | Watch | `status: archived`, `watch_status: watching` | Tag added to frontmatter |
+| `archived` | Archive | `status: archived` | Tag added to frontmatter |
+| `dropped` | Drop | `status: deleted` | Tag added to frontmatter |
+
+The **inbox watcher** (`src/heartbeat/inbox-watcher.ts`) runs each heartbeat tick and scans all items with `noteplan_path`. It reads frontmatter tags and syncs DB status, so manually adding a `research` or `watch` tag in NotePlan triggers the same pipeline as pressing the Telegram button.
+
+Key constraint: items must leave `triaged` status after user action, otherwise they resurface in the next digest.
+
 ## Database Tables
 
 - **chat_messages** - Individual messages (session_id, role, content, source, cost)
 - **agent_sessions** - Conversation sessions (source, model, total_cost)
-- **jobs** - Scheduled tasks (cron/once, prompt, budget, status)
+- **jobs** - Scheduled tasks (cron/once, prompt, budget, status, notify_chat_id, notify_topic_id)
 - **job_runs** - Execution records (status, result, cost, duration)
 - **memory_entries** - Indexed knowledge files (file_path, title, content for FTS)
+- **pending_items** - Captured URLs from Reddit/GitHub/manual (status, priority, tags, noteplan_path, watch_status, auto_decision)

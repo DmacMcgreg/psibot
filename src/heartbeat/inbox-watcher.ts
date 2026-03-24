@@ -23,45 +23,47 @@ export function scanInbox(): InboxAction[] {
 
   const actions: InboxAction[] = [];
 
-  // Get all triaged items that have noteplan_paths
+  // Get all items that have noteplan_paths (triaged or archived — buttons archive them)
   const triaged = getPendingItems("triaged", 200);
+  const archived = getPendingItems("archived", 200);
+  const allItems = [...triaged, ...archived];
   const itemsByPath = new Map<string, PendingItem>();
-  for (const item of triaged) {
+  for (const item of allItems) {
     if (item.noteplan_path) {
       itemsByPath.set(item.noteplan_path, item);
     }
   }
 
-  // Check each note in the inbox
-  const files = readdirSync(NOTEPLAN_INBOX).filter((f) => f.endsWith(".md"));
-
-  for (const file of files) {
-    const filePath = join(NOTEPLAN_INBOX, file);
-    const item = itemsByPath.get(filePath);
-    if (!item) continue; // Not a psibot-managed note
+  // Scan each note that has a DB entry (regardless of folder)
+  for (const [filePath, item] of itemsByPath) {
+    if (!existsSync(filePath)) continue; // Handled below as "deleted"
 
     const content = readFileSync(filePath, "utf-8");
     const tags = extractFrontmatterTags(content);
 
-    // Only process notes that have tags beyond psibot-triage
-    const userTags = tags.filter((t) => t !== "psibot-triage" && t !== "inbox");
-    if (userTags.length === 0) continue;
-
-    if (userTags.includes("research")) {
-      updatePendingItem(item.id, { auto_decision: "deep_research_queued" });
+    // Only process notes with user-added action tags
+    if (tags.includes("research") && item.auto_decision !== "deep_research_queued") {
+      updatePendingItem(item.id, { status: "archived", auto_decision: "deep_research_queued" });
       actions.push({ itemId: item.id, action: "research", noteplanPath: filePath });
-      log.info("Inbox action: research", { itemId: item.id, file });
-    } else if (userTags.includes("watch")) {
-      updatePendingItem(item.id, { watch_status: "watching" });
+      log.info("Inbox action: research", { itemId: item.id, path: filePath });
+    } else if (tags.includes("watch") && item.watch_status !== "watching") {
+      updatePendingItem(item.id, { status: "archived", watch_status: "watching" });
       actions.push({ itemId: item.id, action: "watch", noteplanPath: filePath });
-      log.info("Inbox action: watch", { itemId: item.id, file });
+      log.info("Inbox action: watch", { itemId: item.id, path: filePath });
+    } else if (tags.includes("dropped") && item.status !== "deleted") {
+      updatePendingItem(item.id, { status: "deleted" });
+      actions.push({ itemId: item.id, action: "archived", noteplanPath: filePath });
+      log.info("Inbox action: dropped (tag)", { itemId: item.id, path: filePath });
+    } else if (tags.includes("archived") && item.status !== "archived") {
+      updatePendingItem(item.id, { status: "archived" });
+      actions.push({ itemId: item.id, action: "archived", noteplanPath: filePath });
+      log.info("Inbox action: archived (tag)", { itemId: item.id, path: filePath });
     }
-    // Any other user tag = acknowledged, will be themed by clustering
   }
 
   // Check for deleted notes (item has noteplan_path but file is gone)
   for (const [path, item] of itemsByPath) {
-    if (!existsSync(path)) {
+    if (!existsSync(path) && item.status !== "archived" && item.status !== "deleted") {
       updatePendingItem(item.id, { status: "archived" });
       actions.push({ itemId: item.id, action: "archived", noteplanPath: path });
       log.info("Inbox action: archived (note deleted)", { itemId: item.id, path });
