@@ -83,6 +83,29 @@ When the user asks for research + text output + audio:
 - If a Task fails, try a different approach rather than retrying the exact same task. After two failures, report the issue to the user.`;
 }
 
+/**
+ * Lightweight system prompt for scheduled jobs.
+ * Jobs only need basic identity + time context — not the full persona,
+ * memory, subagent docs, or trading context. This keeps token usage low
+ * and avoids context window limits on smaller models (GLM/Haiku).
+ */
+export function buildJobPrompt(): string {
+  const now = new Date();
+  const localTime = now.toLocaleString("en-US", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  return `You are PsiBot, a personal AI assistant running scheduled jobs. Be concise.
+
+## Current Time
+- Local: ${localTime} (${timezone})
+- UTC: ${now.toISOString()}
+
+## Instructions
+- Use the available MCP tools to complete your task.
+- Be brief in your response — report what was done and any issues.
+- Do NOT add [SILENT] to your response. Notification filtering is handled externally.`;
+}
+
 function buildChatContextSection(ctx: ChatContext): string {
   const isGroup = ctx.chatType === "group" || ctx.chatType === "supergroup";
   if (!isGroup) return "";

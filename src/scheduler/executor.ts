@@ -4,6 +4,7 @@ import {
   createJobRun,
   completeJobRun,
   updateJob,
+  getJobRuns,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
 import { splitMessage, markdownToTelegramV2 } from "../telegram/format.ts";
@@ -13,10 +14,14 @@ import type { Bot } from "grammy";
 
 const log = createLogger("scheduler:executor");
 
+/** Cooldown per job to prevent diagnostic loops (15 min) */
+const DIAG_COOLDOWN_MS = 15 * 60 * 1000;
+
 export class JobExecutor {
   private agent: AgentService;
   private bot: Bot | null = null;
   private notifyUserIds: number[] = [];
+  private lastDiagAt = new Map<number, number>();
 
   constructor(agent: AgentService) {
     this.agent = agent;
@@ -115,7 +120,9 @@ export class JobExecutor {
         || /doesn't appear to be registered/i.test(result.result);
       if (!isSilent) {
         await this.notify(
-          `Job "${job.name}" completed\n\n${result.result}`
+          `Job "${job.name}" completed\n\n${result.result}`,
+          job.notify_chat_id ?? undefined,
+          job.notify_topic_id ?? undefined,
         );
       } else {
         log.info("Job notification suppressed (silent/no-op)", { jobId, name: job.name });
@@ -145,23 +152,105 @@ export class JobExecutor {
         status: "failed",
       });
 
-      await this.notify(`Job "${job.name}" failed: ${message}`);
+      await this.notify(
+        `Job "${job.name}" failed: ${message}`,
+        job.notify_chat_id ?? undefined,
+        job.notify_topic_id ?? undefined,
+      );
+
+      // Spawn diagnostic agent (with cooldown to prevent loops)
+      await this.diagnoseFailure(jobId, job.name, message);
     }
   }
 
-  private async notify(text: string): Promise<void> {
-    if (!this.bot || this.notifyUserIds.length === 0) return;
+  private async diagnoseFailure(jobId: number, jobName: string, error: string): Promise<void> {
+    const lastDiag = this.lastDiagAt.get(jobId) ?? 0;
+    if (Date.now() - lastDiag < DIAG_COOLDOWN_MS) {
+      log.info("Diagnostic skipped (cooldown)", { jobId });
+      return;
+    }
+    this.lastDiagAt.set(jobId, Date.now());
+
+    // Gather recent run history for context
+    const recentRuns = getJobRuns(jobId, 5);
+    const runSummary = recentRuns.map((r) => (
+      `  ${r.started_at} — ${r.status}${r.error ? `: ${r.error.slice(0, 100)}` : ""}`
+    )).join("\n");
+
+    const job = getJob(jobId);
+    const prompt = `You are a job diagnostic agent for PsiBot. A scheduled job just failed. Diagnose the issue and take corrective action if possible.
+
+JOB: "${jobName}" (ID: ${jobId})
+TYPE: ${job?.type ?? "unknown"} | SCHEDULE: ${job?.schedule ?? "N/A"} | BACKEND: ${job?.backend ?? "claude"}
+ERROR: ${error}
+
+RECENT RUNS (newest first):
+${runSummary || "  No previous runs found."}
+
+INSTRUCTIONS:
+1. Analyze the error pattern. Common causes:
+   - "Claude Code process exited with code 1" = CLI crash during shutdown (usually harmless, post-result recovery should handle this)
+   - "tool isn't available" / "doesn't appear to be registered" = MCP server not connected, may need daemon restart
+   - Timeout / stale = agent hung, may need prompt simplification
+   - Network errors = transient, re-enable the job
+
+2. Take action using the available tools:
+   - Use update_job to re-enable the job if it's a transient failure
+   - Use update_job to pause the job (paused_until) if it's repeatedly failing with the same error
+   - If the issue requires a daemon restart, use the restart_daemon tool
+
+3. Respond with a brief diagnosis (2-3 sentences max). Start with [SILENT] if no user notification is needed.`;
+
+    try {
+      log.info("Spawning diagnostic agent", { jobId, jobName });
+      await this.agent.run({
+        prompt,
+        source: "job",
+        sourceId: `diag:${jobId}`,
+        model: "claude-opus-4-6",
+        backend: "claude",
+      });
+    } catch (err) {
+      log.error("Diagnostic agent failed", { jobId, error: String(err) });
+    }
+  }
+
+  private async notify(text: string, chatId?: string, topicId?: number): Promise<void> {
+    if (!this.bot) return;
     const chunks = splitMessage(text);
-    for (const userId of this.notifyUserIds) {
+
+    if (chatId) {
+      // Send to specific group chat / topic
       try {
         for (const chunk of chunks) {
-          await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunk), { parse_mode: "MarkdownV2" });
+          await this.bot.api.sendMessage(chatId, markdownToTelegramV2(chunk), {
+            parse_mode: "MarkdownV2",
+            ...(topicId ? { message_thread_id: topicId } : {}),
+          });
         }
       } catch (err) {
-        log.error("Failed to send notification", {
-          userId,
-          error: String(err),
-        });
+        log.error("Failed to send topic notification", { chatId, topicId, error: String(err) });
+        // Fall through to DM as fallback
+        for (const userId of this.notifyUserIds) {
+          try {
+            for (const chunk of chunks) {
+              await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunk), { parse_mode: "MarkdownV2" });
+            }
+          } catch (e) {
+            log.error("Failed to send DM fallback", { userId, error: String(e) });
+          }
+        }
+      }
+    } else {
+      // Default: DM to all notify users
+      for (const userId of this.notifyUserIds) {
+        try {
+          for (const chunk of chunks) {
+            await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunk), { parse_mode: "MarkdownV2" });
+          }
+        } catch (err) {
+          log.error("Failed to send notification", { userId, error: String(err) });
+        }
       }
     }
   }

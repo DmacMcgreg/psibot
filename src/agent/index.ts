@@ -5,7 +5,7 @@ import { createAgentTools, type ToolDeps } from "./tools.ts";
 import { createMediaTools } from "./media-tools.ts";
 import { createYoutubeTools } from "./youtube-tools.ts";
 import { buildAgentDefinitions } from "./subagents.ts";
-import { buildSystemPrompt } from "./prompts.ts";
+import { buildSystemPrompt, buildJobPrompt } from "./prompts.ts";
 import { getGlmMcpServers } from "./glm-mcp.ts";
 import { createTradingMcpServer } from "./trading-mcp.ts";
 import {
@@ -93,7 +93,10 @@ export class AgentService {
       maxBudget,
     });
 
-    const systemPrompt = buildSystemPrompt(this.memory, options.chatContext);
+    const useLight = options.source === "job" && options.allowedTools?.length;
+    const systemPrompt = useLight
+      ? buildJobPrompt()
+      : buildSystemPrompt(this.memory, options.chatContext);
     log.info("System prompt built", { runId, length: systemPrompt.length });
 
     const model = options.model ?? config.DEFAULT_MODEL;
@@ -138,6 +141,10 @@ export class AgentService {
         agents: this.agentDefinitions,
         ...(options.sessionId ? { resume: options.sessionId } : {}),
         ...(envOverride ? { env: envOverride } : {}),
+        stderr: (data: string) => {
+          const trimmed = data.trim();
+          if (trimmed) log.debug("claude-cli stderr", { runId, data: trimmed.slice(0, 500) });
+        },
       },
     });
     log.info("query() returned iterator", { runId });
@@ -367,6 +374,48 @@ export class AgentService {
       return result;
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
+
+      // If we already received a valid result, this is a post-result CLI crash
+      // (e.g., "Claude Code process exited with code 1" during shutdown).
+      // Return the successful result instead of throwing.
+      if (resultText.trim() && stopReason !== "unknown") {
+        log.warn("Post-result CLI error (returning successful result)", { runId, error: errMessage, stopReason });
+
+        insertChatMessage({
+          session_id: sessionId,
+          role: "assistant",
+          content: resultText,
+          source: options.source,
+          source_id: options.sourceId,
+          cost_usd: totalCost,
+          duration_ms: durationMs,
+        });
+
+        upsertSession({
+          session_id: sessionId,
+          source: options.source,
+          source_id: options.sourceId,
+          model,
+          cost_usd: totalCost,
+        });
+
+        const result: AgentRunResult = {
+          sessionId,
+          result: resultText,
+          costUsd: totalCost,
+          durationMs,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          contextWindow,
+          numTurns,
+          stopReason,
+        };
+
+        options.onComplete?.(result);
+        return result;
+      }
+
       log.error("Agent run failed", { runId, error: errMessage });
 
       // If we have a session, store a fallback response so the user sees something

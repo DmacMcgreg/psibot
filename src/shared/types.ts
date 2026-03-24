@@ -43,6 +43,8 @@ export interface Job {
   backend: AgentBackend | null;
   paused_until: string | null;
   skip_runs: number;
+  notify_chat_id: string | null;
+  notify_topic_id: number | null;
   status: JobStatus;
   last_run_at: string | null;
   next_run_at: string | null;
