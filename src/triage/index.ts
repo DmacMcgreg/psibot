@@ -30,6 +30,20 @@ interface TriageResult {
   tags: string[];
 }
 
+interface TriagedItemSummary {
+  title: string;
+  url: string;
+  value_type: TriageResult["value_type"];
+  priority: number;
+  extracted_value: string;
+}
+
+interface TriageAllResult {
+  totalProcessed: number;
+  dropped: number;
+  items: TriagedItemSummary[];
+}
+
 interface DeepAnalysisResult {
   recommendation: "read_now" | "research_deeper" | "skip" | "archive";
   detailedSummary: string;
@@ -678,8 +692,9 @@ function createInboxNote(
   }
 }
 
-export async function triageBatch(items: PendingItem[]): Promise<void> {
+export async function triageBatch(items: PendingItem[]): Promise<TriagedItemSummary[]> {
   log.info("Starting batch triage", { count: items.length });
+  const summaries: TriagedItemSummary[] = [];
 
   for (const item of items) {
     try {
@@ -705,6 +720,14 @@ export async function triageBatch(items: PendingItem[]): Promise<void> {
         noteplan_path: noteplanPath,
       });
 
+      summaries.push({
+        title: item.title ?? new URL(item.url).hostname,
+        url: item.url,
+        value_type: result.value_type,
+        priority: result.priority,
+        extracted_value: result.extracted_value,
+      });
+
       log.info("Item triaged", {
         id: item.id,
         priority: result.priority,
@@ -719,6 +742,7 @@ export async function triageBatch(items: PendingItem[]): Promise<void> {
   }
 
   log.info("Batch triage complete", { count: items.length });
+  return summaries;
 }
 
 // --- Tier 2: Deep Analysis ---
@@ -796,15 +820,26 @@ Return ONLY the JSON object.
 
 // --- Convenience: triage all pending items ---
 
-export async function triageAllPending(limit?: number): Promise<number> {
-  const pending = getPendingItems("pending", limit ?? 50);
-  if (pending.length === 0) {
-    log.info("No pending items to triage");
-    return 0;
+export async function triageAllPending(limit?: number): Promise<TriageAllResult> {
+  const batchSize = 10;
+  const maxItems = limit ?? 50;
+  const allItems: TriagedItemSummary[] = [];
+
+  while (allItems.length < maxItems) {
+    const remaining = maxItems - allItems.length;
+    const pending = getPendingItems("pending", Math.min(batchSize, remaining));
+    if (pending.length === 0) {
+      if (allItems.length === 0) log.info("No pending items to triage");
+      break;
+    }
+
+    const batchSummaries = await triageBatch(pending);
+    allItems.push(...batchSummaries);
+    log.info("Triage batch complete", { batchProcessed: pending.length, totalProcessed: allItems.length });
   }
 
-  await triageBatch(pending);
-  return pending.length;
+  const dropped = allItems.filter((i) => i.value_type === "no_value").length;
+  return { totalProcessed: allItems.length, dropped, items: allItems };
 }
 
 // --- Convenience: deep analyze high-priority items ---

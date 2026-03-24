@@ -1220,8 +1220,23 @@ ${runsText}`;
           limit: z.number().optional().describe("Max items to triage (default: 50)"),
         },
         async (args) => {
-          const count = await triageAllPending(args.limit);
-          return { content: [{ type: "text" as const, text: `Auto-triage complete: ${count} items processed.` }] };
+          const result = await triageAllPending(args.limit);
+          if (result.totalProcessed === 0) {
+            return { content: [{ type: "text" as const, text: "No pending items to triage." }] };
+          }
+
+          const kept = result.items.filter((i) => i.value_type !== "no_value");
+          const lines = kept
+            .sort((a, b) => a.priority - b.priority)
+            .map((i) => `- P${i.priority} [${i.value_type}] ${i.title}\n  ${i.extracted_value}`);
+
+          const summary = [
+            `Triaged ${result.totalProcessed} items (${kept.length} kept, ${result.dropped} dropped):`,
+            "",
+            ...lines,
+          ].join("\n");
+
+          return { content: [{ type: "text" as const, text: summary }] };
         }
       ),
 

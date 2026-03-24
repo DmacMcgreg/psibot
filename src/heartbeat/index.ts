@@ -40,6 +40,8 @@ interface OrchestratorConfig {
 interface OrchestratorDeps {
   getBot: () => Bot | null;
   defaultChatIds: number[];
+  digestChatId?: string;
+  digestTopicId?: number;
   config: OrchestratorConfig;
 }
 
@@ -55,6 +57,8 @@ export class HeartbeatRunner {
   private cron: Cron | null = null;
   private getBot: () => Bot | null;
   private defaultChatIds: number[];
+  private digestChatId?: string;
+  private digestTopicId?: number;
   private config: OrchestratorConfig;
   private running = false;
   private statePath: string;
@@ -62,6 +66,8 @@ export class HeartbeatRunner {
   constructor(deps: OrchestratorDeps) {
     this.getBot = deps.getBot;
     this.defaultChatIds = deps.defaultChatIds;
+    this.digestChatId = deps.digestChatId;
+    this.digestTopicId = deps.digestTopicId;
     this.config = deps.config;
     this.statePath = join(KNOWLEDGE_DIR, "orchestrator-state.json");
   }
@@ -203,7 +209,8 @@ export class HeartbeatRunner {
     log.info("Phase 1: Intake", { pendingCount });
 
     // Run triage (handles metadata extraction + GLM value-extraction)
-    const processed = await triageAllPending(50);
+    const triageResult = await triageAllPending(50);
+    const processed = triageResult.totalProcessed;
 
     // Get recently triaged items
     const triaged = getPendingItems("triaged", 50);
@@ -282,7 +289,17 @@ export class HeartbeatRunner {
   // --- Phase 4: Surfacing ---
   private async phaseSurfacing(result: TickResult): Promise<void> {
     const bot = this.getBot();
-    if (!bot || this.defaultChatIds.length === 0) return;
+    if (!bot) return;
+
+    // Route digest to group topic if configured, otherwise DM
+    const targetChatIds: (string | number)[] = this.digestChatId
+      ? [this.digestChatId]
+      : this.defaultChatIds;
+    const topicOpts = this.digestChatId && this.digestTopicId
+      ? { message_thread_id: this.digestTopicId }
+      : {};
+
+    if (targetChatIds.length === 0) return;
 
     // Header message
     const headerLines = [
@@ -306,9 +323,9 @@ export class HeartbeatRunner {
 
     const header = headerLines.join("\n");
 
-    for (const chatId of this.defaultChatIds) {
+    for (const chatId of targetChatIds) {
       try {
-        await bot.api.sendMessage(chatId, header, { parse_mode: "HTML" });
+        await bot.api.sendMessage(chatId, header, { parse_mode: "HTML", ...topicOpts });
       } catch (err) {
         log.error("Failed to send digest header", { chatId, error: String(err) });
       }
@@ -339,6 +356,7 @@ export class HeartbeatRunner {
           await bot.api.sendMessage(chatId, msg, {
             parse_mode: "HTML",
             reply_markup: kb,
+            ...topicOpts,
           });
         } catch (err) {
           log.error("Failed to send digest item", { chatId, itemId: item.id, error: String(err) });
