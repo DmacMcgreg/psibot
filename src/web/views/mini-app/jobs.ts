@@ -4,7 +4,7 @@ import type { Job } from "../../../shared/types.ts";
 
 export function tmaJobsPage(jobs: Job[]): string {
   const jobList = jobs.length > 0
-    ? jobs.map((j) => tmaJobCard(j)).join("\n")
+    ? jobs.map((j) => tmaJobCardFragment(j)).join("\n")
     : `<div class="tma-empty">No jobs configured</div>`;
 
   return miniAppLayout("jobs", `
@@ -27,14 +27,14 @@ function isPaused(job: Job): boolean {
   return job.skip_runs > 0;
 }
 
-function tmaJobCard(job: Job): string {
+export function tmaJobCardFragment(job: Job): string {
   const schedule = job.type === "cron" && job.schedule ? job.schedule : job.run_at ?? "";
   const paused = isPaused(job);
   const statusCls = paused ? "tma-badge-paused" : job.status === "enabled" ? "tma-badge-enabled" : "tma-badge-disabled";
   const statusLabel = paused ? "Paused" : job.status;
   const toggleLabel = job.status === "enabled" ? "Disable" : "Enable";
 
-  return `<div class="tma-card">
+  return `<div class="tma-card" id="job-${job.id}">
     <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
       <div style="min-width:0; flex:1;">
         <div style="font-weight:600; font-size:14px;">${escapeHtml(job.name)}</div>
@@ -44,9 +44,9 @@ function tmaJobCard(job: Job): string {
       <span class="tma-badge ${statusCls}">${statusLabel}</span>
     </div>
     <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">
-      <button class="tma-btn tma-btn-sm" hx-post="/tma/api/jobs/${job.id}/trigger" hx-target="#job-list" hx-swap="innerHTML">Run</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/toggle" hx-target="#job-list" hx-swap="innerHTML">${toggleLabel}</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/pause" hx-target="#job-list" hx-swap="innerHTML">${paused ? "Unpause" : "Pause 24h"}</button>
+      <button class="tma-btn tma-btn-sm" hx-post="/tma/api/jobs/${job.id}/trigger" hx-target="#job-${job.id}" hx-swap="outerHTML">Run</button>
+      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/toggle" hx-target="#job-${job.id}" hx-swap="outerHTML">${toggleLabel}</button>
+      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/pause" hx-target="#job-${job.id}" hx-swap="outerHTML">${paused ? "Unpause" : "Pause 24h"}</button>
       <button class="tma-btn tma-btn-sm tma-btn-danger" hx-post="/tma/api/jobs/${job.id}/delete" hx-target="#job-list" hx-swap="innerHTML" hx-confirm="Delete this job?">Delete</button>
     </div>
   </div>`;
@@ -54,5 +54,5 @@ function tmaJobCard(job: Job): string {
 
 export function tmaJobListFragment(jobs: Job[]): string {
   if (jobs.length === 0) return `<div class="tma-empty">No jobs configured</div>`;
-  return jobs.map((j) => tmaJobCard(j)).join("\n");
+  return jobs.map((j) => tmaJobCardFragment(j)).join("\n");
 }

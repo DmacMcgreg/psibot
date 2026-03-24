@@ -35,7 +35,9 @@ async function main() {
     triggerJob: (jobId) => scheduler.trigger(jobId),
     getBot: () => bot ?? null,
     defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
+    groupChatIds: config.TELEGRAM_GROUP_CHAT_IDS,
     psibotDir: config.PSIBOT_DIR,
+    scheduleRestart: () => agent.scheduleRestart(),
   });
   const executor = new JobExecutor(agent);
   scheduler = new Scheduler(executor);
@@ -87,15 +89,12 @@ async function main() {
   let heartbeat: HeartbeatRunner | null = null;
   if (config.HEARTBEAT_ENABLED) {
     heartbeat = new HeartbeatRunner({
-      agent,
-      memory,
       getBot: () => bot ?? null,
       defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
       config: {
         intervalMinutes: config.HEARTBEAT_INTERVAL_MINUTES,
         quietStart: config.HEARTBEAT_QUIET_START,
         quietEnd: config.HEARTBEAT_QUIET_END,
-        maxBudgetUsd: config.HEARTBEAT_MAX_BUDGET_USD,
       },
     });
     heartbeat.start();

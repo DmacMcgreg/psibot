@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serveStatic } from "hono/bun";
 import { AgentService } from "../../agent/index.ts";
 import { MemorySystem } from "../../memory/index.ts";
 import {
@@ -12,9 +13,12 @@ import {
   deleteJob,
   getAllMemoryEntries,
   searchMemory,
+  getRecentSessionLogs,
+  getSessionPreviews,
 } from "../../db/queries.ts";
 import { tmaChatPage, tmaChatStreamFragment } from "../views/mini-app/chat.ts";
-import { tmaJobsPage, tmaJobListFragment } from "../views/mini-app/jobs.ts";
+import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment } from "../views/mini-app/jobs.ts";
+import { tmaLogsPage, tmaLogListFragment } from "../views/mini-app/logs.ts";
 import { tmaMemoryPage, tmaMemoryListFragment } from "../views/mini-app/memory.ts";
 import { tmaSessionsPage } from "../views/mini-app/sessions.ts";
 import { formatRunMeta } from "../../telegram/format.ts";
@@ -41,6 +45,17 @@ function sseEncode(event: string, data: string): string {
 
 export function createMiniAppRoutes() {
   const app = new Hono<MiniAppEnv>();
+
+  // Static files (served under /tma/static/* via Tailscale Funnel)
+  app.use("/static/*", async (c, next) => {
+    await next();
+    if (c.res.ok) {
+      const headers = new Headers(c.res.headers);
+      headers.set("Cache-Control", "public, max-age=86400");
+      c.res = new Response(c.res.body, { status: c.res.status, headers });
+    }
+  });
+  app.use("/static/*", serveStatic({ root: "./public", rewriteRequestPath: (path) => path.replace(/^.*\/static/, "") }));
 
   // Auth middleware for API routes only (page loads are plain GET without auth headers)
   app.use("/api/*", telegramAuthMiddleware());
@@ -71,6 +86,11 @@ export function createMiniAppRoutes() {
     return c.html(tmaJobsPage(jobs));
   });
 
+  app.get("/logs", (c) => {
+    const sessions = getRecentSessionLogs(50);
+    return c.html(tmaLogsPage(sessions));
+  });
+
   app.get("/memory", (c) => {
     const entries = getAllMemoryEntries();
     return c.html(tmaMemoryPage(entries));
@@ -86,7 +106,8 @@ export function createMiniAppRoutes() {
     ])
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
       .slice(0, 15);
-    return c.html(tmaSessionsPage(allSessions));
+    const previews = getSessionPreviews(allSessions.map((s) => s.session_id));
+    return c.html(tmaSessionsPage(allSessions, previews));
   });
 
   // --- Chat API ---
@@ -181,8 +202,8 @@ export function createMiniAppRoutes() {
     const jobId = parseInt(c.req.param("id"), 10);
     const triggerJob = c.get("triggerJob");
     triggerJob(jobId);
-    const jobs = getAllJobs();
-    return c.html(tmaJobListFragment(jobs));
+    const job = getJob(jobId);
+    return c.html(tmaJobCardFragment(job!));
   });
 
   app.post("/api/jobs/:id/toggle", (c) => {
@@ -193,8 +214,8 @@ export function createMiniAppRoutes() {
     updateJob(jobId, { status: newStatus as "enabled" | "disabled" });
     const reloadScheduler = c.get("reloadScheduler");
     reloadScheduler();
-    const jobs = getAllJobs();
-    return c.html(tmaJobListFragment(jobs));
+    const updated = getJob(jobId);
+    return c.html(tmaJobCardFragment(updated!));
   });
 
   app.post("/api/jobs/:id/pause", (c) => {
@@ -208,8 +229,8 @@ export function createMiniAppRoutes() {
       const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
       updateJob(jobId, { paused_until: until });
     }
-    const jobs = getAllJobs();
-    return c.html(tmaJobListFragment(jobs));
+    const updated = getJob(jobId);
+    return c.html(tmaJobCardFragment(updated!));
   });
 
   app.post("/api/jobs/:id/delete", (c) => {
@@ -219,6 +240,13 @@ export function createMiniAppRoutes() {
     reloadScheduler();
     const jobs = getAllJobs();
     return c.html(tmaJobListFragment(jobs));
+  });
+
+  // --- Logs API ---
+
+  app.get("/api/logs", (c) => {
+    const sessions = getRecentSessionLogs(50);
+    return c.html(tmaLogListFragment(sessions));
   });
 
   // --- Memory API ---

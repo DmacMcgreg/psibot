@@ -49,7 +49,15 @@ export function createWebApp(deps: WebAppDeps) {
     await next();
   });
 
-  // Static files
+  // Static files with cache headers
+  app.use("/static/*", async (c, next) => {
+    await next();
+    if (c.res.ok) {
+      const headers = new Headers(c.res.headers);
+      headers.set("Cache-Control", "public, max-age=86400");
+      c.res = new Response(c.res.body, { status: c.res.status, headers });
+    }
+  });
   app.use("/static/*", serveStatic({ root: "./public", rewriteRequestPath: (path) => path.replace("/static", "") }));
 
   // Inject dependencies into context

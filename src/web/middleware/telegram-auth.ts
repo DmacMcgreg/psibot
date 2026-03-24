@@ -4,6 +4,16 @@ import { createLogger } from "../../shared/logger.ts";
 
 const log = createLogger("web:telegram-auth");
 
+const authCache = new Map<string, { user: TelegramUser; expires: number }>();
+
+function pruneAuthCache(): void {
+  if (authCache.size <= 100) return;
+  const now = Date.now();
+  for (const [key, entry] of authCache) {
+    if (entry.expires < now) authCache.delete(key);
+  }
+}
+
 interface TelegramUser {
   id: number;
   first_name: string;
@@ -92,6 +102,16 @@ export function telegramAuthMiddleware(): MiddlewareHandler {
       return c.text("Missing Telegram auth", 401);
     }
 
+    // Check cache first
+    const cached = authCache.get(initData);
+    if (cached && cached.expires > Date.now()) {
+      if (config.ALLOWED_TELEGRAM_USER_IDS.includes(cached.user.id)) {
+        c.set("telegramUser" as never, cached.user);
+        await next();
+        return;
+      }
+    }
+
     const user = await validateInitData(initData, config.TELEGRAM_BOT_TOKEN);
     if (!user) {
       return c.text("Invalid Telegram auth", 401);
@@ -102,6 +122,10 @@ export function telegramAuthMiddleware(): MiddlewareHandler {
       log.warn("Unauthorized Mini App user", { userId: user.id });
       return c.text("Unauthorized", 403);
     }
+
+    // Cache successful validation (5-min TTL)
+    pruneAuthCache();
+    authCache.set(initData, { user, expires: Date.now() + 300_000 });
 
     c.set("telegramUser" as never, user);
     await next();

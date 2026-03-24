@@ -1,12 +1,11 @@
 import { miniAppLayout } from "./shell.ts";
 import { escapeHtml } from "../../../shared/html.ts";
 import { formatCost } from "../../../telegram/format.ts";
-import { getSessionPreview } from "../../../db/queries.ts";
 import type { AgentSession } from "../../../shared/types.ts";
 
-export function tmaSessionsPage(sessions: AgentSession[]): string {
+export function tmaSessionsPage(sessions: AgentSession[], previews: Map<string, string>): string {
   const sessionList = sessions.length > 0
-    ? sessions.map((s) => tmaSessionCard(s)).join("\n")
+    ? sessions.map((s) => tmaSessionCard(s, previews)).join("\n")
     : `<div class="tma-empty">No sessions yet</div>`;
 
   return miniAppLayout("sessions", `
@@ -21,8 +20,8 @@ export function tmaSessionsPage(sessions: AgentSession[]): string {
   `);
 }
 
-function tmaSessionCard(session: AgentSession): string {
-  const preview = session.label ?? getSessionPreview(session.session_id) ?? "(empty)";
+function tmaSessionCard(session: AgentSession, previews: Map<string, string>): string {
+  const preview = session.label ?? previews.get(session.session_id) ?? "(empty)";
   const shortId = session.session_id.slice(0, 8);
   const date = session.updated_at.split(" ")[0];
   const cost = formatCost(session.total_cost_usd);
