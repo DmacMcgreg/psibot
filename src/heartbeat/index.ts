@@ -5,17 +5,21 @@ import { createLogger } from "../shared/logger.ts";
 import {
   getPendingItems,
   getPendingItemCount,
+  getUnsurfacedTriagedItems,
+  markItemsSurfaced,
+  getQueuedResearchItems,
   getDueReminders,
   updateReminder,
   dismissReminder,
   updatePendingItem,
+  getPendingItemById,
+  isTopicMuted,
 } from "../db/queries.ts";
 import { triageAllPending } from "../triage/index.ts";
-import { quickScanBatch } from "../research/quick-scan.ts";
+import { preliminaryResearch, deepResearch, createResearchNote } from "../research/index.ts";
 import { scoreSignals } from "./signals.ts";
 import { scanInbox } from "./inbox-watcher.ts";
 import { detectThemes } from "./themes.ts";
-import type { QuickScanResult } from "../research/quick-scan.ts";
 import { InlineKeyboard } from "grammy";
 import { briefingActionKeyboard, approvalKeyboard } from "../telegram/keyboards.ts";
 import type { Bot } from "grammy";
@@ -167,9 +171,16 @@ export class HeartbeatRunner {
       }
 
       // --- Phase 4: Surfacing ---
+      // Surface items from this tick's intake
       if (result.triagedCount > 0 || result.topItems.length > 0) {
         await this.phaseSurfacing(result);
       }
+
+      // Also surface previously triaged but never-surfaced items
+      await this.surfaceBacklog();
+
+      // --- Phase 5: Execute queued research ---
+      await this.executeQueuedResearch();
 
       // Update state
       const newState: OrchestratorState = {
@@ -215,64 +226,42 @@ export class HeartbeatRunner {
     // Get recently triaged items
     const triaged = getPendingItems("triaged", 50);
 
-    // --- Phase 2: Quick Scan + Signal Scoring ---
-    // Only scan items that don't already have a quick_scan_summary
-    const needsScan = triaged
-      .filter((item) => !item.quick_scan_summary && item.priority !== null && item.priority <= 3)
-      .slice(0, 10);
-
-    let scanResults = new Map<number, QuickScanResult>();
-    if (needsScan.length > 0) {
-      log.info("Phase 2: Quick Scan", { count: needsScan.length });
-      scanResults = await quickScanBatch(needsScan, 3);
-
-      // Persist quick scan results and signal scores
-      for (const item of needsScan) {
-        const scan = scanResults.get(item.id);
-        if (!scan) continue;
-
-        const signalResult = scoreSignals(item, scan);
-
-        updatePendingItem(item.id, {
-          quick_scan_summary: scan.summary,
-          signal_score: signalResult.score,
-          auto_decision: signalResult.autoAction,
-        });
-      }
-    }
-
-    // Check learned autonomy rules for items without strong contextual signals
+    // --- Phase 2: Signal Scoring + Autonomy ---
     for (const item of triaged) {
-      if (item.auto_decision) continue; // Already has a contextual signal decision
+      // Score using triage output (priority + value_type)
+      const signalResult = scoreSignals(item);
 
-      const sourceSignal = item.source ? `source:${item.source}` : null;
-      const platformSignal = item.platform ? `platform:${item.platform}` : null;
-
-      for (const signalValue of [sourceSignal, platformSignal].filter(Boolean)) {
-        const rule = checkAutonomyRule("digest_item", signalValue!);
-        if (rule) {
-          updatePendingItem(item.id, { auto_decision: rule.action });
+      // Check learned autonomy rules using compound key
+      let autoDecision: string | null = signalResult.autoAction;
+      if (!autoDecision) {
+        const compoundRule = checkAutonomyRule("compound", signalResult.compoundKey);
+        if (compoundRule) {
+          autoDecision = compoundRule.action;
           log.info("Autonomy auto-decision", {
             itemId: item.id,
-            action: rule.action,
-            level: rule.level,
-            signal: signalValue,
+            action: compoundRule.action,
+            level: compoundRule.level,
+            signal: signalResult.compoundKey,
           });
-          break;
         }
       }
+
+      updatePendingItem(item.id, {
+        signal_score: signalResult.score,
+        ...(autoDecision ? { auto_decision: autoDecision } : {}),
+      });
     }
 
-    // Build top items list (now enriched with quick scan)
+    // Build top items list sorted by triage priority and score
     const enrichedTriaged = getPendingItems("triaged", 50);
     const topItems = enrichedTriaged
       .filter((item) => item.priority !== null && item.priority <= 2)
       .sort((a, b) => (b.signal_score ?? 0) - (a.signal_score ?? 0) || (a.priority ?? 5) - (b.priority ?? 5))
       .slice(0, 5);
 
-    // Collect auto-research items (strong contextual signals)
+    // Collect items with auto-actions that need execution
     const autoResearchItems = enrichedTriaged.filter(
-      (item) => item.auto_decision === "deep_research"
+      (item) => item.auto_decision === "deep_research_queued" || item.auto_decision === "quick_research_queued"
     );
 
     const droppedCount = processed - triaged.length;
@@ -361,6 +350,163 @@ export class HeartbeatRunner {
         } catch (err) {
           log.error("Failed to send digest item", { chatId, itemId: item.id, error: String(err) });
         }
+      }
+    }
+
+    // Mark freshly-surfaced items so they don't appear in backlog surfacing
+    const surfacedIds = result.topItems.map((i) => i.id);
+    if (surfacedIds.length > 0) {
+      markItemsSurfaced(surfacedIds);
+    }
+  }
+
+  // --- Surface backlog: triaged items that were never sent to the user ---
+  private async surfaceBacklog(): Promise<void> {
+    const unsurfaced = getUnsurfacedTriagedItems(5);
+    if (unsurfaced.length === 0) return;
+
+    const bot = this.getBot();
+    if (!bot) return;
+
+    const targetChatIds: (string | number)[] = this.digestChatId
+      ? [this.digestChatId]
+      : this.defaultChatIds;
+    const topicOpts = this.digestChatId && this.digestTopicId
+      ? { message_thread_id: this.digestTopicId }
+      : {};
+
+    if (targetChatIds.length === 0) return;
+
+    // Skip if digest topic is muted
+    if (this.digestChatId && isTopicMuted(this.digestChatId, this.digestTopicId ?? null)) {
+      log.info("Backlog surfacing skipped (topic muted)");
+      return;
+    }
+
+    const totalUnsurfaced = unsurfaced.length;
+    log.info("Surfacing backlog items", { count: totalUnsurfaced });
+
+    const surfacedIds: number[] = [];
+
+    for (const chatId of targetChatIds) {
+      for (const item of unsurfaced) {
+        try {
+          const badge = this.valueTypeBadge(item.value_type ?? item.category);
+          const title = escapeHtml(item.title ?? "Untitled");
+          const link = item.url ? `<a href="${escapeHtml(item.url)}">${title}</a>` : title;
+          const value = escapeHtml(truncate(
+            item.quick_scan_summary ?? item.extracted_value ?? item.triage_summary ?? "", 200
+          ));
+          const source = item.platform ? ` — ${escapeHtml(item.platform)}` : "";
+          const profile = item.profile ? `/${escapeHtml(item.profile)}` : "";
+
+          const msg = [
+            `<b>${badge}</b>${item.priority ? ` (P${item.priority})` : ""} ${link}`,
+            `${value}${source}${profile}`,
+          ].join("\n");
+
+          const kb = new InlineKeyboard()
+            .text("Research", `rr:${item.id}`)
+            .text("Watch", `rw:${item.id}`)
+            .text("Archive", `rx:${item.id}`)
+            .text("Drop", `rd:${item.id}`);
+
+          await bot.api.sendMessage(chatId, msg, {
+            parse_mode: "HTML",
+            reply_markup: kb,
+            ...topicOpts,
+          });
+          surfacedIds.push(item.id);
+        } catch (err) {
+          log.error("Failed to send backlog item", { chatId, itemId: item.id, error: String(err) });
+        }
+      }
+    }
+
+    if (surfacedIds.length > 0) {
+      markItemsSurfaced(surfacedIds);
+      log.info("Marked items as surfaced", { count: surfacedIds.length });
+    }
+  }
+
+  // --- Phase 5: Execute queued research (triggered by Telegram buttons or NotePlan tags) ---
+  private async executeQueuedResearch(): Promise<void> {
+    const queued = getQueuedResearchItems(3);
+    if (queued.length === 0) return;
+
+    const bot = this.getBot();
+    log.info("Executing queued research", { count: queued.length });
+
+    const targetChatIds: (string | number)[] = this.digestChatId
+      ? [this.digestChatId]
+      : this.defaultChatIds;
+    const topicOpts = this.digestChatId && this.digestTopicId
+      ? { message_thread_id: this.digestTopicId }
+      : {};
+
+    for (const item of queued) {
+      const isDeep = item.auto_decision === "deep_research_queued";
+      const label = isDeep ? "Deep" : "Quick";
+
+      try {
+        updatePendingItem(item.id, { auto_decision: isDeep ? "deep_research_running" : "quick_research_running" });
+
+        log.info(`${label} research starting`, { itemId: item.id, url: item.url });
+        const result = isDeep
+          ? await deepResearch(item)
+          : await preliminaryResearch(item);
+
+        // Both quick and deep research create NotePlan notes with theme linking
+        const notePath = createResearchNote(item, result);
+        updatePendingItem(item.id, {
+          status: "archived",
+          auto_decision: isDeep ? "deep_research_done" : "quick_research_done",
+          quick_scan_summary: result.summary,
+          noteplan_path: notePath,
+        });
+
+        log.info(`${label} research complete`, { itemId: item.id, title: result.title });
+
+        // Send results to Telegram
+        if (bot && targetChatIds.length > 0) {
+          const findings = result.keyFindings.slice(0, isDeep ? 6 : 4).map((f) => `  - ${escapeHtml(f)}`).join("\n");
+          const actions = isDeep && result.suggestedActions.length > 0
+            ? `\n\n<b>Actions</b>\n${result.suggestedActions.map((a) => `  - ${escapeHtml(a)}`).join("\n")}`
+            : "";
+          const noteInfo = notePath ? `\n\nNote: ${escapeHtml(notePath.split("/").pop() ?? "")}` : "";
+
+          const msg = [
+            `<b>${label} Research:</b> ${escapeHtml(result.title)}`,
+            `ID: ${item.id}`,
+            ``,
+            escapeHtml(result.summary),
+            ``,
+            `<b>Findings</b>`,
+            findings,
+            actions,
+            noteInfo,
+          ].filter(Boolean).join("\n");
+
+          const kb = new InlineKeyboard();
+          if (!isDeep) kb.text("Deep Dive", `rds:${item.id}`);
+          kb.text("Watch", `rw:${item.id}`).text("Archive", `rx:${item.id}`);
+
+          for (const chatId of targetChatIds) {
+            try {
+              await bot.api.sendMessage(chatId, truncate(msg, 4000), {
+                parse_mode: "HTML",
+                reply_markup: kb,
+                ...topicOpts,
+              });
+            } catch (err) {
+              log.error("Failed to send research result", { chatId, itemId: item.id, error: String(err) });
+            }
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`${label} research failed`, { itemId: item.id, error: message });
+        updatePendingItem(item.id, { auto_decision: isDeep ? "deep_research_failed" : "quick_research_failed" });
       }
     }
   }
