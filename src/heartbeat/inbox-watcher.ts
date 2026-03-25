@@ -8,9 +8,9 @@ import type { PendingItem } from "../shared/types.ts";
 const log = createLogger("heartbeat:inbox-watcher");
 const NOTEPLAN_INBOX = join(homedir(), "Documents/NotePlan-Notes/Notes/00 - Inbox");
 
-interface InboxAction {
+export interface InboxAction {
   itemId: number;
-  action: "research" | "watch" | "archived";
+  action: "research-quick" | "research-deep" | "watch" | "archive" | "drop" | "retriage";
   noteplanPath: string;
 }
 
@@ -41,23 +41,39 @@ export function scanInbox(): InboxAction[] {
     const content = readFileSync(filePath, "utf-8");
     const tags = extractFrontmatterTags(content);
 
-    // Only process notes with user-added action tags
-    if (tags.includes("research") && item.auto_decision !== "deep_research_queued") {
-      updatePendingItem(item.id, { status: "archived", auto_decision: "deep_research_queued" });
-      actions.push({ itemId: item.id, action: "research", noteplanPath: filePath });
-      log.info("Inbox action: research", { itemId: item.id, path: filePath });
-    } else if (tags.includes("watch") && item.watch_status !== "watching") {
+    // Only process notes with user-added action tags (namespaced under action/)
+    const hasTag = (t: string) => tags.includes(t) || tags.includes(`action/${t}`);
+
+    if (hasTag("retriage") && item.status !== "pending") {
+      updatePendingItem(item.id, {
+        status: "pending",
+        auto_decision: null,
+        signal_score: null,
+        quick_scan_summary: null,
+        surfaced_at: null,
+      });
+      actions.push({ itemId: item.id, action: "retriage", noteplanPath: filePath });
+      log.info("Inbox action: retriage", { itemId: item.id, path: filePath });
+    } else if (hasTag("research-quick") && item.auto_decision !== "quick_research_queued") {
+      updatePendingItem(item.id, { auto_decision: "quick_research_queued" });
+      actions.push({ itemId: item.id, action: "research-quick", noteplanPath: filePath });
+      log.info("Inbox action: research-quick", { itemId: item.id, path: filePath });
+    } else if ((hasTag("research-deep") || hasTag("research")) && item.auto_decision !== "deep_research_queued") {
+      updatePendingItem(item.id, { auto_decision: "deep_research_queued" });
+      actions.push({ itemId: item.id, action: "research-deep", noteplanPath: filePath });
+      log.info("Inbox action: research-deep", { itemId: item.id, path: filePath });
+    } else if (hasTag("watch") && item.watch_status !== "watching") {
       updatePendingItem(item.id, { status: "archived", watch_status: "watching" });
       actions.push({ itemId: item.id, action: "watch", noteplanPath: filePath });
       log.info("Inbox action: watch", { itemId: item.id, path: filePath });
-    } else if (tags.includes("dropped") && item.status !== "deleted") {
+    } else if (hasTag("drop") && item.status !== "deleted") {
       updatePendingItem(item.id, { status: "deleted" });
-      actions.push({ itemId: item.id, action: "archived", noteplanPath: filePath });
-      log.info("Inbox action: dropped (tag)", { itemId: item.id, path: filePath });
-    } else if (tags.includes("archived") && item.status !== "archived") {
+      actions.push({ itemId: item.id, action: "drop", noteplanPath: filePath });
+      log.info("Inbox action: drop", { itemId: item.id, path: filePath });
+    } else if (hasTag("archive") && item.status !== "archived") {
       updatePendingItem(item.id, { status: "archived" });
-      actions.push({ itemId: item.id, action: "archived", noteplanPath: filePath });
-      log.info("Inbox action: archived (tag)", { itemId: item.id, path: filePath });
+      actions.push({ itemId: item.id, action: "archive", noteplanPath: filePath });
+      log.info("Inbox action: archive", { itemId: item.id, path: filePath });
     }
   }
 
@@ -65,8 +81,8 @@ export function scanInbox(): InboxAction[] {
   for (const [path, item] of itemsByPath) {
     if (!existsSync(path) && item.status !== "archived" && item.status !== "deleted") {
       updatePendingItem(item.id, { status: "archived" });
-      actions.push({ itemId: item.id, action: "archived", noteplanPath: path });
-      log.info("Inbox action: archived (note deleted)", { itemId: item.id, path });
+      actions.push({ itemId: item.id, action: "archive", noteplanPath: path });
+      log.info("Inbox action: archive (note deleted)", { itemId: item.id, path });
     }
   }
 
