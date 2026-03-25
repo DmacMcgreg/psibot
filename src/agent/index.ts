@@ -41,11 +41,8 @@ export type AgentServiceDeps = ToolDeps;
 
 export class AgentService {
   private memory: MemorySystem;
-  private toolServer: ReturnType<typeof createAgentTools>;
-  private mediaToolServer: ReturnType<typeof createMediaTools>;
-  private youtubeToolServer: ReturnType<typeof createYoutubeTools>;
+  private deps: AgentServiceDeps;
   private agentDefinitions: ReturnType<typeof buildAgentDefinitions>;
-  private tradingServer: ReturnType<typeof createTradingMcpServer>;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
   private _keepAlive: (() => void) | null = null;
   private _pendingRestart = false;
@@ -66,15 +63,27 @@ export class AgentService {
 
   constructor(deps: AgentServiceDeps) {
     this.memory = deps.memory;
-    this.toolServer = createAgentTools(deps);
-    this.mediaToolServer = createMediaTools();
-    this.youtubeToolServer = createYoutubeTools({
-      getBot: deps.getBot,
-      defaultChatIds: deps.defaultChatIds,
-      keepAlive: () => this._keepAlive?.(),
-    });
+    this.deps = deps;
     this.agentDefinitions = buildAgentDefinitions();
-    this.tradingServer = createTradingMcpServer();
+  }
+
+  /** Create fresh MCP servers for each run to avoid transport conflicts. */
+  private createMcpServers(chatContext?: AgentRunOptions["chatContext"]) {
+    const toolBundle = createAgentTools(this.deps);
+    toolBundle.setChatContext(chatContext);
+    return {
+      toolBundle,
+      servers: {
+        "agent-tools": toolBundle.server,
+        "media-tools": createMediaTools(),
+        "youtube-tools": createYoutubeTools({
+          getBot: this.deps.getBot,
+          defaultChatIds: this.deps.defaultChatIds,
+          keepAlive: () => this._keepAlive?.(),
+        }),
+        "trading-bot": createTradingMcpServer(),
+      } as Record<string, ReturnType<typeof createAgentTools>["server"]>,
+    };
   }
 
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -114,13 +123,8 @@ export class AgentService {
         }
       : undefined;
 
-    // Build MCP servers — add GLM-specific servers when using GLM backend
-    const mcpServers: Record<string, unknown> = {
-      "agent-tools": this.toolServer,
-      "media-tools": this.mediaToolServer,
-      "youtube-tools": this.youtubeToolServer,
-      "trading-bot": this.tradingServer,
-    };
+    // Create fresh MCP servers for this run (avoids transport conflicts on concurrent runs)
+    const { servers: mcpServers } = this.createMcpServers(options.chatContext);
     if (backend === "glm") {
       Object.assign(mcpServers, getGlmMcpServers());
     }
@@ -137,7 +141,7 @@ export class AgentService {
         // maxBudgetUsd: maxBudget,
         settingSources: [],
         ...(options.allowedTools ? { allowedTools: [...options.allowedTools, "Skill"] } : {}),
-        mcpServers: mcpServers as Record<string, ReturnType<typeof createAgentTools>>,
+        mcpServers,
         agents: this.agentDefinitions,
         ...(options.sessionId ? { resume: options.sessionId } : {}),
         ...(envOverride ? { env: envOverride } : {}),

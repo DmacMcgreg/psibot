@@ -246,6 +246,73 @@ export function createTradingMcpServer() {
         }
       ),
 
+      tool(
+        "open_paper_position",
+        "Open a paper trading position. Use this to act on strategy recommendations — put money where the research says to. Track performance over time to validate that research translates to real returns.",
+        {
+          symbol: z.string().describe("Stock ticker symbol"),
+          shares: z.number().describe("Number of shares to buy"),
+          cost_basis: z.number().describe("Price per share (use current market price)"),
+          strategy: z.string().optional().describe("Which strategy/composite recommended this trade"),
+          reason: z.string().optional().describe("Brief rationale for the trade"),
+        },
+        async (args) => {
+          try {
+            const data = await api("/portfolio/positions", {
+              method: "POST",
+              body: JSON.stringify({
+                symbol: args.symbol,
+                shares: args.shares,
+                cost_basis: args.cost_basis,
+              }),
+            });
+            return ok(JSON.stringify({ ...data, strategy: args.strategy, reason: args.reason }, null, 2));
+          } catch (e) {
+            return err(`Failed to open position: ${e}`);
+          }
+        }
+      ),
+
+      tool(
+        "close_paper_position",
+        "Close a paper trading position by ID. Use when a strategy signals exit or stop-loss is hit.",
+        {
+          position_id: z.number().describe("Position ID from trading_portfolio"),
+        },
+        async (args) => {
+          try {
+            await api(`/portfolio/positions/${args.position_id}`, { method: "DELETE" });
+            return ok(`Position ${args.position_id} closed.`);
+          } catch (e) {
+            return err(`Failed to close position: ${e}`);
+          }
+        }
+      ),
+
+      tool(
+        "update_paper_position",
+        "Update shares or cost basis of an existing paper position (e.g., to add to a position).",
+        {
+          position_id: z.number().describe("Position ID from trading_portfolio"),
+          shares: z.number().optional().describe("New total shares"),
+          cost_basis: z.number().optional().describe("New cost basis per share"),
+        },
+        async (args) => {
+          try {
+            const data = await api(`/portfolio/positions/${args.position_id}`, {
+              method: "PUT",
+              body: JSON.stringify({
+                shares: args.shares,
+                cost_basis: args.cost_basis,
+              }),
+            });
+            return ok(JSON.stringify(data, null, 2));
+          } catch (e) {
+            return err(`Failed to update position: ${e}`);
+          }
+        }
+      ),
+
       // --- Backtesting ---
 
       tool(
@@ -295,7 +362,7 @@ export function createTradingMcpServer() {
               method: "POST",
               body: JSON.stringify({
                 strategies: args.strategies.map((s) => ({
-                  strategy_name: s.name,
+                  name: s.name,
                   ...(s.parameters ? { strategy_parameters: s.parameters } : {}),
                 })),
                 symbols: args.symbols,
