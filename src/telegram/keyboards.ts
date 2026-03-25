@@ -456,8 +456,14 @@ export function createCallbackHandler(deps: CallbackDeps) {
 
 
         case "rr": {
-          // Research — show quick/deep research buttons
+          // Research — swap buttons immediately, background the rest
           const id = parseInt(payload, 10);
+          const researchKb = new InlineKeyboard()
+            .text("Quick Scan", `rqs:${id}`)
+            .text("Deep Dive", `rds:${id}`);
+          await ctx.answerCallbackQuery({ text: "Pick research depth" });
+          await ctx.editMessageReplyMarkup({ reply_markup: researchKb }).catch(() => {});
+          // Background: DB updates, NotePlan tag, autonomy feedback
           const rrItem = getPendingItemById(id);
           updatePendingItem(id, { status: "archived", auto_decision: "research_requested" });
           addNoteplanTag(rrItem?.noteplan_path ?? null, "action/research");
@@ -470,11 +476,6 @@ export function createCallbackHandler(deps: CallbackDeps) {
               userAction: "research",
             });
           }
-          await ctx.answerCallbackQuery({ text: "Pick research depth" });
-          const researchKb = new InlineKeyboard()
-            .text("Quick Scan", `rqs:${id}`)
-            .text("Deep Dive", `rds:${id}`);
-          await ctx.editMessageReplyMarkup({ reply_markup: researchKb }).catch(() => {});
           break;
         }
 
@@ -497,8 +498,10 @@ export function createCallbackHandler(deps: CallbackDeps) {
         }
 
         case "rw": {
-          // Watch — mark item for monitoring, remove from digest
+          // Watch — respond immediately, background the rest
           const id = parseInt(payload, 10);
+          await ctx.answerCallbackQuery({ text: "Watching this topic" });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           const rwItem = getPendingItemById(id);
           updatePendingItem(id, { status: "archived", watch_status: "watching" });
           addNoteplanTag(rwItem?.noteplan_path ?? null, "action/watch");
@@ -511,48 +514,122 @@ export function createCallbackHandler(deps: CallbackDeps) {
               userAction: "watch",
             });
           }
-          await ctx.answerCallbackQuery({ text: "Watching this topic" });
-          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
         }
 
         case "rx": {
-          // Archive
+          // Archive — for P1-3 items, ask for a reason first
           const id = parseInt(payload, 10);
           const rxItem = getPendingItemById(id);
-          updatePendingItem(id, { status: "archived" });
-          addNoteplanTag(rxItem?.noteplan_path ?? null, "action/archive");
-          insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
-          if (rxItem) {
-            updateAutonomyFromFeedback({
-              signalType: "compound",
-              signalValue: compoundSignalKey(rxItem),
-              systemRecommendation: "triage",
-              userAction: "archive",
-            });
+          if (rxItem && rxItem.priority !== null && rxItem.priority <= 3) {
+            await ctx.answerCallbackQuery({ text: "Why archive?" });
+            const reasonKb = new InlineKeyboard()
+              .text("Already knew", `rxr:${id}:known`)
+              .text("Outdated", `rxr:${id}:outdated`)
+              .row()
+              .text("Not relevant", `rxr:${id}:irrelevant`)
+              .text("Low quality", `rxr:${id}:low_quality`)
+              .row()
+              .text("Skip reason", `rxr:${id}:none`);
+            await ctx.editMessageReplyMarkup({ reply_markup: reasonKb }).catch(() => {});
+          } else {
+            await ctx.answerCallbackQuery({ text: "Archived" });
+            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+            updatePendingItem(id, { status: "archived" });
+            addNoteplanTag(rxItem?.noteplan_path ?? null, "action/archive");
+            insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
+            if (rxItem) {
+              updateAutonomyFromFeedback({
+                signalType: "compound",
+                signalValue: compoundSignalKey(rxItem),
+                systemRecommendation: "triage",
+                userAction: "archive",
+              });
+            }
           }
+          break;
+        }
+
+        case "rxr": {
+          // Archive with reason — payload is "id:reason"
+          const [idStr, reason] = payload.split(":");
+          const id = parseInt(idStr, 10);
           await ctx.answerCallbackQuery({ text: "Archived" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          const rxrItem = getPendingItemById(id);
+          updatePendingItem(id, { status: "archived" });
+          addNoteplanTag(rxrItem?.noteplan_path ?? null, "action/archive");
+          insertFeedbackLog({
+            item_id: id,
+            user_action: `archive:${reason}`,
+            system_recommendation: "triage",
+          });
+          if (rxrItem) {
+            updateAutonomyFromFeedback({
+              signalType: "compound",
+              signalValue: compoundSignalKey(rxrItem),
+              systemRecommendation: "triage",
+              userAction: `archive:${reason}`,
+            });
+          }
           break;
         }
 
         case "rd": {
-          // Drop — mark as deleted
+          // Drop — for P1-3 items, ask for a reason first
           const id = parseInt(payload, 10);
           const rdItem = getPendingItemById(id);
-          updatePendingItem(id, { status: "deleted" });
-          addNoteplanTag(rdItem?.noteplan_path ?? null, "action/drop");
-          insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
-          if (rdItem) {
-            updateAutonomyFromFeedback({
-              signalType: "compound",
-              signalValue: compoundSignalKey(rdItem),
-              systemRecommendation: "triage",
-              userAction: "drop",
-            });
+          if (rdItem && rdItem.priority !== null && rdItem.priority <= 3) {
+            await ctx.answerCallbackQuery({ text: "Why drop?" });
+            const reasonKb = new InlineKeyboard()
+              .text("Already knew", `rdr:${id}:known`)
+              .text("Outdated", `rdr:${id}:outdated`)
+              .row()
+              .text("Not relevant", `rdr:${id}:irrelevant`)
+              .text("Low quality", `rdr:${id}:low_quality`)
+              .row()
+              .text("Skip reason", `rdr:${id}:none`);
+            await ctx.editMessageReplyMarkup({ reply_markup: reasonKb }).catch(() => {});
+          } else {
+            await ctx.answerCallbackQuery({ text: "Dropped" });
+            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+            updatePendingItem(id, { status: "deleted" });
+            addNoteplanTag(rdItem?.noteplan_path ?? null, "action/drop");
+            insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
+            if (rdItem) {
+              updateAutonomyFromFeedback({
+                signalType: "compound",
+                signalValue: compoundSignalKey(rdItem),
+                systemRecommendation: "triage",
+                userAction: "drop",
+              });
+            }
           }
+          break;
+        }
+
+        case "rdr": {
+          // Drop with reason — payload is "id:reason"
+          const [idStr, reason] = payload.split(":");
+          const id = parseInt(idStr, 10);
           await ctx.answerCallbackQuery({ text: "Dropped" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          const rdrItem = getPendingItemById(id);
+          updatePendingItem(id, { status: "deleted" });
+          addNoteplanTag(rdrItem?.noteplan_path ?? null, "action/drop");
+          insertFeedbackLog({
+            item_id: id,
+            user_action: `drop:${reason}`,
+            system_recommendation: "triage",
+          });
+          if (rdrItem) {
+            updateAutonomyFromFeedback({
+              signalType: "compound",
+              signalValue: compoundSignalKey(rdrItem),
+              systemRecommendation: "triage",
+              userAction: `drop:${reason}`,
+            });
+          }
           break;
         }
 

@@ -42,6 +42,8 @@ export function createTelegramBot(deps: TelegramDeps) {
     scheduler: deps.scheduler,
     state,
     runAgent: commands.runAgent,
+    runQuickResearch: commands.runQuickResearchById,
+    runDeepResearch: commands.runDeepResearchById,
   });
   bot.on("callback_query:data", callbackHandler);
 

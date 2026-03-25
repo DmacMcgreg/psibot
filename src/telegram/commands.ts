@@ -812,6 +812,22 @@ export function registerCommands(deps: CommandDeps) {
     handleSave,
     handleResearch,
     runAgent,
+    runQuickResearchById: async (ctx: Context, itemId: number) => {
+      const item = getPendingItemById(itemId);
+      if (!item) {
+        await replyMd2(ctx, `Item ${itemId} not found.`);
+        return;
+      }
+      await runQuickResearch(ctx, item);
+    },
+    runDeepResearchById: async (ctx: Context, itemId: number) => {
+      const item = getPendingItemById(itemId);
+      if (!item) {
+        await replyMd2(ctx, `Item ${itemId} not found.`);
+        return;
+      }
+      await runDeepResearch(ctx, item);
+    },
   };
 
   async function handleResearch(ctx: Context): Promise<void> {
@@ -871,10 +887,13 @@ export function registerCommands(deps: CommandDeps) {
 
     try {
       const prelim = await preliminaryResearch(item);
+      const notePath = createResearchNote(item, prelim);
 
       updatePendingItem(item.id, {
-        status: "triaged",
+        status: "archived",
+        auto_decision: "quick_research_done",
         quick_scan_summary: prelim.summary,
+        noteplan_path: notePath,
       });
 
       const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -893,6 +912,7 @@ export function registerCommands(deps: CommandDeps) {
       ].filter(Boolean).join("\n");
 
       const kb = new InlineKeyboard()
+        .text("Deep Dive", `rds:${item.id}`)
         .text("Watch", `rw:${item.id}`)
         .text("Archive", `rx:${item.id}`);
 
