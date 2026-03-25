@@ -208,7 +208,7 @@ function buildNotePlanContent(
     .join("\n");
 
   return `---
-title: "${title.replace(/"/g, '\\"')}"
+title: ${title.replace(/:/g, " -")}
 url: ${item.url}
 source: ${item.source}
 researched: ${today}
@@ -325,7 +325,26 @@ Return ONLY the JSON object after completing your research.
 
   log.info("Starting preliminary research", { itemId: item.id, url: item.url });
 
-  const response = await queryGlmWithTools(prompt, 10);
+  // Try GLM first, fallback to Claude on failure
+  let response: string;
+  try {
+    response = await queryGlmWithTools(prompt, 10);
+  } catch (err) {
+    log.warn("GLM research failed, falling back to Claude", {
+      itemId: item.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    try {
+      response = await queryClaude(prompt, 10);
+    } catch (err2) {
+      log.error("Claude research fallback also failed", {
+        itemId: item.id,
+        error: err2 instanceof Error ? err2.message : String(err2),
+      });
+      throw err2;
+    }
+  }
+
   const result = parseResearchResponse(response, item, fallbackTitle);
 
   log.info("Preliminary research complete", {
@@ -388,7 +407,26 @@ Return ONLY the JSON object.
 
   log.info("Starting deep research", { itemId: item.id, url: item.url });
 
-  const response = await queryClaude(prompt, 15);
+  // Try Claude first, fallback to GLM on failure
+  let response: string;
+  try {
+    response = await queryClaude(prompt, 15);
+  } catch (err) {
+    log.warn("Claude deep research failed, falling back to GLM", {
+      itemId: item.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    try {
+      response = await queryGlmWithTools(prompt, 15);
+    } catch (err2) {
+      log.error("GLM deep research fallback also failed", {
+        itemId: item.id,
+        error: err2 instanceof Error ? err2.message : String(err2),
+      });
+      throw err2;
+    }
+  }
+
   const result = parseResearchResponse(response, item, fallbackTitle);
 
   log.info("Deep research complete", {
