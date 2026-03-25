@@ -658,7 +658,7 @@ function createInboxNote(
 
     const lines = [
       "---",
-      `title: "${safeTitle}"`,
+      `title: ${safeTitle}`,
       `created: ${new Date().toISOString().slice(0, 10)}`,
       `type: ${valueLabel.toLowerCase()}`,
       `priority: ${result.priority}`,
