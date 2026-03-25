@@ -206,6 +206,7 @@ export interface PendingItem {
   signal_score: number | null;
   value_type: ValueType | null;
   extracted_value: string | null;
+  surfaced_at: string | null;
   created_at: string;
 }
 

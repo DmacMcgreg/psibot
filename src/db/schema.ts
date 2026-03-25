@@ -370,4 +370,17 @@ export const MIGRATIONS = [
   `UPDATE youtube_topics SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
   `UPDATE youtube_topic_links SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
   `UPDATE youtube_topic_relations SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
+
+  // Track when triaged items are surfaced to the user
+  `ALTER TABLE pending_items ADD COLUMN surfaced_at TEXT`,
+
+  // Topic-level notification muting
+  `CREATE TABLE IF NOT EXISTS muted_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    topic_id INTEGER,
+    muted_until TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(chat_id, topic_id)
+  )`,
 ];
