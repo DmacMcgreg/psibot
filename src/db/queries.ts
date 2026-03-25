@@ -883,7 +883,7 @@ export function getPendingItemByUrl(url: string): PendingItem | null {
 
 export function updatePendingItem(
   id: number,
-  params: Partial<Pick<PendingItem, "status" | "priority" | "category" | "triage_summary" | "noteplan_path" | "title" | "description" | "quick_scan_summary" | "theme_id" | "relevance_window" | "watch_status" | "auto_decision" | "signal_score" | "value_type" | "extracted_value">>
+  params: Partial<Pick<PendingItem, "status" | "priority" | "category" | "triage_summary" | "noteplan_path" | "title" | "description" | "quick_scan_summary" | "theme_id" | "relevance_window" | "watch_status" | "auto_decision" | "signal_score" | "value_type" | "extracted_value" | "surfaced_at">>
 ): void {
   const db = getDb();
   const sets: string[] = [];
@@ -911,6 +911,90 @@ export function getPendingItemCount(status?: PendingItemStatus): number {
   return (db.prepare<{ cnt: number }, []>(
     `SELECT COUNT(*) as cnt FROM pending_items`
   ).get())?.cnt ?? 0;
+}
+
+export function getQueuedResearchItems(limit: number = 3): PendingItem[] {
+  const db = getDb();
+  return db
+    .prepare<PendingItem, [number]>(
+      `SELECT * FROM pending_items
+       WHERE auto_decision IN ('quick_research_queued', 'deep_research_queued')
+       ORDER BY
+         CASE WHEN priority IS NOT NULL THEN priority ELSE 99 END ASC,
+         created_at ASC
+       LIMIT ?`
+    )
+    .all(limit);
+}
+
+export function getUnsurfacedTriagedItems(limit: number = 5): PendingItem[] {
+  const db = getDb();
+  return db
+    .prepare<PendingItem, [number]>(
+      `SELECT * FROM pending_items
+       WHERE status = 'triaged' AND surfaced_at IS NULL
+       ORDER BY
+         CASE WHEN priority IS NOT NULL THEN priority ELSE 99 END ASC,
+         COALESCE(signal_score, 0) DESC,
+         created_at DESC
+       LIMIT ?`
+    )
+    .all(limit);
+}
+
+export function markItemsSurfaced(ids: number[]): void {
+  if (ids.length === 0) return;
+  const db = getDb();
+  const placeholders = ids.map(() => "?").join(",");
+  db.prepare(
+    `UPDATE pending_items SET surfaced_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id IN (${placeholders})`
+  ).run(...ids);
+}
+
+// --- Topic Muting ---
+
+export function muteTopic(chatId: string, topicId: number | null, mutedUntil: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO muted_topics (chat_id, topic_id, muted_until)
+     VALUES (?, ?, ?)
+     ON CONFLICT(chat_id, topic_id) DO UPDATE SET muted_until = excluded.muted_until`
+  ).run(chatId, topicId, mutedUntil);
+}
+
+export function unmuteTopic(chatId: string, topicId: number | null): void {
+  const db = getDb();
+  db.prepare(
+    `DELETE FROM muted_topics WHERE chat_id = ? AND topic_id IS ?`
+  ).run(chatId, topicId);
+}
+
+export function isTopicMuted(chatId: string, topicId: number | null): boolean {
+  const db = getDb();
+  const row = db.prepare<{ muted_until: string }, [string, number | null]>(
+    `SELECT muted_until FROM muted_topics WHERE chat_id = ? AND topic_id IS ?`
+  ).get(chatId, topicId);
+  if (!row) return false;
+  const until = new Date(row.muted_until.endsWith("Z") ? row.muted_until : row.muted_until + "Z");
+  if (until <= new Date()) {
+    // Expired — clean up
+    unmuteTopic(chatId, topicId);
+    return false;
+  }
+  return true;
+}
+
+interface MutedTopicRow {
+  chat_id: string;
+  topic_id: number | null;
+  muted_until: string;
+}
+
+export function getMutedTopics(): MutedTopicRow[] {
+  const db = getDb();
+  return db.prepare<MutedTopicRow, []>(
+    `SELECT chat_id, topic_id, muted_until FROM muted_topics ORDER BY muted_until`
+  ).all();
 }
 
 export function getRecentSnapshots(
