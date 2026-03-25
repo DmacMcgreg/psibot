@@ -5,12 +5,14 @@ import {
   completeJobRun,
   updateJob,
   getJobRuns,
+  isTopicMuted,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
 import { splitMessage, markdownToTelegramV2 } from "../telegram/format.ts";
+import { briefKeyboard } from "../telegram/keyboards.ts";
 import { PLIST_LABEL } from "../cli/paths.ts";
 import type { RunStatus } from "../shared/types.ts";
-import type { Bot } from "grammy";
+import type { Bot, InlineKeyboard } from "grammy";
 
 const log = createLogger("scheduler:executor");
 
@@ -119,10 +121,15 @@ export class JobExecutor {
         || /cannot invoke it manually/i.test(result.result)
         || /doesn't appear to be registered/i.test(result.result);
       if (!isSilent) {
+        // Attach interactive keyboard for briefs
+        const isBrief = /brief/i.test(job.name);
+        const keyboard = isBrief ? briefKeyboard(run.id) : undefined;
+
         await this.notify(
           `Job "${job.name}" completed\n\n${result.result}`,
           job.notify_chat_id ?? undefined,
           job.notify_topic_id ?? undefined,
+          keyboard,
         );
       } else {
         log.info("Job notification suppressed (silent/no-op)", { jobId, name: job.name });
@@ -215,17 +222,26 @@ INSTRUCTIONS:
     }
   }
 
-  private async notify(text: string, chatId?: string, topicId?: number): Promise<void> {
+  private async notify(text: string, chatId?: string, topicId?: number, keyboard?: InlineKeyboard): Promise<void> {
     if (!this.bot) return;
+
+    // Check topic-level mute
+    if (chatId && isTopicMuted(chatId, topicId ?? null)) {
+      log.info("Notification muted", { chatId, topicId });
+      return;
+    }
+
     const chunks = splitMessage(text);
 
     if (chatId) {
       // Send to specific group chat / topic
       try {
-        for (const chunk of chunks) {
-          await this.bot.api.sendMessage(chatId, markdownToTelegramV2(chunk), {
+        for (let i = 0; i < chunks.length; i++) {
+          const isLast = i === chunks.length - 1;
+          await this.bot.api.sendMessage(chatId, markdownToTelegramV2(chunks[i]), {
             parse_mode: "MarkdownV2",
             ...(topicId ? { message_thread_id: topicId } : {}),
+            ...(isLast && keyboard ? { reply_markup: keyboard } : {}),
           });
         }
       } catch (err) {
@@ -233,8 +249,12 @@ INSTRUCTIONS:
         // Fall through to DM as fallback
         for (const userId of this.notifyUserIds) {
           try {
-            for (const chunk of chunks) {
-              await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunk), { parse_mode: "MarkdownV2" });
+            for (let i = 0; i < chunks.length; i++) {
+              const isLast = i === chunks.length - 1;
+              await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunks[i]), {
+                parse_mode: "MarkdownV2",
+                ...(isLast && keyboard ? { reply_markup: keyboard } : {}),
+              });
             }
           } catch (e) {
             log.error("Failed to send DM fallback", { userId, error: String(e) });
@@ -245,8 +265,12 @@ INSTRUCTIONS:
       // Default: DM to all notify users
       for (const userId of this.notifyUserIds) {
         try {
-          for (const chunk of chunks) {
-            await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunk), { parse_mode: "MarkdownV2" });
+          for (let i = 0; i < chunks.length; i++) {
+            const isLast = i === chunks.length - 1;
+            await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunks[i]), {
+              parse_mode: "MarkdownV2",
+              ...(isLast && keyboard ? { reply_markup: keyboard } : {}),
+            });
           }
         } catch (err) {
           log.error("Failed to send notification", { userId, error: String(err) });

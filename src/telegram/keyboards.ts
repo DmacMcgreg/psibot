@@ -26,6 +26,14 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const log = createLogger("telegram:keyboards");
 
+/** Build a compound signal key from an item's triage data for autonomy learning. */
+function compoundSignalKey(item: { platform: string | null; profile: string | null; value_type: string | null }): string {
+  const platform = item.platform ?? "unknown";
+  const profile = item.profile ?? "*";
+  const valueType = item.value_type ?? "unknown";
+  return `${platform}:${profile}:${valueType}`;
+}
+
 /** Update a tag in a NotePlan note's YAML frontmatter. */
 function addNoteplanTag(noteplanPath: string | null, tag: string): void {
   if (!noteplanPath || !existsSync(noteplanPath)) return;
@@ -138,6 +146,24 @@ export function approvalKeyboard(reminderId: number): InlineKeyboard {
     .text("REJECT", `br:${reminderId}`);
 }
 
+/**
+ * Morning Brief keyboard — section-specific drill-down buttons.
+ * Each section button spawns an agent conversation about that topic.
+ * The "Reply" button starts a general conversation about the brief.
+ */
+export function briefKeyboard(jobRunId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Markets", `bf:${jobRunId}:markets`)
+    .text("Calendar", `bf:${jobRunId}:calendar`)
+    .text("Inbox", `bf:${jobRunId}:inbox`)
+    .row()
+    .text("Email", `bf:${jobRunId}:email`)
+    .text("Tasks", `bf:${jobRunId}:tasks`)
+    .text("Actions", `bf:${jobRunId}:actions`)
+    .row()
+    .text("Reply", `bfr:${jobRunId}`);
+}
+
 // --- Callback Data Parser ---
 
 interface CallbackAction {
@@ -164,6 +190,8 @@ interface CallbackDeps {
   scheduler: Scheduler;
   state: ChatState;
   runAgent: (ctx: Context, prompt: string) => Promise<void>;
+  runQuickResearch: (ctx: Context, itemId: number) => Promise<void>;
+  runDeepResearch: (ctx: Context, itemId: number) => Promise<void>;
 }
 
 export function createCallbackHandler(deps: CallbackDeps) {
@@ -428,30 +456,43 @@ export function createCallbackHandler(deps: CallbackDeps) {
 
 
         case "rr": {
-          // Research — user wants to research this item
+          // Research — show quick/deep research buttons
           const id = parseInt(payload, 10);
           const rrItem = getPendingItemById(id);
           updatePendingItem(id, { status: "archived", auto_decision: "research_requested" });
-          addNoteplanTag(rrItem?.noteplan_path ?? null, "research");
+          addNoteplanTag(rrItem?.noteplan_path ?? null, "action/research");
           insertFeedbackLog({ item_id: id, user_action: "research", system_recommendation: "triage" });
-          updateAutonomyFromFeedback({
-            signalType: "digest_item",
-            signalValue: "source:telegram",
-            systemRecommendation: "triage",
-            userAction: "research",
-          });
-          await ctx.answerCallbackQuery({ text: "Queued for research" });
-          // Replace buttons with just the hint text
-          const hint = `Use <code>/research ${id}</code> for quick scan or <code>/research deep ${id}</code> for full dive`;
-          const origText = ctx.callbackQuery?.message && "text" in ctx.callbackQuery.message
-            ? ctx.callbackQuery.message.text ?? ""
-            : "";
-          try {
-            await ctx.editMessageText(origText + "\n\n" + hint, { parse_mode: "HTML" });
-          } catch {
-            // If edit fails, just remove the keyboard
-            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          if (rrItem) {
+            updateAutonomyFromFeedback({
+              signalType: "compound",
+              signalValue: compoundSignalKey(rrItem),
+              systemRecommendation: "triage",
+              userAction: "research",
+            });
           }
+          await ctx.answerCallbackQuery({ text: "Pick research depth" });
+          const researchKb = new InlineKeyboard()
+            .text("Quick Scan", `rqs:${id}`)
+            .text("Deep Dive", `rds:${id}`);
+          await ctx.editMessageReplyMarkup({ reply_markup: researchKb }).catch(() => {});
+          break;
+        }
+
+        case "rqs": {
+          // Quick scan research
+          const id = parseInt(payload, 10);
+          await ctx.answerCallbackQuery({ text: "Starting quick scan..." });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          await deps.runQuickResearch(ctx, id);
+          break;
+        }
+
+        case "rds": {
+          // Deep dive research
+          const id = parseInt(payload, 10);
+          await ctx.answerCallbackQuery({ text: "Starting deep research..." });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          await deps.runDeepResearch(ctx, id);
           break;
         }
 
@@ -460,14 +501,16 @@ export function createCallbackHandler(deps: CallbackDeps) {
           const id = parseInt(payload, 10);
           const rwItem = getPendingItemById(id);
           updatePendingItem(id, { status: "archived", watch_status: "watching" });
-          addNoteplanTag(rwItem?.noteplan_path ?? null, "watch");
+          addNoteplanTag(rwItem?.noteplan_path ?? null, "action/watch");
           insertFeedbackLog({ item_id: id, user_action: "watch", system_recommendation: "triage" });
-          updateAutonomyFromFeedback({
-            signalType: "digest_item",
-            signalValue: "source:telegram",
-            systemRecommendation: "triage",
-            userAction: "watch",
-          });
+          if (rwItem) {
+            updateAutonomyFromFeedback({
+              signalType: "compound",
+              signalValue: compoundSignalKey(rwItem),
+              systemRecommendation: "triage",
+              userAction: "watch",
+            });
+          }
           await ctx.answerCallbackQuery({ text: "Watching this topic" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
@@ -478,14 +521,16 @@ export function createCallbackHandler(deps: CallbackDeps) {
           const id = parseInt(payload, 10);
           const rxItem = getPendingItemById(id);
           updatePendingItem(id, { status: "archived" });
-          addNoteplanTag(rxItem?.noteplan_path ?? null, "archived");
+          addNoteplanTag(rxItem?.noteplan_path ?? null, "action/archive");
           insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
-          updateAutonomyFromFeedback({
-            signalType: "digest_item",
-            signalValue: "source:telegram",
-            systemRecommendation: "triage",
-            userAction: "archive",
-          });
+          if (rxItem) {
+            updateAutonomyFromFeedback({
+              signalType: "compound",
+              signalValue: compoundSignalKey(rxItem),
+              systemRecommendation: "triage",
+              userAction: "archive",
+            });
+          }
           await ctx.answerCallbackQuery({ text: "Archived" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
@@ -496,16 +541,64 @@ export function createCallbackHandler(deps: CallbackDeps) {
           const id = parseInt(payload, 10);
           const rdItem = getPendingItemById(id);
           updatePendingItem(id, { status: "deleted" });
-          addNoteplanTag(rdItem?.noteplan_path ?? null, "dropped");
+          addNoteplanTag(rdItem?.noteplan_path ?? null, "action/drop");
           insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
-          updateAutonomyFromFeedback({
-            signalType: "digest_item",
-            signalValue: "source:telegram",
-            systemRecommendation: "triage",
-            userAction: "drop",
-          });
+          if (rdItem) {
+            updateAutonomyFromFeedback({
+              signalType: "compound",
+              signalValue: compoundSignalKey(rdItem),
+              systemRecommendation: "triage",
+              userAction: "drop",
+            });
+          }
           await ctx.answerCallbackQuery({ text: "Dropped" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "bf": {
+          // Brief section drill-down: payload = "jobRunId:section"
+          const sepIdx = payload.indexOf(":");
+          const section = sepIdx >= 0 ? payload.slice(sepIdx + 1) : payload;
+          const briefMsg = ctx.callbackQuery?.message?.text ?? "";
+
+          const sectionLabels: Record<string, string> = {
+            markets: "Markets",
+            calendar: "Calendar & Schedule",
+            inbox: "Inbox",
+            email: "Gmail / Email",
+            tasks: "Tasks",
+            actions: "Actions Needed",
+          };
+          const label = sectionLabels[section] ?? section;
+
+          await ctx.answerCallbackQuery({ text: `Expanding ${label}...` });
+
+          // Spawn an agent conversation with the brief as context
+          state.resetChats.add(sKey);
+          state.bootedChats.delete(sKey);
+          state.resumeOverrides.delete(sKey);
+          await runAgent(
+            ctx,
+            `Here is today's morning brief:\n\n${briefMsg}\n\nGive me a detailed breakdown of the "${label}" section. ` +
+            `Expand on the key points, provide additional context, and suggest specific actions I should take. ` +
+            `Use the available tools to get live data if relevant.`
+          );
+          break;
+        }
+
+        case "bfr": {
+          // Brief reply — start a general conversation about the brief
+          const briefText = ctx.callbackQuery?.message?.text ?? "";
+          await ctx.answerCallbackQuery({ text: "Starting conversation..." });
+
+          state.resetChats.add(sKey);
+          state.bootedChats.delete(sKey);
+          state.resumeOverrides.delete(sKey);
+          await runAgent(
+            ctx,
+            `Here is today's morning brief:\n\n${briefText}\n\nI'd like to discuss this brief. What questions do you have, or what should I focus on?`
+          );
           break;
         }
 
