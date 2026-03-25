@@ -3,6 +3,7 @@ import { z } from "zod";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { MemorySystem } from "../memory/index.ts";
+import type { ChatContext } from "../shared/types.ts";
 import {
   createJob,
   getAllJobs,
@@ -27,6 +28,9 @@ import {
   getPendingItemById,
   updatePendingItem,
   insertReminder,
+  muteTopic,
+  unmuteTopic,
+  getMutedTopics,
 } from "../db/queries.ts";
 import {
   preliminaryResearch,
@@ -60,7 +64,10 @@ export function createAgentTools(deps: ToolDeps) {
   const worktreesDir = join(psibotDir, "worktrees");
   const allAllowedChatIds = [...defaultChatIds, ...groupChatIds];
 
-  return createSdkMcpServer({
+  // Mutable context set before each agent.run() so tools default to the originating chat.
+  let currentChatContext: ChatContext | undefined;
+
+  const server = createSdkMcpServer({
     name: "agent-tools",
     version: "1.0.0",
     tools: [
@@ -430,7 +437,7 @@ ${runsText}`;
             };
           }
 
-          const chatId = args.chat_id ? Number(args.chat_id) : defaultChatIds[0];
+          const chatId = args.chat_id ? Number(args.chat_id) : (currentChatContext?.chatId ? Number(currentChatContext.chatId) : defaultChatIds[0]);
           if (!chatId) {
             return {
               content: [{ type: "text" as const, text: "No chat ID available." }],
@@ -450,16 +457,27 @@ ${runsText}`;
             const parseMode = args.parse_mode ?? "MarkdownV2";
             const formatted = parseMode === "MarkdownV2" ? markdownToTelegramV2(args.text) : args.text;
             const chunks = splitMessage(formatted);
+            const topicId = args.topic_id ?? currentChatContext?.topicId;
 
-            for (const chunk of chunks) {
-              const options: Record<string, unknown> = {};
-              if (parseMode !== "plain") options.parse_mode = parseMode;
-              if (args.topic_id) options.message_thread_id = args.topic_id;
-              await bot.api.sendMessage(chatId, chunk, options);
+            // Detect brief messages and attach interactive keyboard
+            const isBriefMsg = /\[NOTIFY\]/.test(args.text) && /BRIEF|MORNING/.test(args.text);
+            let keyboard: import("grammy").InlineKeyboard | undefined;
+            if (isBriefMsg) {
+              const { briefKeyboard } = await import("../telegram/keyboards.ts");
+              keyboard = briefKeyboard(0);
             }
 
-            const topicInfo = args.topic_id ? ` (topic ${args.topic_id})` : "";
-            log.info("Sent message via Telegram", { chatId, topicId: args.topic_id, chunks: chunks.length });
+            for (let ci = 0; ci < chunks.length; ci++) {
+              const isLast = ci === chunks.length - 1;
+              const options: Record<string, unknown> = {};
+              if (parseMode !== "plain") options.parse_mode = parseMode;
+              if (topicId) options.message_thread_id = topicId;
+              if (isLast && keyboard) options.reply_markup = keyboard;
+              await bot.api.sendMessage(chatId, chunks[ci], options);
+            }
+
+            const topicInfo = topicId ? ` (topic ${topicId})` : "";
+            log.info("Sent message via Telegram", { chatId, topicId, chunks: chunks.length });
             return {
               content: [{ type: "text" as const, text: `Message sent to chat ${chatId}${topicInfo}. (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})` }],
             };
@@ -498,7 +516,7 @@ ${runsText}`;
             };
           }
 
-          const chatId = args.chat_id ? Number(args.chat_id) : defaultChatIds[0];
+          const chatId = args.chat_id ? Number(args.chat_id) : (currentChatContext?.chatId ? Number(currentChatContext.chatId) : defaultChatIds[0]);
           if (!chatId) {
             return {
               content: [{ type: "text" as const, text: "No chat ID available." }],
@@ -509,15 +527,16 @@ ${runsText}`;
           try {
             const fileData = await Bun.file(args.image_path).arrayBuffer();
             const { InputFile } = await import("grammy");
+            const topicId = args.topic_id ?? currentChatContext?.topicId;
             const options: Record<string, unknown> = {};
             if (args.caption) options.caption = args.caption;
-            if (args.topic_id) options.message_thread_id = args.topic_id;
+            if (topicId) options.message_thread_id = topicId;
             await bot.api.sendPhoto(
               chatId,
               new InputFile(new Uint8Array(fileData), basename(args.image_path)),
               Object.keys(options).length > 0 ? options : undefined
             );
-            log.info("Sent photo via Telegram", { chatId, path: args.image_path });
+            log.info("Sent photo via Telegram", { chatId, topicId, path: args.image_path });
             return {
               content: [{ type: "text" as const, text: `Photo sent to chat ${chatId}.` }],
             };
@@ -556,7 +575,7 @@ ${runsText}`;
             };
           }
 
-          const chatId = args.chat_id ? Number(args.chat_id) : defaultChatIds[0];
+          const chatId = args.chat_id ? Number(args.chat_id) : (currentChatContext?.chatId ? Number(currentChatContext.chatId) : defaultChatIds[0]);
           if (!chatId) {
             return {
               content: [{ type: "text" as const, text: "No chat ID available." }],
@@ -569,9 +588,10 @@ ${runsText}`;
             const { InputFile } = await import("grammy");
             const inputFile = new InputFile(new Uint8Array(fileData), basename(args.audio_path));
             const isOgg = args.audio_path.endsWith(".ogg") || args.audio_path.endsWith(".oga");
+            const topicId = args.topic_id ?? currentChatContext?.topicId;
             const options: Record<string, unknown> = {};
             if (args.caption) options.caption = args.caption;
-            if (args.topic_id) options.message_thread_id = args.topic_id;
+            if (topicId) options.message_thread_id = topicId;
 
             if (isOgg) {
               await bot.api.sendVoice(chatId, inputFile, Object.keys(options).length > 0 ? options : undefined);
@@ -1524,6 +1544,69 @@ ${sources}`;
 
       // --- Daemon management ---
       tool(
+        "mute_topic",
+        "Mute notifications for a chat topic. Jobs targeting this topic will still run but won't send Telegram messages until the mute expires. Use for trading, news, or any topic.",
+        {
+          chat_id: z.string().describe("Telegram chat ID (e.g., -1003762174787 for the group)"),
+          topic_id: z.number().nullable().describe("Topic/thread ID to mute (e.g., 103 for Trading, 49 for News). Use null to mute the entire chat."),
+          duration: z.string().describe("Duration string: '1h', '4h', '1d', '3d', '1w'. Or ISO 8601 datetime for exact expiry."),
+        },
+        async (args) => {
+          let mutedUntil: string;
+          const durationMatch = args.duration.match(/^(\d+)(h|d|w)$/);
+          if (durationMatch) {
+            const amount = parseInt(durationMatch[1], 10);
+            const unit = durationMatch[2];
+            const ms = unit === "h" ? amount * 3600000 : unit === "d" ? amount * 86400000 : amount * 604800000;
+            mutedUntil = new Date(Date.now() + ms).toISOString();
+          } else {
+            mutedUntil = args.duration.endsWith("Z") ? args.duration : args.duration + "Z";
+          }
+
+          muteTopic(args.chat_id, args.topic_id, mutedUntil);
+          const topicLabel = args.topic_id ? `topic ${args.topic_id}` : "all topics";
+          log.info("Topic muted", { chatId: args.chat_id, topicId: args.topic_id, until: mutedUntil });
+          return {
+            content: [{ type: "text" as const, text: `Muted ${topicLabel} in chat ${args.chat_id} until ${mutedUntil}` }],
+          };
+        }
+      ),
+
+      tool(
+        "unmute_topic",
+        "Remove notification mute from a chat topic.",
+        {
+          chat_id: z.string().describe("Telegram chat ID"),
+          topic_id: z.number().nullable().describe("Topic/thread ID to unmute. Use null to unmute the entire chat."),
+        },
+        async (args) => {
+          unmuteTopic(args.chat_id, args.topic_id);
+          const topicLabel = args.topic_id ? `topic ${args.topic_id}` : "all topics";
+          log.info("Topic unmuted", { chatId: args.chat_id, topicId: args.topic_id });
+          return {
+            content: [{ type: "text" as const, text: `Unmuted ${topicLabel} in chat ${args.chat_id}` }],
+          };
+        }
+      ),
+
+      tool(
+        "list_muted_topics",
+        "List all currently muted topics with their expiry times.",
+        {},
+        async () => {
+          const muted = getMutedTopics();
+          if (muted.length === 0) {
+            return { content: [{ type: "text" as const, text: "No topics are currently muted." }] };
+          }
+          const lines = muted.map((m) => {
+            const topicLabel = m.topic_id ? `topic ${m.topic_id}` : "all topics";
+            return `${topicLabel} in ${m.chat_id} — until ${m.muted_until}`;
+          });
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        }
+      ),
+
+      tool(
         "restart_daemon",
         "Schedule a daemon restart. The restart happens AFTER the current response is fully sent to the user. Use this after making code changes to the psibot codebase that need a process restart to take effect. Do NOT use Bash to run launchctl or psibot restart commands directly.",
         {
@@ -1542,4 +1625,11 @@ ${sources}`;
       ),
     ],
   });
+
+  return {
+    server,
+    setChatContext(ctx?: ChatContext) {
+      currentChatContext = ctx;
+    },
+  };
 }
