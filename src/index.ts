@@ -8,6 +8,7 @@ import { HeartbeatRunner } from "./heartbeat/index.ts";
 import { createWebApp } from "./web/index.ts";
 import { createTelegramBot } from "./telegram/index.ts";
 import { startWebhookServer, stopWebhookServer } from "./telegram/webhook.ts";
+import { TaskQueue } from "./shared/task-queue.ts";
 import { createLogger } from "./shared/logger.ts";
 import { writePid, removePid } from "./cli/pid.ts";
 import type { Bot } from "grammy";
@@ -41,6 +42,7 @@ async function main() {
   });
   const executor = new JobExecutor(agent);
   scheduler = new Scheduler(executor);
+  const taskQueue = new TaskQueue(10);
 
   // Create web app
   const app = createWebApp({
@@ -65,7 +67,7 @@ async function main() {
   scheduler.start();
 
   // Start Telegram bot
-  bot = createTelegramBot({ agent, memory, scheduler });
+  bot = createTelegramBot({ agent, memory, scheduler, taskQueue });
 
   // Wire up job completion notifications to Telegram
   executor.setNotifier(bot, config.ALLOWED_TELEGRAM_USER_IDS);

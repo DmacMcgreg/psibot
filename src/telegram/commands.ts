@@ -46,6 +46,7 @@ import {
 import { getConfig } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
 import { PLIST_LABEL } from "../cli/paths.ts";
+import type { TaskQueue } from "../shared/task-queue.ts";
 
 const log = createLogger("telegram:commands");
 
@@ -122,10 +123,11 @@ interface CommandDeps {
   memory: MemorySystem;
   scheduler: Scheduler;
   state: ChatState;
+  taskQueue: TaskQueue;
 }
 
 export function registerCommands(deps: CommandDeps) {
-  const { agent, memory, scheduler, state } = deps;
+  const { agent, memory, scheduler, state, taskQueue } = deps;
   const { resetChats, bootedChats, resumeOverrides, modelOverrides } = state;
 
   async function handleStart(ctx: Context): Promise<void> {
@@ -195,83 +197,95 @@ export function registerCommands(deps: CommandDeps) {
 
   async function runAgent(ctx: Context, prompt: string): Promise<void> {
     const config = getConfig();
+
+    // Check queue capacity before sending "Thinking..."
+    if (!taskQueue.hasCapacity && taskQueue.pendingCount > 0) {
+      await replyMd2(ctx, `Queued (position ${taskQueue.pendingCount + 1}, ${taskQueue.activeCount} running)`);
+    }
+
     const thinkingMsg = await replyMd2(ctx, "Thinking...");
     const sKey = sessionKey(ctx);
+    const chatId = ctx.chat!.id;
 
-    const toolLines: string[] = [];
-    let lastEditAt = 0;
-
-    try {
-      // Start fresh session after /new, otherwise resume latest
-      let sessionId: string | undefined;
-      if (resetChats.has(sKey)) {
-        resetChats.delete(sKey);
-        sessionId = undefined;
-        log.info("Starting fresh session", { sessionKey: sKey });
-      } else if (resumeOverrides.has(sKey)) {
-        sessionId = resumeOverrides.get(sKey);
-        log.info("Resuming overridden session", { sessionKey: sKey, sessionId });
-      } else {
-        sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
-      }
-      bootedChats.add(sKey);
-
-      const model = modelOverrides.get(sKey);
-
-      const result = await agent.run({
-        prompt,
-        source: "telegram",
-        sourceId: sKey,
-        sessionId,
-        chatContext: chatContext(ctx),
-        useBrowser: true,
-        ...(model ? { model } : {}),
-        onToolUse: (toolName, input, subagent) => {
-          if (!config.VERBOSE_FEEDBACK) return;
-          toolLines.push(formatToolLine(toolName, input, subagent));
-          const now = Date.now();
-          if (now - lastEditAt >= 3000) {
-            lastEditAt = now;
-            editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
-              `Thinking...\n${formatToolsSummary(toolLines)}`
-            ).catch(() => {});
-          }
-        },
-      });
-
-      const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
-      const toolsBlock = config.VERBOSE_FEEDBACK && toolLines.length > 0
-        ? `${formatToolsSummary(toolLines)}\n\n`
-        : "";
-      const modelTag = model ? `[${model}] ` : "";
-      const response = `${toolsBlock}${modelTag}${result.result}\n\n${meta}`;
-      const chunks = splitMessage(response);
-
-      // Edit the first thinking message
-      if (chunks.length === 1) {
-        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0],
-          { reply_markup: agentResponseKeyboard(result.sessionId) }
-        );
-      } else {
-        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
-        // Send remaining chunks, keyboard on last
-        for (let i = 1; i < chunks.length; i++) {
-          const opts = i === chunks.length - 1
-            ? { reply_markup: agentResponseKeyboard(result.sessionId) }
-            : {};
-          await replyAgentMd2(ctx, chunks[i], opts);
-        }
-      }
-      // Check for pending restart after response is fully sent
-      if (agent.consumeRestart()) {
-        executeDeferredRestart();
-      }
-    } catch (err) {
-      log.error("Telegram agent error", { error: String(err) });
-      await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
-        `Error: ${err instanceof Error ? err.message : String(err)}`
-      );
+    // Capture session state synchronously before returning
+    let sessionId: string | undefined;
+    if (resetChats.has(sKey)) {
+      resetChats.delete(sKey);
+      sessionId = undefined;
+      log.info("Starting fresh session", { sessionKey: sKey });
+    } else if (resumeOverrides.has(sKey)) {
+      sessionId = resumeOverrides.get(sKey);
+      log.info("Resuming overridden session", { sessionKey: sKey, sessionId });
+    } else {
+      sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
     }
+    bootedChats.add(sKey);
+    const model = modelOverrides.get(sKey);
+    const ctxChat = chatContext(ctx);
+
+    // Fire-and-forget: enqueue the agent run and return immediately
+    const taskId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    taskQueue.enqueue({
+      id: taskId,
+      label: `runAgent:${sKey}`,
+      execute: async () => {
+        const toolLines: string[] = [];
+        let lastEditAt = 0;
+
+        try {
+          const result = await agent.run({
+            prompt,
+            source: "telegram",
+            sourceId: sKey,
+            sessionId,
+            chatContext: ctxChat,
+            useBrowser: true,
+            ...(model ? { model } : {}),
+            onToolUse: (toolName, input, subagent) => {
+              if (!config.VERBOSE_FEEDBACK) return;
+              toolLines.push(formatToolLine(toolName, input, subagent));
+              const now = Date.now();
+              if (now - lastEditAt >= 3000) {
+                lastEditAt = now;
+                editMd2(ctx, chatId, thinkingMsg.message_id,
+                  `Thinking...\n${formatToolsSummary(toolLines)}`
+                ).catch(() => {});
+              }
+            },
+          });
+
+          const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
+          const toolsBlock = config.VERBOSE_FEEDBACK && toolLines.length > 0
+            ? `${formatToolsSummary(toolLines)}\n\n`
+            : "";
+          const modelTag = model ? `[${model}] ` : "";
+          const response = `${toolsBlock}${modelTag}${result.result}\n\n${meta}`;
+          const chunks = splitMessage(response);
+
+          if (chunks.length === 1) {
+            await editAgentMd2(ctx, chatId, thinkingMsg.message_id, chunks[0],
+              { reply_markup: agentResponseKeyboard(result.sessionId) }
+            );
+          } else {
+            await editAgentMd2(ctx, chatId, thinkingMsg.message_id, chunks[0]);
+            for (let i = 1; i < chunks.length; i++) {
+              const opts = i === chunks.length - 1
+                ? { reply_markup: agentResponseKeyboard(result.sessionId) }
+                : {};
+              await replyAgentMd2(ctx, chunks[i], opts);
+            }
+          }
+          if (agent.consumeRestart()) {
+            executeDeferredRestart();
+          }
+        } catch (err) {
+          log.error("Telegram agent error", { error: String(err) });
+          await editMd2(ctx, chatId, thinkingMsg.message_id,
+            `Error: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      },
+    });
   }
 
   async function handleJobs(ctx: Context): Promise<void> {
@@ -884,99 +898,96 @@ export function registerCommands(deps: CommandDeps) {
 
   async function runQuickResearch(ctx: Context, item: NonNullable<ReturnType<typeof getPendingItemById>>): Promise<void> {
     const statusMsg = await replyMd2(ctx, `Scanning: ${item.title ?? item.url}...`);
+    const chatId = ctx.chat!.id;
 
-    try {
-      const prelim = await preliminaryResearch(item);
-      const notePath = createResearchNote(item, prelim);
+    const taskId = `quick-research-${item.id}-${Date.now()}`;
+    taskQueue.enqueue({
+      id: taskId,
+      label: `quickResearch:${item.id}`,
+      execute: async () => {
+        try {
+          const prelim = await preliminaryResearch(item);
+          const notePath = createResearchNote(item, prelim);
 
-      updatePendingItem(item.id, {
-        status: "archived",
-        auto_decision: "quick_research_done",
-        quick_scan_summary: prelim.summary,
-        noteplan_path: notePath,
-      });
+          updatePendingItem(item.id, {
+            status: "archived",
+            auto_decision: "quick_research_done",
+            quick_scan_summary: prelim.summary,
+            noteplan_path: notePath,
+          });
 
-      const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const findings = prelim.keyFindings.slice(0, 4).map((f) => `  - ${esc(f)}`).join("\n");
+          const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const noteFile = notePath ? notePath.split("/").pop() : null;
 
-      const result = [
-        `<b>Quick Scan:</b> ${esc(prelim.title)}`,
-        `ID: ${item.id}`,
-        ``,
-        esc(prelim.summary),
-        ``,
-        `<b>Key Findings</b>`,
-        findings,
-        ``,
-        `Reply to ask questions. Tap Go Deep for full research.`,
-      ].filter(Boolean).join("\n");
+          const result = [
+            `<b>Quick Scan done:</b> ${esc(prelim.title)}`,
+            noteFile ? `Saved to ${esc(noteFile)}` : "",
+          ].filter(Boolean).join("\n");
 
-      const kb = new InlineKeyboard()
-        .text("Deep Dive", `rds:${item.id}`)
-        .text("Watch", `rw:${item.id}`)
-        .text("Archive", `rx:${item.id}`);
+          const kb = new InlineKeyboard()
+            .text("Deep Dive", `rds:${item.id}`)
+            .text("Watch", `rw:${item.id}`)
+            .text("Archive", `rx:${item.id}`);
 
-      try {
-        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
-      } catch { /* ignore */ }
+          try {
+            await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+          } catch { /* ignore */ }
 
-      await ctx.api.sendMessage(ctx.chat!.id, result, {
-        parse_mode: "HTML",
-        reply_markup: kb,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await editMd2(ctx, ctx.chat!.id, statusMsg.message_id, `Quick scan failed: ${message}`);
-    }
+          await ctx.api.sendMessage(chatId, result, {
+            parse_mode: "HTML",
+            reply_markup: kb,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await editMd2(ctx, chatId, statusMsg.message_id, `Quick scan failed: ${message}`);
+        }
+      },
+    });
   }
 
   async function runDeepResearch(ctx: Context, item: NonNullable<ReturnType<typeof getPendingItemById>>): Promise<void> {
     const statusMsg = await replyMd2(ctx, `Deep research: ${item.title ?? item.url}\n\nThis may take a minute...`);
+    const chatId = ctx.chat!.id;
 
-    try {
-      const deep = await deepResearch(item);
-      const notePath = createResearchNote(item, deep);
+    const taskId = `deep-research-${item.id}-${Date.now()}`;
+    taskQueue.enqueue({
+      id: taskId,
+      label: `deepResearch:${item.id}`,
+      execute: async () => {
+        try {
+          const deep = await deepResearch(item);
+          const notePath = createResearchNote(item, deep);
 
-      updatePendingItem(item.id, {
-        status: "triaged",
-        noteplan_path: notePath,
-      });
+          updatePendingItem(item.id, {
+            status: "triaged",
+            noteplan_path: notePath,
+          });
 
-      const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const findings = deep.keyFindings.slice(0, 6).map((f) => `  - ${esc(f)}`).join("\n");
-      const actions = deep.suggestedActions.map((a) => `  - ${esc(a)}`).join("\n");
-      const noteFile = notePath ? notePath.split("/").pop() : null;
+          const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const noteFile = notePath ? notePath.split("/").pop() : null;
 
-      const result = [
-        `<b>Deep Research:</b> ${esc(deep.title)}`,
-        `ID: ${item.id}`,
-        ``,
-        esc(deep.summary),
-        ``,
-        `<b>Key Findings</b>`,
-        findings,
-        ``,
-        `<b>Suggested Actions</b>`,
-        actions,
-        noteFile ? `\nNote saved: ${esc(noteFile)}` : "",
-        `\nReply to ask follow-up questions.`,
-      ].filter(Boolean).join("\n");
+          const result = [
+            `<b>Deep Research done:</b> ${esc(deep.title)}`,
+            noteFile ? `Saved to ${esc(noteFile)}` : "",
+          ].filter(Boolean).join("\n");
 
-      const kb = new InlineKeyboard()
-        .text("Watch", `rw:${item.id}`)
-        .text("Archive", `rx:${item.id}`);
+          const kb = new InlineKeyboard()
+            .text("Watch", `rw:${item.id}`)
+            .text("Archive", `rx:${item.id}`);
 
-      try {
-        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
-      } catch { /* ignore */ }
+          try {
+            await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+          } catch { /* ignore */ }
 
-      await ctx.api.sendMessage(ctx.chat!.id, result, {
-        parse_mode: "HTML",
-        reply_markup: kb,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await editMd2(ctx, ctx.chat!.id, statusMsg.message_id, `Deep research failed: ${message}`);
-    }
+          await ctx.api.sendMessage(chatId, result, {
+            parse_mode: "HTML",
+            reply_markup: kb,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await editMd2(ctx, chatId, statusMsg.message_id, `Deep research failed: ${message}`);
+        }
+      },
+    });
   }
 }

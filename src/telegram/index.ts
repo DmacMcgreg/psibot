@@ -6,6 +6,7 @@ import { Scheduler } from "../scheduler/index.ts";
 import { ChatState } from "./state.ts";
 import { registerCommands } from "./commands.ts";
 import { createCallbackHandler } from "./keyboards.ts";
+import type { TaskQueue } from "../shared/task-queue.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("telegram");
@@ -14,6 +15,7 @@ interface TelegramDeps {
   agent: AgentService;
   memory: MemorySystem;
   scheduler: Scheduler;
+  taskQueue: TaskQueue;
 }
 
 export function createTelegramBot(deps: TelegramDeps) {
@@ -34,7 +36,7 @@ export function createTelegramBot(deps: TelegramDeps) {
   // Shared chat state between commands and callback handler
   const state = new ChatState();
 
-  const commands = registerCommands({ ...deps, state });
+  const commands = registerCommands({ ...deps, state, taskQueue: deps.taskQueue });
 
   // Callback query handler (inline keyboard buttons) - must be registered before message handlers
   const callbackHandler = createCallbackHandler({
