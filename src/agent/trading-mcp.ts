@@ -4,8 +4,70 @@ import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("mcp:trading");
 const BASE_URL = "http://localhost:8000/api/v1";
+const BACKEND_DIR = `${process.env.HOME}/Documents/2_Code/2026/trading-bot/backend`;
+const HEALTH_URL = `${BASE_URL.replace("/api/v1", "")}/docs`; // FastAPI serves /docs by default
+const STARTUP_TIMEOUT_MS = 30_000;
+const HEALTH_POLL_MS = 1_000;
+
+let backendProc: ReturnType<typeof Bun.spawn> | null = null;
+let startingPromise: Promise<void> | null = null;
+
+async function isBackendUp(): Promise<boolean> {
+  try {
+    const res = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(2_000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function startBackend(): Promise<void> {
+  if (startingPromise) return startingPromise;
+
+  startingPromise = (async () => {
+    try {
+      if (await isBackendUp()) return;
+
+      log.info("Trading backend is down, starting it...");
+      backendProc = Bun.spawn(
+        ["uv", "run", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000"],
+        {
+          cwd: BACKEND_DIR,
+          stdout: "ignore",
+          stderr: "pipe",
+          env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+        }
+      );
+
+      const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (await isBackendUp()) {
+          log.info(`Trading backend started successfully (pid ${backendProc.pid})`);
+          return;
+        }
+        await Bun.sleep(HEALTH_POLL_MS);
+      }
+
+      // Timed out — check if process died
+      const stderr = backendProc.stderr ? await new Response(backendProc.stderr as ReadableStream).text().catch(() => "") : "";
+      const snippet = stderr.slice(-500);
+      backendProc.kill();
+      backendProc = null;
+      throw new Error(`Backend failed to start within ${STARTUP_TIMEOUT_MS / 1000}s. stderr: ${snippet}`);
+    } finally {
+      startingPromise = null;
+    }
+  })();
+
+  return startingPromise;
+}
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  // Self-heal: start backend if it's down
+  if (!(await isBackendUp())) {
+    await startBackend();
+  }
+
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
     headers: { "Content-Type": "application/json", ...options?.headers },

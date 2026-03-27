@@ -41,8 +41,9 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
 
 1. Use the trading-bot MCP tools to get quantitative data: analyze_symbol, market_scan, get_options_flow
 2. Use agent-browser via Bash to screenshot TradingView charts at multiple timeframes:
-   - agent-browser open "https://www.tradingview.com/chart/?symbol=SYMBOL" then agent-browser screenshot
+   - agent-browser open "https://www.tradingview.com/chart/?symbol=SYMBOL" then agent-browser screenshot data/charts/SYMBOL-TIMEFRAME.png
    - Switch timeframes: daily, 4h, 1h
+   - Always save screenshots to data/charts/ (gitignored), never the project root
 3. Analyze the chart images: candlestick patterns, trendlines, volume bars, gaps, support/resistance zones
 4. Cross-reference what you see visually with the quantitative data
 5. Flag discrepancies: "algorithm says buy but chart shows bearish engulfing at resistance"
