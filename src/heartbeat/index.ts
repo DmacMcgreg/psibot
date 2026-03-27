@@ -467,24 +467,12 @@ export class HeartbeatRunner {
 
         log.info(`${label} research complete`, { itemId: item.id, title: result.title });
 
-        // Send results to Telegram
+        // Send brief confirmation to Telegram (full research is in NotePlan note)
         if (bot && targetChatIds.length > 0) {
-          const findings = result.keyFindings.slice(0, isDeep ? 6 : 4).map((f) => `  - ${escapeHtml(f)}`).join("\n");
-          const actions = isDeep && result.suggestedActions.length > 0
-            ? `\n\n<b>Actions</b>\n${result.suggestedActions.map((a) => `  - ${escapeHtml(a)}`).join("\n")}`
-            : "";
-          const noteInfo = notePath ? `\n\nNote: ${escapeHtml(notePath.split("/").pop() ?? "")}` : "";
-
+          const noteFile = notePath ? notePath.split("/").pop() ?? "" : "";
           const msg = [
-            `<b>${label} Research:</b> ${escapeHtml(result.title)}`,
-            `ID: ${item.id}`,
-            ``,
-            escapeHtml(result.summary),
-            ``,
-            `<b>Findings</b>`,
-            findings,
-            actions,
-            noteInfo,
+            `<b>${label} Research done:</b> ${escapeHtml(result.title)}`,
+            noteFile ? `Saved to ${escapeHtml(noteFile)}` : "",
           ].filter(Boolean).join("\n");
 
           const kb = new InlineKeyboard();
@@ -493,7 +481,7 @@ export class HeartbeatRunner {
 
           for (const chatId of targetChatIds) {
             try {
-              await bot.api.sendMessage(chatId, truncate(msg, 4000), {
+              await bot.api.sendMessage(chatId, msg, {
                 parse_mode: "HTML",
                 reply_markup: kb,
                 ...topicOpts,
