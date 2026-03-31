@@ -104,8 +104,12 @@ export function tmaJobsPage(jobs: Job[]): string {
   const groups = groupByTopic(enabled);
   const inactive = jobs.filter((j) => j.status !== "enabled");
 
-  const filterButtons = ["All", "Trading", "News", "DM", "Other"].map((f) =>
-    `<button class="tma-filter-btn" data-filter="${f}" onclick="filterJobs('${f}')">${f}</button>`
+  const topicFilters = ["All", "Trading", "News", "DM", "Other"].map((f) =>
+    `<button class="tma-filter-btn" data-filter-topic="${f}" onclick="filterByTopic('${f}')">${f}</button>`
+  ).join("");
+
+  const modelFilters = ["All", "Sonnet", "Haiku", "Opus", "Default"].map((f) =>
+    `<button class="tma-filter-btn" data-filter-model="${f}" onclick="filterByModel('${f}')">${f}</button>`
   ).join("");
 
   const groupedHtml = groups.map(([group, items]) =>
@@ -128,8 +132,13 @@ export function tmaJobsPage(jobs: Job[]): string {
         <input type="search" class="tma-input" placeholder="Search jobs..." id="job-search"
           oninput="searchJobs(this.value)" style="font-size:13px; padding:8px 12px;">
       </div>
-      <div style="padding:4px 16px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
-        ${filterButtons}
+      <div style="padding:4px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
+        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Topic:</span>
+        ${topicFilters}
+      </div>
+      <div style="padding:2px 16px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
+        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Model:</span>
+        ${modelFilters}
       </div>
       <div id="job-list">
         ${groupedHtml}
@@ -137,32 +146,46 @@ export function tmaJobsPage(jobs: Job[]): string {
       ${inactiveHtml}
     </div>
     <script>
-    function searchJobs(q) {
-      q = q.toLowerCase();
+    var activeTopic = 'All';
+    var activeModel = 'All';
+    var searchQuery = '';
+
+    function applyFilters() {
       document.querySelectorAll('.tma-card[data-name]').forEach(function(card) {
         var name = card.getAttribute('data-name') || '';
-        card.style.display = name.includes(q) ? '' : 'none';
+        var model = card.getAttribute('data-model') || '';
+        var matchSearch = !searchQuery || name.includes(searchQuery);
+        var matchModel = activeModel === 'All' || model === activeModel;
+        card.style.display = (matchSearch && matchModel) ? '' : 'none';
       });
       document.querySelectorAll('.tma-group').forEach(function(g) {
+        var matchTopic = activeTopic === 'All' || g.getAttribute('data-group') === activeTopic;
+        if (!matchTopic) { g.style.display = 'none'; return; }
         var visible = g.querySelectorAll('.tma-card[data-name]:not([style*="display: none"])').length;
         g.style.display = visible > 0 ? '' : 'none';
       });
     }
-    function filterJobs(f) {
-      document.querySelectorAll('.tma-filter-btn').forEach(function(b) {
-        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter') === f);
+    function searchJobs(q) {
+      searchQuery = q.toLowerCase();
+      applyFilters();
+    }
+    function filterByTopic(f) {
+      activeTopic = f;
+      document.querySelectorAll('[data-filter-topic]').forEach(function(b) {
+        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter-topic') === f);
       });
-      if (f === 'All') {
-        document.querySelectorAll('.tma-group').forEach(function(g) { g.style.display = ''; });
-        document.querySelectorAll('.tma-card[data-name]').forEach(function(c) { c.style.display = ''; });
-        return;
-      }
-      document.querySelectorAll('.tma-group').forEach(function(g) {
-        g.style.display = g.getAttribute('data-group') === f ? '' : 'none';
+      applyFilters();
+    }
+    function filterByModel(f) {
+      activeModel = f;
+      document.querySelectorAll('[data-filter-model]').forEach(function(b) {
+        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter-model') === f);
       });
+      applyFilters();
     }
     // Activate "All" on load
-    document.querySelector('.tma-filter-btn[data-filter="All"]')?.classList.add('tma-filter-active');
+    document.querySelector('[data-filter-topic="All"]')?.classList.add('tma-filter-active');
+    document.querySelector('[data-filter-model="All"]')?.classList.add('tma-filter-active');
     </script>
   `);
 }
@@ -203,7 +226,7 @@ export function tmaJobCardFragment(job: Job): string {
 
   const lastRun = job.last_run_at ? relativeTime(job.last_run_at) : "never";
 
-  return `<div class="tma-card" id="job-${job.id}" data-name="${escapeHtml(job.name.toLowerCase())}" data-dest="${escapeHtml(dest)}">
+  return `<div class="tma-card" id="job-${job.id}" data-name="${escapeHtml(job.name.toLowerCase())}" data-dest="${escapeHtml(dest)}" data-model="${escapeHtml(model)}">
     <div style="display:flex; justify-content:space-between; align-items:start; gap:8px; cursor:pointer;"
          hx-get="/tma/api/jobs/${job.id}/detail" hx-target="#job-${job.id}" hx-swap="outerHTML">
       <div style="min-width:0; flex:1;">
