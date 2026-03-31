@@ -258,9 +258,7 @@ export function tmaJobDetailFragment(job: Job, runs: JobRun[], allJobs?: Job[]):
         <span class="tma-badge ${statusCls}" style="margin-top:4px;">${statusLabel}</span>
       </div>
       <button class="tma-btn tma-btn-sm tma-btn-secondary"
-              hx-get="/tma/api/jobs/${job.id}/detail" hx-target="#job-${job.id}" hx-swap="outerHTML"
-              onclick="this.closest('.tma-card').outerHTML = document.getElementById('job-${job.id}-placeholder')?.innerHTML || ''; return false;"
-              hx-get="/tma/jobs" hx-target="closest .tma-main" hx-swap="innerHTML" hx-select="#job-list"
+              hx-get="/tma/api/jobs/${job.id}/card" hx-target="#job-${job.id}" hx-swap="outerHTML"
               style="font-size:18px; padding:2px 8px; line-height:1;">x</button>
     </div>
 

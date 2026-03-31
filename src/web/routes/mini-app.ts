@@ -244,6 +244,13 @@ export function createMiniAppRoutes() {
     return c.html(tmaJobListFragment(jobs));
   });
 
+  app.get("/api/jobs/:id/card", (c) => {
+    const jobId = parseInt(c.req.param("id"), 10);
+    const job = getJob(jobId);
+    if (!job) return c.text("Job not found", 404);
+    return c.html(tmaJobCardFragment(job));
+  });
+
   app.get("/api/jobs/:id/detail", (c) => {
     const jobId = parseInt(c.req.param("id"), 10);
     const job = getJob(jobId);
