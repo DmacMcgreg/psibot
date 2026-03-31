@@ -11,6 +11,7 @@ import {
   getDueReminders,
   updateReminder,
   dismissReminder,
+  completeReminder,
   updatePendingItem,
   getPendingItemById,
   isTopicMuted,
@@ -21,7 +22,7 @@ import { scoreSignals } from "./signals.ts";
 import { scanInbox } from "./inbox-watcher.ts";
 import { detectThemes } from "./themes.ts";
 import { InlineKeyboard } from "grammy";
-import { briefingActionKeyboard, approvalKeyboard } from "../telegram/keyboards.ts";
+import { briefingActionKeyboard } from "../telegram/keyboards.ts";
 import type { Bot } from "grammy";
 import type { PendingItem } from "../shared/types.ts";
 import { checkAutonomyRule } from "./autonomy.ts";
@@ -467,30 +468,7 @@ export class HeartbeatRunner {
 
         log.info(`${label} research complete`, { itemId: item.id, title: result.title });
 
-        // Send brief confirmation to Telegram (full research is in NotePlan note)
-        if (bot && targetChatIds.length > 0) {
-          const noteFile = notePath ? notePath.split("/").pop() ?? "" : "";
-          const msg = [
-            `<b>${label} Research done:</b> ${escapeHtml(result.title)}`,
-            noteFile ? `Saved to ${escapeHtml(noteFile)}` : "",
-          ].filter(Boolean).join("\n");
-
-          const kb = new InlineKeyboard();
-          if (!isDeep) kb.text("Deep Dive", `rds:${item.id}`);
-          kb.text("Watch", `rw:${item.id}`).text("Archive", `rx:${item.id}`);
-
-          for (const chatId of targetChatIds) {
-            try {
-              await bot.api.sendMessage(chatId, msg, {
-                parse_mode: "HTML",
-                reply_markup: kb,
-                ...topicOpts,
-              });
-            } catch (err) {
-              log.error("Failed to send research result", { chatId, itemId: item.id, error: String(err) });
-            }
-          }
-        }
+        // Research saved silently to NotePlan — no Telegram notification
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`${label} research failed`, { itemId: item.id, error: message });
@@ -525,11 +503,19 @@ export class HeartbeatRunner {
         continue;
       }
 
-      const keyboard = reminder.type === "research"
-        ? approvalKeyboard(reminder.id)
-        : briefingActionKeyboard(reminder.id);
+      // Research reminders are silently completed — no Telegram notification
+      if (reminder.type === "research") {
+        completeReminder(reminder.id);
+        log.info("Auto-completed research reminder (no Telegram notification)", { id: reminder.id, title: reminder.title });
+        continue;
+      }
 
-      const messageText = `${reminder.type.toUpperCase()}: ${reminder.title}${reminder.description ? "\n" + reminder.description : ""}`;
+      const keyboard = briefingActionKeyboard(reminder.id);
+
+      const desc = reminder.description && reminder.description.length > 200
+        ? reminder.description.slice(0, 200) + "..."
+        : reminder.description;
+      const messageText = `${reminder.type.toUpperCase()}: ${reminder.title}${desc ? "\n" + desc : ""}`;
 
       for (const chatId of this.defaultChatIds) {
         try {

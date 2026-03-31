@@ -28,6 +28,7 @@ import {
   getPendingItemById,
   updatePendingItem,
   insertReminder,
+  completeReminder,
   muteTopic,
   unmuteTopic,
   getMutedTopics,
@@ -38,7 +39,7 @@ import {
   createResearchNote,
 } from "../research/index.ts";
 import { triageAllPending } from "../triage/index.ts";
-import { briefingActionKeyboard, approvalKeyboard } from "../telegram/keyboards.ts";
+import { briefingActionKeyboard } from "../telegram/keyboards.ts";
 import { pollRedditSaved } from "../capture/reddit.ts";
 import { pollGithubStars } from "../capture/github.ts";
 import { createLogger } from "../shared/logger.ts";
@@ -1274,13 +1275,26 @@ ${runsText}`;
         async (args) => {
           try {
             const reminder = insertReminder(args);
+
+            // Research reminders are stored but never sent to Telegram
+            if (args.type === "research") {
+              completeReminder(reminder.id);
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `Research reminder created and auto-completed (ID: ${reminder.id}). Research is saved to NotePlan only — not posted to Telegram.`,
+                }],
+              };
+            }
+
             const bot = getBot();
             if (bot) {
               for (const chatId of defaultChatIds) {
-                const keyboard = args.type === "research"
-                  ? approvalKeyboard(reminder.id)
-                  : briefingActionKeyboard(reminder.id);
-                const messageText = `${reminder.type.toUpperCase()}: ${reminder.title}${reminder.description ? "\n" + reminder.description : ""}`;
+                const keyboard = briefingActionKeyboard(reminder.id);
+                const desc = reminder.description && reminder.description.length > 200
+                  ? reminder.description.slice(0, 200) + "..."
+                  : reminder.description;
+                const messageText = `${reminder.type.toUpperCase()}: ${reminder.title}${desc ? "\n" + desc : ""}`;
                 await bot.api.sendMessage(chatId, messageText, {
                   reply_markup: keyboard,
                 });
@@ -1305,7 +1319,7 @@ ${runsText}`;
       // --- Research tools ---
       tool(
         "research_item",
-        "Run preliminary research on a captured item using web search. Returns a summary that can be presented to the user for approval before saving to NotePlan.",
+        "Run research on a captured item using web search. Automatically saves the full research to a NotePlan note. Returns only the title and file path — do NOT relay the research content to Telegram.",
         {
           item_id: z.number().describe("ID of the pending_item to research"),
           depth: z.enum(["preliminary", "deep"]).optional().describe("Research depth. 'preliminary' uses GLM (free), 'deep' uses Claude. Default: preliminary"),
@@ -1327,28 +1341,17 @@ ${runsText}`;
               ? await deepResearch(item)
               : await preliminaryResearch(item);
 
-            const findings = research.keyFindings.map((f) => `  - ${f}`).join("\n");
-            const actions = research.suggestedActions.map((a) => `  - ${a}`).join("\n");
-            const sources = research.sources.map((s) => `  - ${s}`).join("\n");
+            // Auto-save to NotePlan
+            const notePath = createResearchNote(item, research);
 
-            const text = `Research: ${research.title}
-Item ID: ${item.id}
-Depth: ${depth}
+            updatePendingItem(item.id, {
+              status: "archived",
+              auto_decision: depth === "deep" ? "deep_research_done" : "quick_research_done",
+              quick_scan_summary: research.summary,
+              noteplan_path: notePath,
+            });
 
-Summary:
-${research.summary}
-
-Key Findings:
-${findings}
-
-Relevance:
-${research.relevance}
-
-Suggested Actions:
-${actions}
-
-Sources:
-${sources}`;
+            const text = `Research done: ${research.title}\nSaved to: ${notePath ?? "unknown"}\nItem ${item.id} archived.\n\nDo NOT send the research content to Telegram — it is in the NotePlan note.`;
 
             return { content: [{ type: "text" as const, text }] };
           } catch (err) {

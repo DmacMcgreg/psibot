@@ -198,6 +198,12 @@ export function registerCommands(deps: CommandDeps) {
   async function runAgent(ctx: Context, prompt: string): Promise<void> {
     const config = getConfig();
 
+    // Inject current date/time into every message so the agent always knows when it is
+    const now = new Date();
+    const localTime = now.toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+    const utcIso = now.toISOString();
+    prompt = `[Current time: ${localTime} ET | UTC: ${utcIso}]\n\n${prompt}`;
+
     // Check queue capacity before sending "Thinking..."
     if (!taskQueue.hasCapacity && taskQueue.pendingCount > 0) {
       await replyMd2(ctx, `Queued (position ${taskQueue.pendingCount + 1}, ${taskQueue.activeCount} running)`);
@@ -916,27 +922,10 @@ export function registerCommands(deps: CommandDeps) {
             noteplan_path: notePath,
           });
 
-          const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          const noteFile = notePath ? notePath.split("/").pop() : null;
-
-          const result = [
-            `<b>Quick Scan done:</b> ${esc(prelim.title)}`,
-            noteFile ? `Saved to ${esc(noteFile)}` : "",
-          ].filter(Boolean).join("\n");
-
-          const kb = new InlineKeyboard()
-            .text("Deep Dive", `rds:${item.id}`)
-            .text("Watch", `rw:${item.id}`)
-            .text("Archive", `rx:${item.id}`);
-
+          // Research saved to NotePlan — just clean up the status message
           try {
             await ctx.api.deleteMessage(chatId, statusMsg.message_id);
           } catch { /* ignore */ }
-
-          await ctx.api.sendMessage(chatId, result, {
-            parse_mode: "HTML",
-            reply_markup: kb,
-          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await editMd2(ctx, chatId, statusMsg.message_id, `Quick scan failed: ${message}`);
@@ -963,26 +952,10 @@ export function registerCommands(deps: CommandDeps) {
             noteplan_path: notePath,
           });
 
-          const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          const noteFile = notePath ? notePath.split("/").pop() : null;
-
-          const result = [
-            `<b>Deep Research done:</b> ${esc(deep.title)}`,
-            noteFile ? `Saved to ${esc(noteFile)}` : "",
-          ].filter(Boolean).join("\n");
-
-          const kb = new InlineKeyboard()
-            .text("Watch", `rw:${item.id}`)
-            .text("Archive", `rx:${item.id}`);
-
+          // Research saved to NotePlan — just clean up the status message
           try {
             await ctx.api.deleteMessage(chatId, statusMsg.message_id);
           } catch { /* ignore */ }
-
-          await ctx.api.sendMessage(chatId, result, {
-            parse_mode: "HTML",
-            reply_markup: kb,
-          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await editMd2(ctx, chatId, statusMsg.message_id, `Deep research failed: ${message}`);
