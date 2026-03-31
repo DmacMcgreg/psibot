@@ -113,6 +113,17 @@ body {
   margin-right: auto;
   border-bottom-left-radius: 4px;
 }
+.tma-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--tg-theme-secondary-bg-color, #e8e8e8);
+  color: var(--tg-theme-hint-color, #666);
+  border: 1px solid var(--tg-theme-hint-color, #ccc);
+  white-space: nowrap;
+}
 .tma-empty {
   text-align: center;
   padding: 40px 16px;
@@ -129,4 +140,5 @@ body {
   .tma-badge-disabled { background: #333; color: #999; }
   .tma-badge-paused { background: #bf360c; color: #ffcc80; }
   .tma-badge-error { background: #b71c1c; color: #ef9a9a; }
+  .tma-pill { background: #2a2a2a; color: #aaa; border-color: #444; }
 }
