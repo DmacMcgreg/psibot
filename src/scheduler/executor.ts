@@ -69,8 +69,13 @@ export class JobExecutor {
         ? job.allowed_tools.split(",").map((t) => t.trim())
         : undefined;
 
+      // Inject current date/time so job agents always know when they're running
+      const now = new Date();
+      const localTime = now.toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+      const jobPrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n${job.prompt}`;
+
       const result = await this.agent.run({
-        prompt: job.prompt,
+        prompt: jobPrompt,
         source: "job",
         sourceId: String(jobId),
         // maxBudgetUsd: job.max_budget_usd, // Budget enforcement disabled
@@ -78,6 +83,9 @@ export class JobExecutor {
         useBrowser: Boolean(job.use_browser),
         model: job.model ?? undefined,
         backend: (job.backend as "claude" | "glm") ?? undefined,
+        agentName: job.agent_name ?? undefined,
+        agentPrompt: job.agent_prompt ?? undefined,
+        subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
       });
 
       // Budget enforcement disabled — always report success
@@ -108,6 +116,18 @@ export class JobExecutor {
         cost: result.costUsd,
         duration: Date.now() - startTime,
       });
+
+      // Pipeline handoff
+      if (job.next_job_id) {
+        const nextJob = getJob(job.next_job_id);
+        if (nextJob && nextJob.status === "enabled") {
+          log.info("Pipeline handoff", { fromJob: job.id, toJob: job.next_job_id, fromName: job.name, toName: nextJob.name });
+          // Fire and forget — don't block current job completion
+          this.executePipelineStep(job.next_job_id, run.id, result.result).catch((err) => {
+            log.error("Pipeline step failed", { toJob: job.next_job_id, error: String(err) });
+          });
+        }
+      }
 
       // Notify via Telegram — skip no-ops and routine results
       const isSilent = result.result.includes("[SILENT]")
@@ -167,6 +187,86 @@ export class JobExecutor {
 
       // Spawn diagnostic agent (with cooldown to prevent loops)
       await this.diagnoseFailure(jobId, job.name, message);
+    }
+  }
+
+  private async executePipelineStep(jobId: number, triggeredByRunId: number, previousResult: string, depth: number = 0): Promise<void> {
+    if (depth >= 10) {
+      log.error("Pipeline depth limit reached", { jobId, depth });
+      return;
+    }
+
+    const job = getJob(jobId);
+    if (!job || job.status !== "enabled") return;
+
+    log.info("Executing pipeline step", { jobId, name: job.name, depth });
+
+    const run = createJobRun(jobId, triggeredByRunId);
+    const startTime = Date.now();
+
+    try {
+      const now = new Date();
+      const localTime = now.toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+      const pipelinePrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n## Previous Job Output\n\n${previousResult}\n\n---\n\n${job.prompt}`;
+
+      const allowedTools = job.allowed_tools
+        ? job.allowed_tools.split(",").map((t) => t.trim())
+        : undefined;
+
+      const result = await this.agent.run({
+        prompt: pipelinePrompt,
+        source: "job",
+        sourceId: String(jobId),
+        allowedTools,
+        useBrowser: Boolean(job.use_browser),
+        model: job.model ?? undefined,
+        backend: (job.backend as "claude" | "glm") ?? undefined,
+        agentName: job.agent_name ?? undefined,
+        agentPrompt: job.agent_prompt ?? undefined,
+        subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
+      });
+
+      completeJobRun(run.id, {
+        status: "success",
+        result: result.result,
+        cost_usd: result.costUsd,
+        duration_ms: result.durationMs,
+        session_id: result.sessionId,
+      });
+
+      updateJob(jobId, { last_run_at: new Date().toISOString() });
+
+      log.info("Pipeline step completed", { jobId, name: job.name, cost: result.costUsd });
+
+      // Continue pipeline
+      if (job.next_job_id) {
+        const nextJob = getJob(job.next_job_id);
+        if (nextJob && nextJob.status === "enabled") {
+          await this.executePipelineStep(job.next_job_id, run.id, result.result, depth + 1);
+        }
+      }
+
+      // Notify only at the end of the pipeline (no next job)
+      if (!job.next_job_id) {
+        const isSilent = result.result.includes("[SILENT]")
+          || /no (new |pending )?items/i.test(result.result)
+          || /nothing to/i.test(result.result);
+        if (!isSilent) {
+          await this.notify(
+            `Pipeline "${job.name}" completed\n\n${result.result}`,
+            job.notify_chat_id ?? undefined,
+            job.notify_topic_id ?? undefined,
+          );
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Pipeline step failed", { jobId, error: message });
+      completeJobRun(run.id, {
+        status: "error",
+        error: message,
+        duration_ms: Date.now() - startTime,
+      });
     }
   }
 

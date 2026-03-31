@@ -129,6 +129,23 @@ export class AgentService {
       Object.assign(mcpServers, getGlmMcpServers());
     }
 
+    // Build agents record with optional overrides
+    let agents = this.agentDefinitions;
+
+    if (options.agentName && agents[options.agentName]) {
+      // Override agent prompt if provided
+      if (options.agentPrompt) {
+        agents = { ...agents, [options.agentName]: { ...agents[options.agentName], prompt: options.agentPrompt } };
+      }
+    }
+
+    // Filter subagents if specified
+    if (options.subagentNames) {
+      const allowed = new Set(options.subagentNames);
+      if (options.agentName) allowed.add(options.agentName);
+      agents = Object.fromEntries(Object.entries(agents).filter(([name]) => allowed.has(name)));
+    }
+
     log.info("Calling query()", { runId, model, backend });
     const agentQuery = query({
       prompt: options.prompt,
@@ -142,7 +159,8 @@ export class AgentService {
         settingSources: [],
         ...(options.allowedTools ? { allowedTools: [...options.allowedTools, "Skill"] } : {}),
         mcpServers,
-        agents: this.agentDefinitions,
+        agents,
+        ...(options.agentName && agents[options.agentName] ? { agent: options.agentName } : {}),
         ...(options.sessionId ? { resume: options.sessionId } : {}),
         ...(envOverride ? { env: envOverride } : {}),
         stderr: (data: string) => {

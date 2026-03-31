@@ -22,6 +22,7 @@ import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment, tmaJobDetailFragme
 import { tmaLogsPage, tmaLogListFragment } from "../views/mini-app/logs.ts";
 import { tmaMemoryPage, tmaMemoryListFragment } from "../views/mini-app/memory.ts";
 import { tmaSessionsPage } from "../views/mini-app/sessions.ts";
+import { getAgentNames } from "../../agent/subagents.ts";
 import { formatRunMeta } from "../../telegram/format.ts";
 import { getConfig } from "../../config.ts";
 import { createLogger } from "../../shared/logger.ts";
@@ -248,14 +249,17 @@ export function createMiniAppRoutes() {
     const job = getJob(jobId);
     if (!job) return c.text("Job not found", 404);
     const runs = getJobRuns(jobId, 5);
-    return c.html(tmaJobDetailFragment(job, runs));
+    const allJobs = getAllJobs();
+    return c.html(tmaJobDetailFragment(job, runs, allJobs));
   });
 
   app.get("/api/jobs/:id/edit", (c) => {
     const jobId = parseInt(c.req.param("id"), 10);
     const job = getJob(jobId);
     if (!job) return c.text("Job not found", 404);
-    return c.html(tmaJobEditFragment(job));
+    const agentNames = getAgentNames();
+    const allJobs = getAllJobs();
+    return c.html(tmaJobEditFragment(job, agentNames, allJobs));
   });
 
   app.post("/api/jobs/:id/update", async (c) => {
@@ -279,12 +283,28 @@ export function createMiniAppRoutes() {
         updates.notify_topic_id = null;
       }
     }
+    if (body.agent_name !== undefined) updates.agent_name = String(body.agent_name) || null;
+    if (body.agent_prompt !== undefined) updates.agent_prompt = String(body.agent_prompt) || null;
+    if (body.next_job_id !== undefined) {
+      const nj = parseInt(String(body.next_job_id), 10);
+      updates.next_job_id = nj > 0 ? nj : null;
+    }
+    // subagents comes as checkboxes - may be string, array, or undefined
+    const subagentValues = body["subagents"];
+    if (subagentValues !== undefined) {
+      const selected = Array.isArray(subagentValues) ? subagentValues.map(String) : subagentValues ? [String(subagentValues)] : [];
+      updates.subagents = selected.length > 0 ? JSON.stringify(selected) : null;
+    } else {
+      // No checkboxes checked = clear subagents
+      updates.subagents = null;
+    }
     updateJob(jobId, updates as Parameters<typeof updateJob>[1]);
     const reloadScheduler = c.get("reloadScheduler");
     reloadScheduler();
     const job = getJob(jobId)!;
     const runs = getJobRuns(jobId, 5);
-    return c.html(tmaJobDetailFragment(job, runs));
+    const allJobs = getAllJobs();
+    return c.html(tmaJobDetailFragment(job, runs, allJobs));
   });
 
   // --- Logs API ---

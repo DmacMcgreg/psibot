@@ -45,6 +45,10 @@ export interface Job {
   skip_runs: number;
   notify_chat_id: string | null;
   notify_topic_id: number | null;
+  agent_name: string | null;
+  agent_prompt: string | null;
+  subagents: string | null;       // JSON array of subagent names
+  next_job_id: number | null;
   status: JobStatus;
   last_run_at: string | null;
   next_run_at: string | null;
@@ -65,6 +69,7 @@ export interface JobRun {
   session_id: string | null;
   started_at: string;
   completed_at: string | null;
+  triggered_by_run_id: number | null;
 }
 
 export interface MemoryEntry {
@@ -106,6 +111,9 @@ export interface AgentRunOptions {
   model?: string;
   /** Which AI backend to use. "claude" = Claude Max plan (default), "glm" = GLM models via api.z.ai */
   backend?: AgentBackend;
+  agentName?: string;
+  agentPrompt?: string;
+  subagentNames?: string[];
   onText?: (text: string) => void;
   onToolUse?: (toolName: string, input?: Record<string, unknown>, subagent?: boolean) => void;
   onComplete?: (result: AgentRunResult) => void;

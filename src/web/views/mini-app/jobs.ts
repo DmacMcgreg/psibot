@@ -197,6 +197,8 @@ export function tmaJobCardFragment(job: Job): string {
     `<span class="tma-pill">${escapeHtml(model)}</span>`,
     backend !== "Claude" ? `<span class="tma-pill">${escapeHtml(backend)}</span>` : "",
     job.use_browser ? `<span class="tma-pill">Browser</span>` : "",
+    job.agent_name ? `<span class="tma-pill">${escapeHtml(job.agent_name)}</span>` : "",
+    job.next_job_id ? `<span class="tma-pill">Pipeline</span>` : "",
   ].filter(Boolean).join(" ");
 
   const lastRun = job.last_run_at ? relativeTime(job.last_run_at) : "never";
@@ -218,7 +220,7 @@ export function tmaJobCardFragment(job: Job): string {
 
 // --- Detail (expanded view with actions + run history) ---
 
-export function tmaJobDetailFragment(job: Job, runs: JobRun[]): string {
+export function tmaJobDetailFragment(job: Job, runs: JobRun[], allJobs?: Job[]): string {
   const paused = isPaused(job);
   const statusCls = paused ? "tma-badge-paused" : job.status === "enabled" ? "tma-badge-enabled" : "tma-badge-disabled";
   const statusLabel = paused ? "Paused" : job.status;
@@ -269,14 +271,24 @@ export function tmaJobDetailFragment(job: Job, runs: JobRun[]): string {
       <tr><td class="tma-dt-label">Posts to</td><td>${escapeHtml(dest)}</td></tr>
       <tr><td class="tma-dt-label">Budget</td><td>$${job.max_budget_usd.toFixed(2)}</td></tr>
       <tr><td class="tma-dt-label">Browser</td><td>${job.use_browser ? "Yes" : "No"}</td></tr>
+      <tr><td class="tma-dt-label">Agent</td><td>${job.agent_name ? escapeHtml(job.agent_name) : "Default"}</td></tr>
+      <tr><td class="tma-dt-label">Subagents</td><td>${job.subagents ? escapeHtml(JSON.parse(job.subagents).join(", ")) : "All"}</td></tr>
+      <tr><td class="tma-dt-label">Pipeline</td><td>${job.next_job_id && allJobs ? escapeHtml("-> " + (allJobs.find((j) => j.id === job.next_job_id)?.name ?? `Job #${job.next_job_id}`)) : "None"}</td></tr>
       <tr><td class="tma-dt-label">Last run</td><td>${lastRun}</td></tr>
       ${job.next_run_at ? `<tr><td class="tma-dt-label">Next run</td><td>${escapeHtml(job.next_run_at)}</td></tr>` : ""}
     </table>
 
+    ${job.agent_prompt ? `<details style="margin-top:10px;">
+      <summary class="tma-hint" style="cursor:pointer; font-size:12px;">Agent Prompt</summary>
+      <div style="margin-top:6px; font-size:12px; white-space:pre-wrap; line-height:1.4; max-height:200px; overflow-y:auto;">${job.agent_prompt.length > 200 ? escapeHtml(job.agent_prompt.slice(0, 200)) + "..." : escapeHtml(job.agent_prompt)}</div>
+    </details>
     <details style="margin-top:10px;">
+      <summary class="tma-hint" style="cursor:pointer; font-size:12px;">Job Prompt</summary>
+      <div style="margin-top:6px; font-size:12px; white-space:pre-wrap; line-height:1.4; max-height:200px; overflow-y:auto;">${promptPreview}</div>
+    </details>` : `<details style="margin-top:10px;">
       <summary class="tma-hint" style="cursor:pointer; font-size:12px;">Prompt</summary>
       <div style="margin-top:6px; font-size:12px; white-space:pre-wrap; line-height:1.4; max-height:200px; overflow-y:auto;">${promptPreview}</div>
-    </details>
+    </details>`}
 
     <div style="margin-top:10px;">
       <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Recent Runs</div>
@@ -298,7 +310,7 @@ export function tmaJobDetailFragment(job: Job, runs: JobRun[]): string {
 
 // --- Edit form ---
 
-export function tmaJobEditFragment(job: Job): string {
+export function tmaJobEditFragment(job: Job, agentNames: string[], allJobs: Job[]): string {
   const topicId = job.notify_topic_id ?? 0;
 
   const modelOptions = [
@@ -363,8 +375,44 @@ export function tmaJobEditFragment(job: Job): string {
       </div>
 
       <div class="tma-form-row">
+        <label class="tma-form-label">Agent</label>
+        <select name="agent_name" class="tma-input tma-input-sm">
+          <option value=""${!job.agent_name ? " selected" : ""}>Default (none)</option>
+          ${agentNames.map((name) => `<option value="${escapeHtml(name)}"${job.agent_name === name ? " selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        </select>
+      </div>
+
+      <div class="tma-form-row">
+        <label class="tma-form-label">Agent Prompt Override (optional)</label>
+        <textarea name="agent_prompt" rows="3" class="tma-input tma-input-sm" style="font-size:12px; line-height:1.4; resize:vertical;">${escapeHtml(job.agent_prompt ?? "")}</textarea>
+      </div>
+
+      <div class="tma-form-row">
+        <label class="tma-form-label">Subagents</label>
+        <div style="display:flex; flex-wrap:wrap; gap:6px 12px; margin-top:4px;">
+          ${(() => {
+            const selected: string[] = job.subagents ? JSON.parse(job.subagents) : [];
+            return agentNames.map((name) =>
+              `<label style="display:flex; align-items:center; gap:4px; font-size:12px;">
+  <input type="checkbox" name="subagents" value="${escapeHtml(name)}"${selected.includes(name) ? " checked" : ""}>
+  ${escapeHtml(name)}
+</label>`
+            ).join("\n          ");
+          })()}
+        </div>
+      </div>
+
+      <div class="tma-form-row">
         <label class="tma-form-label">Prompt</label>
         <textarea name="prompt" rows="6" class="tma-input tma-input-sm" style="font-size:12px; line-height:1.4; resize:vertical;">${escapeHtml(job.prompt)}</textarea>
+      </div>
+
+      <div class="tma-form-row">
+        <label class="tma-form-label">Pipeline (next job)</label>
+        <select name="next_job_id" class="tma-input tma-input-sm">
+          <option value=""${!job.next_job_id ? " selected" : ""}>None</option>
+          ${allJobs.filter((j) => j.id !== job.id).map((j) => `<option value="${j.id}"${job.next_job_id === j.id ? " selected" : ""}>${escapeHtml(j.name)}</option>`).join("")}
+        </select>
       </div>
 
       <div style="display:flex; gap:6px; margin-top:12px;">

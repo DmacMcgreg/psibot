@@ -1,5 +1,9 @@
 import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 
+export function getAgentNames(): string[] {
+  return Object.keys(buildAgentDefinitions());
+}
+
 export function buildAgentDefinitions(): Record<string, AgentDefinition> {
   return {
     "image-generator": {

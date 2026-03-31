@@ -383,4 +383,11 @@ export const MIGRATIONS = [
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(chat_id, topic_id)
   )`,
+
+  // Job agent assignment and pipeline support
+  `ALTER TABLE jobs ADD COLUMN agent_name TEXT`,
+  `ALTER TABLE jobs ADD COLUMN agent_prompt TEXT`,
+  `ALTER TABLE jobs ADD COLUMN subagents TEXT`,
+  `ALTER TABLE jobs ADD COLUMN next_job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL`,
+  `ALTER TABLE job_runs ADD COLUMN triggered_by_run_id INTEGER REFERENCES job_runs(id)`,
 ];

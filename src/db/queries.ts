@@ -239,12 +239,16 @@ export function createJob(params: {
   use_browser?: boolean;
   model?: string | null;
   backend?: string | null;
+  agent_name?: string | null;
+  agent_prompt?: string | null;
+  subagents?: string | null;
+  next_job_id?: number | null;
 }): Job {
   const db = getDb();
   return db
-    .prepare<Job, [string, string, string, string | null, string | null, number, string | null, number, string | null, string | null]>(
-      `INSERT INTO jobs (name, prompt, type, schedule, run_at, max_budget_usd, allowed_tools, use_browser, model, backend)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    .prepare<Job, [string, string, string, string | null, string | null, number, string | null, number, string | null, string | null, string | null, string | null, string | null, number | null]>(
+      `INSERT INTO jobs (name, prompt, type, schedule, run_at, max_budget_usd, allowed_tools, use_browser, model, backend, agent_name, agent_prompt, subagents, next_job_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`
     )
     .get(
@@ -257,7 +261,11 @@ export function createJob(params: {
       params.allowed_tools ?? null,
       params.use_browser ? 1 : 0,
       params.model ?? null,
-      params.backend ?? "claude"
+      params.backend ?? "claude",
+      params.agent_name ?? null,
+      params.agent_prompt ?? null,
+      params.subagents ?? null,
+      params.next_job_id ?? null
     )!;
 }
 
@@ -299,6 +307,10 @@ export function updateJob(
       | "next_run_at"
       | "notify_chat_id"
       | "notify_topic_id"
+      | "agent_name"
+      | "agent_prompt"
+      | "subagents"
+      | "next_job_id"
     >
   >
 ): void {
@@ -328,8 +340,15 @@ export function deleteJob(id: number): void {
 
 // --- Job Runs ---
 
-export function createJobRun(jobId: number): JobRun {
+export function createJobRun(jobId: number, triggeredByRunId?: number): JobRun {
   const db = getDb();
+  if (triggeredByRunId != null) {
+    return db
+      .prepare<JobRun, [number, number]>(
+        `INSERT INTO job_runs (job_id, triggered_by_run_id) VALUES (?, ?) RETURNING *`
+      )
+      .get(jobId, triggeredByRunId)!;
+  }
   return db
     .prepare<JobRun, [number]>(
       `INSERT INTO job_runs (job_id) VALUES (?) RETURNING *`
