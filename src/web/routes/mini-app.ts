@@ -9,6 +9,7 @@ import {
   getMessagesBySession,
   getAllJobs,
   getJob,
+  getJobRuns,
   updateJob,
   deleteJob,
   getAllMemoryEntries,
@@ -17,7 +18,7 @@ import {
   getSessionPreviews,
 } from "../../db/queries.ts";
 import { tmaChatPage, tmaChatStreamFragment } from "../views/mini-app/chat.ts";
-import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment } from "../views/mini-app/jobs.ts";
+import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment, tmaJobDetailFragment, tmaJobEditFragment } from "../views/mini-app/jobs.ts";
 import { tmaLogsPage, tmaLogListFragment } from "../views/mini-app/logs.ts";
 import { tmaMemoryPage, tmaMemoryListFragment } from "../views/mini-app/memory.ts";
 import { tmaSessionsPage } from "../views/mini-app/sessions.ts";
@@ -240,6 +241,50 @@ export function createMiniAppRoutes() {
     reloadScheduler();
     const jobs = getAllJobs();
     return c.html(tmaJobListFragment(jobs));
+  });
+
+  app.get("/api/jobs/:id/detail", (c) => {
+    const jobId = parseInt(c.req.param("id"), 10);
+    const job = getJob(jobId);
+    if (!job) return c.text("Job not found", 404);
+    const runs = getJobRuns(jobId, 5);
+    return c.html(tmaJobDetailFragment(job, runs));
+  });
+
+  app.get("/api/jobs/:id/edit", (c) => {
+    const jobId = parseInt(c.req.param("id"), 10);
+    const job = getJob(jobId);
+    if (!job) return c.text("Job not found", 404);
+    return c.html(tmaJobEditFragment(job));
+  });
+
+  app.post("/api/jobs/:id/update", async (c) => {
+    const jobId = parseInt(c.req.param("id"), 10);
+    const body = await c.req.parseBody();
+    const updates: Record<string, string | number | null | boolean> = {};
+    if (body.name !== undefined) updates.name = String(body.name);
+    if (body.prompt !== undefined) updates.prompt = String(body.prompt);
+    if (body.schedule !== undefined) updates.schedule = String(body.schedule) || null;
+    if (body.model !== undefined) updates.model = String(body.model) || null;
+    if (body.backend !== undefined) updates.backend = String(body.backend) || null;
+    if (body.max_budget_usd !== undefined) updates.max_budget_usd = Number(body.max_budget_usd) || 1.0;
+    if (body.use_browser !== undefined) updates.use_browser = body.use_browser === "on";
+    if (body.notify_topic_id !== undefined) {
+      const topicId = parseInt(String(body.notify_topic_id), 10);
+      if (topicId > 0) {
+        updates.notify_chat_id = "-1003762174787";
+        updates.notify_topic_id = topicId;
+      } else {
+        updates.notify_chat_id = null;
+        updates.notify_topic_id = null;
+      }
+    }
+    updateJob(jobId, updates as Parameters<typeof updateJob>[1]);
+    const reloadScheduler = c.get("reloadScheduler");
+    reloadScheduler();
+    const job = getJob(jobId)!;
+    const runs = getJobRuns(jobId, 5);
+    return c.html(tmaJobDetailFragment(job, runs));
   });
 
   // --- Logs API ---

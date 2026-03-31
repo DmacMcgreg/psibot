@@ -297,6 +297,8 @@ export function updateJob(
       | "status"
       | "last_run_at"
       | "next_run_at"
+      | "notify_chat_id"
+      | "notify_topic_id"
     >
   >
 ): void {
