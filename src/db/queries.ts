@@ -21,6 +21,11 @@ import type {
   FeedbackLogEntry,
   AutonomyRule,
   AutonomyLevel,
+  TradingSignal,
+  TradingSignalDirection,
+  SignalCluster,
+  Agent,
+  AgentNotifyPolicy,
 } from "../shared/types.ts";
 
 // --- Chat Messages ---
@@ -1096,6 +1101,17 @@ export function getReminder(id: number): Reminder | null {
   );
 }
 
+export function getReminderBySourceId(sourceId: string): Reminder | null {
+  const db = getDb();
+  return (
+    db
+      .prepare<Reminder, [string]>(
+        `SELECT * FROM reminders WHERE source_id = ? AND status IN ('active', 'snoozed', 'completed') ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(sourceId) ?? null
+  );
+}
+
 export function updateReminder(
   id: number,
   params: Partial<Pick<Reminder, "status" | "snooze_until" | "remind_count">>
@@ -1318,4 +1334,301 @@ export function upsertAutonomyRule(params: {
     params.decision_count,
     params.level
   );
+}
+
+// --- Trading Signals ---
+
+export function insertTradingSignal(params: {
+  source: string;
+  ticker: string;
+  direction: TradingSignalDirection;
+  strength?: number;
+  reason?: string | null;
+  payload_json?: string | null;
+  source_url?: string | null;
+}): TradingSignal {
+  const db = getDb();
+  return db
+    .prepare<TradingSignal, [string, string, string, number, string | null, string | null, string | null]>(
+      `INSERT INTO trading_signals (source, ticker, direction, strength, reason, payload_json, source_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       RETURNING *`
+    )
+    .get(
+      params.source,
+      params.ticker.toUpperCase(),
+      params.direction,
+      params.strength ?? 0.5,
+      params.reason ?? null,
+      params.payload_json ?? null,
+      params.source_url ?? null
+    )!;
+}
+
+export function getTradingSignalByUrl(sourceUrl: string): TradingSignal | null {
+  const db = getDb();
+  return db
+    .prepare<TradingSignal, [string]>(
+      `SELECT * FROM trading_signals WHERE source_url = ? LIMIT 1`
+    )
+    .get(sourceUrl) ?? null;
+}
+
+export function listTradingSignals(params: {
+  ticker?: string;
+  source?: string;
+  since_hours?: number;
+  min_strength?: number;
+  limit?: number;
+}): TradingSignal[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const values: (string | number)[] = [];
+  if (params.ticker) {
+    conditions.push("ticker = ?");
+    values.push(params.ticker.toUpperCase());
+  }
+  if (params.source) {
+    conditions.push("source = ?");
+    values.push(params.source);
+  }
+  if (params.since_hours && params.since_hours > 0) {
+    conditions.push("captured_at >= datetime('now', ?)");
+    values.push(`-${params.since_hours} hours`);
+  }
+  if (typeof params.min_strength === "number") {
+    conditions.push("strength >= ?");
+    values.push(params.min_strength);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = params.limit ?? 500;
+  values.push(limit);
+  return db
+    .prepare<TradingSignal, (string | number)[]>(
+      `SELECT * FROM trading_signals ${where} ORDER BY captured_at DESC LIMIT ?`
+    )
+    .all(...values);
+}
+
+export function getSignalClusters(params: {
+  since_hours?: number;
+  min_sources?: number;
+  direction?: TradingSignalDirection;
+}): SignalCluster[] {
+  const sinceHours = params.since_hours ?? 24;
+  const minSources = params.min_sources ?? 2;
+  const signals = listTradingSignals({
+    since_hours: sinceHours,
+    limit: 2000,
+    ...(params.direction ? { min_strength: 0 } : {}),
+  });
+  const groups = new Map<string, TradingSignal[]>();
+  for (const sig of signals) {
+    if (params.direction && sig.direction !== params.direction) continue;
+    const key = `${sig.ticker}::${sig.direction}`;
+    const bucket = groups.get(key) ?? [];
+    bucket.push(sig);
+    groups.set(key, bucket);
+  }
+  const clusters: SignalCluster[] = [];
+  for (const [key, bucket] of groups.entries()) {
+    const uniqueSources = new Set(bucket.map((s) => s.source));
+    if (uniqueSources.size < minSources) continue;
+    const [ticker, direction] = key.split("::") as [string, TradingSignalDirection];
+    const totalStrength = bucket.reduce((acc, s) => acc + s.strength, 0);
+    const sorted = [...bucket].sort(
+      (a, b) => b.captured_at.localeCompare(a.captured_at)
+    );
+    clusters.push({
+      ticker,
+      direction,
+      sources: Array.from(uniqueSources),
+      source_count: uniqueSources.size,
+      total_strength: totalStrength,
+      avg_strength: totalStrength / bucket.length,
+      signal_ids: bucket.map((s) => s.id),
+      latest_captured_at: sorted[0]?.captured_at ?? "",
+      top_reasons: sorted
+        .slice(0, 3)
+        .map((s) => s.reason)
+        .filter((r): r is string => Boolean(r)),
+    });
+  }
+  clusters.sort((a, b) => {
+    if (b.source_count !== a.source_count) return b.source_count - a.source_count;
+    return b.total_strength - a.total_strength;
+  });
+  return clusters;
+}
+
+export function markSignalActed(params: {
+  ticker: string;
+  trade_id: number;
+  since_hours?: number;
+}): number {
+  const db = getDb();
+  const sinceHours = params.since_hours ?? 24;
+  const result = db
+    .prepare<unknown, [number, string, string]>(
+      `UPDATE trading_signals
+       SET acted_on = 1, trade_id = ?
+       WHERE ticker = ? AND acted_on = 0 AND captured_at >= datetime('now', ?)`
+    )
+    .run(params.trade_id, params.ticker.toUpperCase(), `-${sinceHours} hours`);
+  return result.changes;
+}
+
+export function getRecentTradingSignalCount(sourceUrl: string): number {
+  const db = getDb();
+  const row = db
+    .prepare<{ c: number }, [string]>(
+      `SELECT COUNT(*) as c FROM trading_signals WHERE source_url = ?`
+    )
+    .get(sourceUrl);
+  return row?.c ?? 0;
+}
+
+// --- Declarative Agents (orchestration framework Phase 1) ---
+
+export function listAgents(): Agent[] {
+  const db = getDb();
+  return db.prepare<Agent, []>(`SELECT * FROM agents ORDER BY is_builtin DESC, slug ASC`).all();
+}
+
+export function getAgentBySlug(slug: string): Agent | null {
+  const db = getDb();
+  return db.prepare<Agent, [string]>(`SELECT * FROM agents WHERE slug = ?`).get(slug) ?? null;
+}
+
+export function getAgentById(id: number): Agent | null {
+  const db = getDb();
+  return db.prepare<Agent, [number]>(`SELECT * FROM agents WHERE id = ?`).get(id) ?? null;
+}
+
+export interface CreateAgentParams {
+  slug: string;
+  name: string;
+  role?: string;
+  goal?: string;
+  backstory?: string;
+  description?: string;
+  prompt: string;
+  model?: string;
+  max_turns?: number;
+  allowed_tools?: string | null;
+  allowed_subagents?: string | null;
+  critic_agent_slug?: string | null;
+  memory_dir: string;
+  notify_chat_id?: string | null;
+  notify_topic_id?: number | null;
+  notify_policy?: AgentNotifyPolicy;
+  output_template?: string | null;
+  is_builtin?: boolean;
+}
+
+export function createAgent(params: CreateAgentParams): Agent {
+  const db = getDb();
+  return db
+    .prepare<Agent, [string, string, string, string, string, string, string, string, number, string | null, string | null, string | null, string, string | null, number | null, string, string | null, number]>(
+      `INSERT INTO agents (
+        slug, name, role, goal, backstory, description, prompt, model, max_turns,
+        allowed_tools, allowed_subagents, critic_agent_slug, memory_dir,
+        notify_chat_id, notify_topic_id, notify_policy, output_template, is_builtin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING *`
+    )
+    .get(
+      params.slug,
+      params.name,
+      params.role ?? "",
+      params.goal ?? "",
+      params.backstory ?? "",
+      params.description ?? "",
+      params.prompt,
+      params.model ?? "sonnet",
+      params.max_turns ?? 99999,
+      params.allowed_tools ?? null,
+      params.allowed_subagents ?? null,
+      params.critic_agent_slug ?? null,
+      params.memory_dir,
+      params.notify_chat_id ?? null,
+      params.notify_topic_id ?? null,
+      params.notify_policy ?? "always",
+      params.output_template ?? null,
+      params.is_builtin ? 1 : 0,
+    )!;
+}
+
+export function updateAgent(
+  slug: string,
+  patch: Partial<Omit<Agent, "id" | "slug" | "is_builtin" | "created_at">>,
+): Agent | null {
+  const db = getDb();
+  const existing = getAgentBySlug(slug);
+  if (!existing) return null;
+
+  const fields: string[] = [];
+  const values: Array<string | number | null> = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "updated_at") continue;
+    fields.push(`${key} = ?`);
+    values.push(value as string | number | null);
+  }
+  if (fields.length === 0) return existing;
+  fields.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`);
+  values.push(slug);
+
+  return db
+    .prepare<Agent, Array<string | number | null>>(
+      `UPDATE agents SET ${fields.join(", ")} WHERE slug = ? RETURNING *`
+    )
+    .get(...values) ?? null;
+}
+
+export function deleteAgent(slug: string): void {
+  const db = getDb();
+  const existing = getAgentBySlug(slug);
+  if (!existing) return;
+  if (existing.is_builtin) {
+    throw new Error(`Cannot delete built-in agent: ${slug}`);
+  }
+  db.prepare<unknown, [string]>(`DELETE FROM agents WHERE slug = ?`).run(slug);
+}
+
+/**
+ * Idempotent seed for built-in agents. Inserts if missing; updates only the
+ * code-owned fields (prompt, description, model, max_turns, name) so user
+ * edits to goal/role/backstory/notify_policy/memory_dir/critic_agent_slug
+ * survive across restarts.
+ */
+export function upsertBuiltinAgent(params: CreateAgentParams): Agent {
+  const db = getDb();
+  const existing = getAgentBySlug(params.slug);
+  if (!existing) {
+    return createAgent({ ...params, is_builtin: true });
+  }
+  return db
+    .prepare<Agent, [string, string, string, number, string, string]>(
+      `UPDATE agents
+       SET name = ?, description = ?, prompt = ?, max_turns = ?, model = ?,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE slug = ?
+       RETURNING *`
+    )
+    .get(
+      params.name,
+      params.description ?? existing.description,
+      params.prompt,
+      params.max_turns ?? existing.max_turns,
+      params.model ?? existing.model,
+      params.slug,
+    )!;
+}
+
+export function countJobsUsingAgent(slug: string): number {
+  const db = getDb();
+  const row = db
+    .prepare<{ c: number }, [string]>(`SELECT COUNT(*) as c FROM jobs WHERE agent_name = ?`)
+    .get(slug);
+  return row?.c ?? 0;
 }

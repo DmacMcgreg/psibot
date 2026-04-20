@@ -17,6 +17,7 @@ function safePath(filePath: string): string {
 
 export class MemorySystem {
   private memoryPath: string;
+  private agentWriteLocks = new Map<string, Promise<void>>();
 
   constructor() {
     this.memoryPath = join(KNOWLEDGE_DIR, "memory.md");
@@ -167,5 +168,100 @@ export class MemorySystem {
         error: String(err),
       });
     }
+  }
+
+  // --- Per-agent memory (Phase 2 of orchestration framework) ---
+
+  /** Compose a memory_dir + file into a guarded path under the agent's own dir. */
+  private agentMemoryPath(memoryDir: string, file: string): string {
+    if (!memoryDir) throw new Error("memoryDir required");
+    if (!file) throw new Error("file required");
+    const dirResolved = safePath(memoryDir);
+    const fullResolved = safePath(join(memoryDir, file));
+    if (!fullResolved.startsWith(dirResolved + "/") && fullResolved !== dirResolved) {
+      throw new Error(`Path escapes agent memory dir: ${file}`);
+    }
+    return fullResolved;
+  }
+
+  readAgentMemory(memoryDir: string, file: string): string {
+    const fullPath = this.agentMemoryPath(memoryDir, file);
+    return readFileSync(fullPath, "utf-8");
+  }
+
+  readAgentMemoryOptional(memoryDir: string, file: string): string | null {
+    try {
+      return this.readAgentMemory(memoryDir, file);
+    } catch {
+      return null;
+    }
+  }
+
+  listAgentMemoryFiles(memoryDir: string): string[] {
+    const dir = safePath(memoryDir);
+    if (!existsSync(dir)) return [];
+    try {
+      return readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.endsWith(".md"))
+        .map((e) => e.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Per-slug write serialization so two concurrent jobs targeting the same
+   * agent never trample each other's appends or clobber full writes.
+   */
+  private async withAgentLock(slug: string, fn: () => void): Promise<void> {
+    const prev = this.agentWriteLocks.get(slug) ?? Promise.resolve();
+    let done!: () => void;
+    const next = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    this.agentWriteLocks.set(slug, prev.then(() => next));
+    try {
+      await prev;
+      fn();
+    } finally {
+      done();
+      if (this.agentWriteLocks.get(slug) === prev.then(() => next)) {
+        this.agentWriteLocks.delete(slug);
+      }
+    }
+  }
+
+  async writeAgentMemory(
+    slug: string,
+    memoryDir: string,
+    file: string,
+    content: string,
+  ): Promise<void> {
+    await this.withAgentLock(slug, () => {
+      const fullPath = this.agentMemoryPath(memoryDir, file);
+      const parent = safePath(memoryDir);
+      if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+      writeFileSync(fullPath, content);
+      this.indexFile(join(memoryDir, file));
+      log.info("Wrote agent memory", { slug, file });
+    });
+  }
+
+  async appendAgentMemory(
+    slug: string,
+    memoryDir: string,
+    file: string,
+    content: string,
+  ): Promise<void> {
+    await this.withAgentLock(slug, () => {
+      const fullPath = this.agentMemoryPath(memoryDir, file);
+      const parent = safePath(memoryDir);
+      if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+      const existing = existsSync(fullPath) ? readFileSync(fullPath, "utf-8") : "";
+      const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+      writeFileSync(fullPath, `${existing}${separator}${content}\n`);
+      this.indexFile(join(memoryDir, file));
+      log.info("Appended agent memory", { slug, file });
+    });
   }
 }

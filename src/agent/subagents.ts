@@ -1,44 +1,72 @@
 import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { listAgents, upsertBuiltinAgent, type CreateAgentParams } from "../db/queries.ts";
+import type { Agent } from "../shared/types.ts";
 
-export function getAgentNames(): string[] {
-  return Object.keys(buildAgentDefinitions());
-}
+const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
 
-export function buildAgentDefinitions(): Record<string, AgentDefinition> {
-  return {
-    "image-generator": {
+/**
+ * Seed data for built-in agents. This is the source of truth on fresh installs
+ * and the base set that upsertBuiltinAgent syncs on every startup.
+ *
+ * The seeder updates code-owned fields (prompt, description, model, max_turns, name)
+ * but preserves user edits to role/goal/backstory/notify_policy/memory_dir/
+ * critic_agent_slug/output_template/notify_chat_id/notify_topic_id across restarts.
+ */
+export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
+  return [
+    {
+      slug: "image-generator",
+      name: "Image Generator",
       description:
         "Generates images using Gemini API. Use when asked to create images, illustrations, or visual content.",
       prompt:
         "You generate images using the image_generate tool. Given a description, call image_generate with an appropriate prompt. Return the file path of the generated image so the caller can send it to the user.",
       model: "haiku",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/image-generator",
+      is_builtin: true,
     },
-    "audio-processor": {
+    {
+      slug: "audio-processor",
+      name: "Audio Processor",
       description:
         "Processes audio: transcription (STT) and speech generation (TTS). Use for voice messages or audio requests.",
       prompt:
         "You process audio using audio_transcribe (speech-to-text) and tts_generate (text-to-speech) tools. For transcription, take an audio file path and return the text. For TTS, take text and generate an audio file, returning the path.",
       model: "haiku",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/audio-processor",
+      is_builtin: true,
     },
-    coder: {
+    {
+      slug: "coder",
+      name: "Coder",
       description:
         "Runs coding sessions in isolated git worktrees under ~/.psibot. Use for writing code, fixing bugs, creating projects.",
       prompt:
         "You are a coding agent. Use worktree_create to set up isolated workspaces for repositories, then use Bash, Read, Edit, and Write tools to implement code changes. Use worktree_list to check existing worktrees. Always commit your work before finishing.",
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/coder",
+      is_builtin: true,
     },
-    researcher: {
+    {
+      slug: "researcher",
+      name: "Researcher",
       description:
         "Performs web research using browser automation. Use for looking up information, reading articles, checking websites. Returns findings as text for the caller to use.",
       prompt:
         "You research topics using agent-browser (run via Bash) and web search. Navigate to relevant pages, extract information, and return concise findings. Cite sources when possible. You MUST return ALL findings as your final text response. The caller handles audio generation and Telegram delivery, so your only job is to gather and return the research text.",
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/researcher",
+      is_builtin: true,
     },
-    "technical-analyst": {
+    {
+      slug: "technical-analyst",
+      name: "Technical Analyst",
       description:
         "Analyzes stock charts visually and quantitatively. Takes screenshots of TradingView charts, identifies patterns, support/resistance levels, divergences, and price action signals. Cross-references visual analysis with quantitative TA data.",
       prompt: `You are an expert technical analyst. Your workflow:
@@ -54,9 +82,13 @@ export function buildAgentDefinitions(): Record<string, AgentDefinition> {
 
 Return structured findings: key levels, pattern identification, trend assessment, buy/sell zones with confidence.`,
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/technical-analyst",
+      is_builtin: true,
     },
-    "fundamental-analyst": {
+    {
+      slug: "fundamental-analyst",
+      name: "Fundamental Analyst",
       description:
         "Deep dives financial statements, earnings, analyst ratings, insider activity. Compares metrics across sector peers and flags inflection points or red flags.",
       prompt: `You are a fundamental analyst. Your workflow:
@@ -71,9 +103,13 @@ Return structured findings: key levels, pattern identification, trend assessment
 
 Return structured findings: valuation assessment, growth trajectory, peer comparison, risk factors, catalyst timeline.`,
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/fundamental-analyst",
+      is_builtin: true,
     },
-    "macro-strategist": {
+    {
+      slug: "macro-strategist",
+      name: "Macro Strategist",
       description:
         "Monitors Fed policy, economic data, yield curves, sector rotation, and market regime. Determines which trading strategies should be weighted higher or lower given current conditions.",
       prompt: `You are a macro strategist. Your workflow:
@@ -87,9 +123,13 @@ Return structured findings: valuation assessment, growth trajectory, peer compar
 
 Return: regime classification, sector recommendations (overweight/underweight), strategy adjustments (which strategies work in this regime), key risk events on the horizon.`,
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/macro-strategist",
+      is_builtin: true,
     },
-    "sentiment-scout": {
+    {
+      slug: "sentiment-scout",
+      name: "Sentiment Scout",
       description:
         "Scans news, Reddit, social media for sentiment shifts, narrative changes, and retail/institutional flow signals. Detects early momentum before it shows in price.",
       prompt: `You are a sentiment scout. Your workflow:
@@ -103,9 +143,13 @@ Return: regime classification, sector recommendations (overweight/underweight), 
 
 Return: sentiment scores, narrative summary, unusual activity flags, momentum signals, contrarian indicators.`,
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/sentiment-scout",
+      is_builtin: true,
     },
-    "quant-researcher": {
+    {
+      slug: "quant-researcher",
+      name: "Quant Researcher",
       description:
         "Backtests strategies at scale, combines strategies into composites, evaluates ML models, and continuously improves the trading system.",
       prompt: `You are an elite quantitative researcher. You have access to 198 trading strategies and a backtesting engine with Polygon.io data (5yr history, unlimited requests). Your mission: find alpha through systematic testing and strategy combination.
@@ -174,9 +218,13 @@ Return a structured report:
 5. RECOMMENDATIONS: strategies/composites to promote to playbook (with regime conditions)
 6. NEXT PRIORITIES: what to test next run`,
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/quant-researcher",
+      is_builtin: true,
     },
-    "strategy-scout": {
+    {
+      slug: "strategy-scout",
+      name: "Strategy Scout",
       description:
         "Searches the web for new quantitative trading strategies, techniques, and ideas from academic papers, quant blogs, and trading forums. Maps discoveries to existing strategies or proposes new ones.",
       prompt: `You are a strategy scout. You search the internet for new quantitative trading ideas and map them to actionable backtests.
@@ -212,7 +260,96 @@ For each idea:
 - BACKTEST SUGGESTION: Specific parameters to test
 - CONFIDENCE: How promising is this (1-5 based on source quality and novelty)`,
       model: "sonnet",
-      maxTurns: 99999,
+      max_turns: 99999,
+      memory_dir: "agents/strategy-scout",
+      is_builtin: true,
     },
-  };
+  ];
+}
+
+/** Idempotent seeder — call once at startup after initDb(). */
+export function seedBuiltinAgents(): void {
+  for (const seed of buildBuiltinAgentSeeds()) {
+    upsertBuiltinAgent(seed);
+  }
+}
+
+/** Returns all agent slugs known to the system (reads from DB). */
+export function getAgentNames(): string[] {
+  return listAgents().map((a) => a.slug);
+}
+
+/**
+ * Build SDK AgentDefinition records from the DB. If subagentSlugs is provided,
+ * only those slugs are included.
+ *
+ * The returned prompt embeds role/goal/backstory when non-empty, then the
+ * agent's base prompt, then the contents of each markdown file under
+ * knowledge/<memory_dir>/ — giving the agent access to its own isolated
+ * memory without contaminating the main conversation's memory.md.
+ */
+export function loadAgentDefinitions(subagentSlugs?: string[]): Record<string, AgentDefinition> {
+  const agents = listAgents();
+  const allowed = subagentSlugs ? new Set(subagentSlugs) : null;
+  const filtered = allowed ? agents.filter((a) => allowed.has(a.slug)) : agents;
+
+  const defs: Record<string, AgentDefinition> = {};
+  for (const agent of filtered) {
+    defs[agent.slug] = {
+      description: agent.description || agent.role || agent.name,
+      prompt: buildAgentPrompt(agent),
+      model: agent.model as AgentDefinition["model"],
+      // Cast to match SDK type — max_turns is unused by SDK but stored for future use
+    } as AgentDefinition;
+  }
+  return defs;
+}
+
+/**
+ * Assemble the agent's full system prompt:
+ *   Role / Goal / Backstory (when set) + base prompt + per-agent memory files.
+ */
+export function buildAgentPrompt(agent: Agent): string {
+  const parts: string[] = [];
+  if (agent.role) parts.push(`## Role\n\n${agent.role}`);
+  if (agent.goal) parts.push(`## Goal\n\n${agent.goal}`);
+  if (agent.backstory) parts.push(`## Backstory\n\n${agent.backstory}`);
+  parts.push(agent.prompt);
+
+  const memoryFiles = readAgentMemoryFiles(agent.memory_dir);
+  if (memoryFiles.length > 0) {
+    const rendered = memoryFiles
+      .map((f) => `### ${f.name}\n\n${f.content.trimEnd()}`)
+      .join("\n\n");
+    parts.push(
+      `## Your Persistent Memory\n\nThese files are your private memory at \`knowledge/${agent.memory_dir}/\`. Use the agent_memory_read / agent_memory_write / agent_memory_append tools with slug="${agent.slug}" to update them.\n\n${rendered}`,
+    );
+  }
+  return parts.join("\n\n");
+}
+
+function readAgentMemoryFiles(memoryDir: string): Array<{ name: string; content: string }> {
+  const dir = join(KNOWLEDGE_DIR, memoryDir);
+  if (!existsSync(dir)) return [];
+  const files: Array<{ name: string; content: string }> = [];
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        try {
+          const content = readFileSync(join(dir, entry.name), "utf-8");
+          files.push({ name: entry.name, content });
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+  } catch {
+    // directory unreadable — treat as empty memory
+  }
+  return files;
+}
+
+/** Legacy alias — DB-backed. Prefer loadAgentDefinitions() for new code. */
+export function buildAgentDefinitions(): Record<string, AgentDefinition> {
+  return loadAgentDefinitions();
 }

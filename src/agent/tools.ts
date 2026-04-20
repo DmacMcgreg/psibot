@@ -28,10 +28,14 @@ import {
   getPendingItemById,
   updatePendingItem,
   insertReminder,
+  getReminderBySourceId,
+  getActiveReminders,
   completeReminder,
   muteTopic,
   unmuteTopic,
   getMutedTopics,
+  getAgentBySlug,
+  listAgents,
 } from "../db/queries.ts";
 import {
   preliminaryResearch,
@@ -42,6 +46,12 @@ import { triageAllPending } from "../triage/index.ts";
 import { briefingActionKeyboard } from "../telegram/keyboards.ts";
 import { pollRedditSaved } from "../capture/reddit.ts";
 import { pollGithubStars } from "../capture/github.ts";
+import { pollRedditFirehose } from "../capture/reddit-firehose.ts";
+import { pollOpenInsider } from "../capture/openinsider.ts";
+import { pollAnalystRatings } from "../capture/analyst-ratings.ts";
+import { pollShadowTipRanks } from "../capture/shadow-tipranks.ts";
+import { pollShadowC2Zulu } from "../capture/shadow-c2zulu.ts";
+import { pollShadowAfterHourAndFallbacks } from "../capture/shadow-afterhour.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { Bot, InputFile as GrammyInputFile } from "grammy";
 
@@ -124,6 +134,122 @@ export function createAgentTools(deps: ToolDeps) {
               },
             ],
           };
+        }
+      ),
+
+      // --- Per-agent isolated memory (orchestration framework Phase 2) ---
+      tool(
+        "agent_memory_read",
+        "Read a markdown file from a named agent's isolated memory directory (knowledge/<memory_dir>/<file>). Use this to recall what this agent has learned in prior runs without loading other agents' context.",
+        {
+          slug: z.string().describe("The agent's slug, e.g. 'researcher' or 'technical-analyst'"),
+          file: z.string().describe("Filename within the agent's memory directory, e.g. 'memory.md' or 'learnings.md'"),
+        },
+        async (args) => {
+          const agent = getAgentBySlug(args.slug);
+          if (!agent) {
+            return {
+              content: [{ type: "text" as const, text: `Agent not found: ${args.slug}` }],
+              isError: true,
+            };
+          }
+          const content = memory.readAgentMemoryOptional(agent.memory_dir, args.file);
+          if (content === null) {
+            return {
+              content: [{ type: "text" as const, text: `No such memory file yet: ${agent.memory_dir}/${args.file}` }],
+            };
+          }
+          return { content: [{ type: "text" as const, text: content }] };
+        }
+      ),
+
+      tool(
+        "agent_memory_write",
+        "Overwrite a markdown file in a named agent's isolated memory directory. Creates the directory if missing. Use for full replacements; prefer agent_memory_append for incremental additions.",
+        {
+          slug: z.string().describe("The agent's slug"),
+          file: z.string().describe("Filename within the agent's memory directory"),
+          content: z.string().describe("Full markdown content to write"),
+        },
+        async (args) => {
+          const agent = getAgentBySlug(args.slug);
+          if (!agent) {
+            return {
+              content: [{ type: "text" as const, text: `Agent not found: ${args.slug}` }],
+              isError: true,
+            };
+          }
+          await memory.writeAgentMemory(agent.slug, agent.memory_dir, args.file, args.content);
+          return {
+            content: [{ type: "text" as const, text: `Wrote ${agent.memory_dir}/${args.file}` }],
+          };
+        }
+      ),
+
+      tool(
+        "agent_memory_append",
+        "Append a line or paragraph to a markdown file in a named agent's isolated memory directory. Creates the file if missing. Prefer this for incremental learnings/notes.",
+        {
+          slug: z.string().describe("The agent's slug"),
+          file: z.string().describe("Filename within the agent's memory directory"),
+          content: z.string().describe("Content to append (newline is added automatically)"),
+        },
+        async (args) => {
+          const agent = getAgentBySlug(args.slug);
+          if (!agent) {
+            return {
+              content: [{ type: "text" as const, text: `Agent not found: ${args.slug}` }],
+              isError: true,
+            };
+          }
+          await memory.appendAgentMemory(agent.slug, agent.memory_dir, args.file, args.content);
+          return {
+            content: [{ type: "text" as const, text: `Appended to ${agent.memory_dir}/${args.file}` }],
+          };
+        }
+      ),
+
+      tool(
+        "agent_memory_list",
+        "List markdown files in a named agent's isolated memory directory.",
+        {
+          slug: z.string().describe("The agent's slug"),
+        },
+        async (args) => {
+          const agent = getAgentBySlug(args.slug);
+          if (!agent) {
+            return {
+              content: [{ type: "text" as const, text: `Agent not found: ${args.slug}` }],
+              isError: true,
+            };
+          }
+          const files = memory.listAgentMemoryFiles(agent.memory_dir);
+          const text = files.length === 0
+            ? `No memory files yet in knowledge/${agent.memory_dir}/`
+            : files.map((f) => `- ${f}`).join("\n");
+          return { content: [{ type: "text" as const, text }] };
+        }
+      ),
+
+      tool(
+        "agents_list",
+        "List all registered agents (slug, name, role, goal) so you know which subagents exist and what each is for.",
+        {},
+        async () => {
+          const agents = listAgents();
+          if (agents.length === 0) {
+            return { content: [{ type: "text" as const, text: "(no agents registered)" }] };
+          }
+          const text = agents
+            .map((a) => {
+              const parts = [`**${a.slug}** (${a.name})`];
+              if (a.role) parts.push(`  role: ${a.role}`);
+              if (a.goal) parts.push(`  goal: ${a.goal}`);
+              if (a.description) parts.push(`  ${a.description}`);
+              return parts.join("\n");
+            })
+            .join("\n\n");
+          return { content: [{ type: "text" as const, text }] };
         }
       ),
 
@@ -455,8 +581,10 @@ ${runsText}`;
 
           try {
             const { markdownToTelegramV2, splitMessage } = await import("../telegram/format.ts");
-            const parseMode = args.parse_mode ?? "MarkdownV2";
-            const formatted = parseMode === "MarkdownV2" ? markdownToTelegramV2(args.text) : args.text;
+            // Always run through unified pipeline (handles HTML tags, Markdown tables, etc.)
+            // then send as MarkdownV2. The pipeline converts HTML→Markdown→MarkdownV2.
+            const formatted = args.parse_mode === "plain" ? args.text : markdownToTelegramV2(args.text);
+            const actualParseMode = args.parse_mode === "plain" ? undefined : "MarkdownV2";
             const chunks = splitMessage(formatted);
             const topicId = args.topic_id ?? currentChatContext?.topicId;
 
@@ -471,7 +599,7 @@ ${runsText}`;
             for (let ci = 0; ci < chunks.length; ci++) {
               const isLast = ci === chunks.length - 1;
               const options: Record<string, unknown> = {};
-              if (parseMode !== "plain") options.parse_mode = parseMode;
+              if (actualParseMode) options.parse_mode = actualParseMode;
               if (topicId) options.message_thread_id = topicId;
               if (isLast && keyboard) options.reply_markup = keyboard;
               await bot.api.sendMessage(chatId, chunks[ci], options);
@@ -1235,6 +1363,68 @@ ${runsText}`;
       ),
 
       tool(
+        "inbox_poll_reddit_firehose",
+        "Poll WSB, r/stocks, r/options, r/investing, r/pennystocks, r/SecurityAnalysis hot+rising feeds. Extracts tickers and emits trading_signals rows (one per ticker). Used by the Reddit Firehose cron job.",
+        {},
+        async () => {
+          const captured = await pollRedditFirehose();
+          return { content: [{ type: "text" as const, text: `Reddit firehose complete: ${captured} signals captured.` }] };
+        }
+      ),
+
+      tool(
+        "inbox_poll_openinsider",
+        "Poll OpenInsider.com for top insider purchases and cluster buys (3+ insiders). Emits trading_signals with direction=long and strength scaled by $ value + title (CEO/CFO/Director).",
+        {},
+        async () => {
+          const captured = await pollOpenInsider();
+          return { content: [{ type: "text" as const, text: `OpenInsider poll complete: ${captured} signals captured.` }] };
+        }
+      ),
+
+      tool(
+        "inbox_poll_analyst_ratings",
+        "Poll Finviz quote pages for recent analyst upgrades/downgrades. Tier-1 firms (GS/MS/JPM/BAC) get 2x strength. Price-target delta >10% flagged.",
+        {
+          tickers: z.array(z.string()).optional().describe("Optional list of tickers to poll; defaults to tickers with fresh news coverage"),
+        },
+        async (args) => {
+          const captured = await pollAnalystRatings(args.tickers);
+          return { content: [{ type: "text" as const, text: `Analyst ratings poll complete: ${captured} signals captured.` }] };
+        }
+      ),
+
+      tool(
+        "inbox_poll_shadow_tipranks",
+        "Poll TipRanks top analysts and top insiders for recent rated transactions. Strength scales with star rating and per-analyst credibility weights.",
+        {},
+        async () => {
+          const captured = await pollShadowTipRanks();
+          return { content: [{ type: "text" as const, text: `TipRanks shadow poll complete: ${captured} signals captured.` }] };
+        }
+      ),
+
+      tool(
+        "inbox_poll_shadow_c2zulu",
+        "Poll Collective2 RSS and ZuluTrade top traders for recent positions. Strength scales with trader Sharpe ratio.",
+        {},
+        async () => {
+          const captured = await pollShadowC2Zulu();
+          return { content: [{ type: "text" as const, text: `C2/Zulu shadow poll complete: ${captured} signals captured.` }] };
+        }
+      ),
+
+      tool(
+        "inbox_poll_shadow_afterhour",
+        "Poll AfterHour.com feed plus Autopilot (celebrity portfolios) and Quiver Quantitative (congressional trades). AfterHour auto-disables after 3 consecutive failures.",
+        {},
+        async () => {
+          const captured = await pollShadowAfterHourAndFallbacks();
+          return { content: [{ type: "text" as const, text: `AfterHour + fallbacks poll complete: ${captured} signals captured.` }] };
+        }
+      ),
+
+      tool(
         "inbox_auto_triage",
         "Automatically triage all pending inbox items using the GLM backend. Categorizes, scores priority, generates summaries, and routes to NotePlan. Much faster than manual triage for large batches.",
         {
@@ -1264,16 +1454,28 @@ ${runsText}`;
       // --- Reminder tools ---
       tool(
         "create_reminder",
-        "Create a reminder that will be sent to the user via Telegram with action buttons (PAID/SKIP/SNOOZE/MORE). Use this for bills, follow-ups, and items needing user acknowledgment.",
+        "Create a reminder that will be sent to the user via Telegram with action buttons (PAID/SKIP/SNOOZE/MORE). Use this for bills, follow-ups, and items needing user acknowledgment. Pass source_id when the reminder tracks an external item (e.g. 'apple-rem:<id>', 'gcal:<event_id>', 'gmail:<msg_id>', or a synthetic 'bill:<vendor>:<due_date>') — this enables cross-day dedup and back-sync when the user taps PAID.",
         {
           type: z.enum(["bill", "action", "research", "follow_up"]).describe("Reminder type"),
           title: z.string().describe("Short title shown on the button notification"),
           description: z.string().optional().describe("Detailed description shown when user taps MORE"),
           priority: z.number().min(1).max(5).optional().describe("Priority 1-5, default 3"),
           max_reminds: z.number().optional().describe("Max reminder attempts before auto-dismiss, default 5"),
+          source_id: z.string().optional().describe("Stable external identifier for dedup (e.g. 'apple-rem:0xABCD', 'gcal:evt_123', 'bill:hydro:2026-04-27'). If a reminder with the same source_id already exists, this call is a no-op."),
         },
         async (args) => {
           try {
+            if (args.source_id) {
+              const existing = getReminderBySourceId(args.source_id);
+              if (existing) {
+                return {
+                  content: [{
+                    type: "text" as const,
+                    text: `Reminder already exists for source_id=${args.source_id} (ID: ${existing.id}, status: ${existing.status}). Skipping.`,
+                  }],
+                };
+              }
+            }
             const reminder = insertReminder(args);
 
             // Research reminders are stored but never sent to Telegram
@@ -1316,6 +1518,26 @@ ${runsText}`;
         }
       ),
 
+      tool(
+        "reminder_list",
+        "List active reminders. Optionally filter by type (bill/action/research/follow_up). Use this before calling create_reminder to check for existing ones and avoid duplicates.",
+        {
+          type: z.enum(["bill", "action", "research", "follow_up"]).optional().describe("Filter by reminder type"),
+        },
+        async (args) => {
+          const reminders = getActiveReminders();
+          const filtered = args.type ? reminders.filter((r) => r.type === args.type) : reminders;
+          if (filtered.length === 0) {
+            return { content: [{ type: "text" as const, text: "No active reminders." }] };
+          }
+          const lines = filtered.map((r) => {
+            const src = r.source_id ? ` [source_id=${r.source_id}]` : "";
+            return `- ID ${r.id} | ${r.type} | ${r.title}${src}`;
+          });
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        }
+      ),
+
       // --- Research tools ---
       tool(
         "research_item",
@@ -1344,14 +1566,21 @@ ${runsText}`;
             // Auto-save to NotePlan
             const notePath = createResearchNote(item, research);
 
-            updatePendingItem(item.id, {
+            // Only update noteplan_path if note was created — don't overwrite existing path with null
+            const updates: Record<string, string | null> = {
               status: "archived",
               auto_decision: depth === "deep" ? "deep_research_done" : "quick_research_done",
               quick_scan_summary: research.summary,
-              noteplan_path: notePath,
-            });
+            };
+            if (notePath) {
+              updates.noteplan_path = notePath;
+            }
+            updatePendingItem(item.id, updates as Parameters<typeof updatePendingItem>[1]);
 
-            const text = `Research done: ${research.title}\nSaved to: ${notePath ?? "unknown"}\nItem ${item.id} archived.\n\nDo NOT send the research content to Telegram — it is in the NotePlan note.`;
+            const saveStatus = notePath
+              ? `Saved to: ${notePath}`
+              : "WARNING: NotePlan note creation failed — research content may be lost";
+            const text = `Research done: ${research.title}\n${saveStatus}\nItem ${item.id} archived.\n\nDo NOT send the research content to Telegram — it is in the NotePlan note.`;
 
             return { content: [{ type: "text" as const, text }] };
           } catch (err) {

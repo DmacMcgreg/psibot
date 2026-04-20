@@ -390,4 +390,49 @@ export const MIGRATIONS = [
   `ALTER TABLE jobs ADD COLUMN subagents TEXT`,
   `ALTER TABLE jobs ADD COLUMN next_job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL`,
   `ALTER TABLE job_runs ADD COLUMN triggered_by_run_id INTEGER REFERENCES job_runs(id)`,
+
+  // Trading signals: unified table for WSB/Reddit firehose, insider filings, analyst ratings, social shadow
+  `CREATE TABLE IF NOT EXISTS trading_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('long','short','neutral')),
+    strength REAL NOT NULL DEFAULT 0.5,
+    reason TEXT,
+    payload_json TEXT,
+    source_url TEXT,
+    captured_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    acted_on INTEGER NOT NULL DEFAULT 0,
+    trade_id INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_trading_signals_ticker_captured ON trading_signals(ticker, captured_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_trading_signals_source_captured ON trading_signals(source, captured_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_trading_signals_url ON trading_signals(source_url)`,
+
+  // Declarative agent orchestration: agents table (Phase 1 of orchestration framework)
+  `CREATE TABLE IF NOT EXISTS agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL DEFAULT '',
+    backstory TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT 'sonnet',
+    max_turns INTEGER NOT NULL DEFAULT 99999,
+    allowed_tools TEXT,
+    allowed_subagents TEXT,
+    critic_agent_slug TEXT,
+    memory_dir TEXT NOT NULL,
+    notify_chat_id TEXT,
+    notify_topic_id INTEGER,
+    notify_policy TEXT NOT NULL DEFAULT 'always' CHECK(notify_policy IN ('always','on_error','on_change','silent','dynamic')),
+    output_template TEXT,
+    last_output_hash TEXT,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)`,
 ];

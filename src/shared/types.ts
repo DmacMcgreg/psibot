@@ -72,6 +72,35 @@ export interface JobRun {
   triggered_by_run_id: number | null;
 }
 
+// --- Declarative agents ---
+
+export type AgentNotifyPolicy = "always" | "on_error" | "on_change" | "silent" | "dynamic";
+
+export interface Agent {
+  id: number;
+  slug: string;
+  name: string;
+  role: string;
+  goal: string;
+  backstory: string;
+  description: string;
+  prompt: string;
+  model: string;
+  max_turns: number;
+  allowed_tools: string | null;        // JSON array of tool names, NULL = all
+  allowed_subagents: string | null;    // JSON array of agent slugs
+  critic_agent_slug: string | null;    // Phase 4: preferred reviewer
+  memory_dir: string;                  // e.g. 'agents/researcher'
+  notify_chat_id: string | null;
+  notify_topic_id: number | null;
+  notify_policy: AgentNotifyPolicy;
+  output_template: string | null;      // Phase 3: markdown w/ {{placeholders}}
+  last_output_hash: string | null;     // Phase 3: for on_change
+  is_builtin: number;                  // 0 or 1
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MemoryEntry {
   id: number;
   file_path: string;
@@ -303,6 +332,7 @@ export type StopReason =
   | "budget_exceeded"
   | "interrupted"
   | "stale_timeout"
+  | "first_response_timeout"
   | "message_limit"
   | "error"
   | "unknown";
@@ -318,4 +348,48 @@ export interface AgentRunResult {
   contextWindow: number;
   numTurns: number;
   stopReason: StopReason;
+}
+
+export type TradingSignalDirection = "long" | "short" | "neutral";
+
+export type TradingSignalSource =
+  | "wsb"
+  | "reddit-stocks"
+  | "reddit-options"
+  | "reddit-investing"
+  | "reddit-pennystocks"
+  | "reddit-securityanalysis"
+  | "openinsider"
+  | "benzinga-analyst"
+  | "finviz-analyst"
+  | "shadow-tipranks"
+  | "shadow-c2zulu"
+  | "shadow-afterhour"
+  | "shadow-autopilot"
+  | "shadow-quiver";
+
+export interface TradingSignal {
+  id: number;
+  source: string;
+  ticker: string;
+  direction: TradingSignalDirection;
+  strength: number;
+  reason: string | null;
+  payload_json: string | null;
+  source_url: string | null;
+  captured_at: string;
+  acted_on: number;
+  trade_id: number | null;
+}
+
+export interface SignalCluster {
+  ticker: string;
+  direction: TradingSignalDirection;
+  sources: string[];
+  source_count: number;
+  total_strength: number;
+  avg_strength: number;
+  signal_ids: number[];
+  latest_captured_at: string;
+  top_reasons: string[];
 }

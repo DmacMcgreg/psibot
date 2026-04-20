@@ -2,6 +2,7 @@ import { loadConfig, getConfig } from "./config.ts";
 import { initDb, closeDb } from "./db/index.ts";
 import { MemorySystem } from "./memory/index.ts";
 import { AgentService } from "./agent/index.ts";
+import { seedBuiltinAgents } from "./agent/subagents.ts";
 import { JobExecutor } from "./scheduler/executor.ts";
 import { Scheduler } from "./scheduler/index.ts";
 import { HeartbeatRunner } from "./heartbeat/index.ts";
@@ -25,6 +26,9 @@ async function main() {
   // Initialize core services
   const memory = new MemorySystem();
   memory.indexAll();
+
+  // Seed built-in agent rows (idempotent — updates code-owned fields, preserves user edits)
+  seedBuiltinAgents();
 
   // Use late-binding closures to break circular dependency:
   // agent needs scheduler callbacks + bot reference, scheduler needs agent

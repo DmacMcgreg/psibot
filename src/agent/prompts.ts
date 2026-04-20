@@ -1,5 +1,6 @@
 import { MemorySystem } from "../memory/index.ts";
 import type { ChatContext } from "../shared/types.ts";
+import { listAgents } from "../db/queries.ts";
 
 export function buildSystemPrompt(memory: MemorySystem, chatContext?: ChatContext): string {
   const memoryContent = memory.readMemory();
@@ -35,19 +36,7 @@ The following is your current persistent memory. Use the memory tools to update 
 ${memoryContent}
 </memory>
 
-## Available Subagents
-
-You can spawn specialized subagents using the Task tool. Each handles a specific domain:
-
-- **image-generator**: Generates images using Gemini API. Use when asked to create images, illustrations, or visual content. Returns file paths to generated images.
-- **audio-processor**: Handles audio transcription (speech-to-text via parakeet-mlx) and speech synthesis (text-to-speech via Edge TTS). Use for voice messages or audio requests.
-- **coder**: Runs coding sessions in isolated git worktrees under ~/.psibot. Use for writing code, fixing bugs, creating projects. Has full Bash/Read/Edit/Write access.
-- **researcher**: Performs web research using browser automation and web search. Returns research findings as text. You handle audio generation and delivery after receiving its results.
-- **technical-analyst**: Analyzes stock charts visually (TradingView screenshots) and quantitatively. Cross-references visual patterns with MCP trading tool data. Returns key levels, patterns, and buy/sell zones.
-- **fundamental-analyst**: Deep dives financial statements, earnings, analyst ratings, insider activity. Compares metrics across sector peers. Returns valuation assessment and risk factors.
-- **macro-strategist**: Monitors Fed policy, economic data, yield curves, sector rotation, and market regime. Returns regime classification and strategy adjustments.
-- **sentiment-scout**: Scans news, Reddit, social media for sentiment shifts and narrative changes. Returns sentiment scores, unusual activity flags, and momentum signals.
-- **quant-researcher**: Backtests strategies, evaluates ML models, proposes new signals and features. The agent that improves the trading system over time.
+${buildSubagentListing()}
 
 After generating media (images, audio), use telegram_send_photo or telegram_send_voice to deliver the results to the user.
 
@@ -56,7 +45,7 @@ After generating media (images, audio), use telegram_send_photo or telegram_send
 You can post messages, photos, and audio to Telegram groups using the telegram_send_message, telegram_send_photo, and telegram_send_voice tools with a group chat_id. For groups with topics/threads enabled, use the topic_id parameter to post to a specific topic. To discover available topic IDs, you can post to the General topic first (no topic_id needed) or the user will provide specific topic IDs.
 
 ${tradingPlaybook || tradingRegime ? `## Trading Context\n\nYou have access to a trading bot backend (localhost:8000) via the trading-bot MCP server. Use trading tools for market analysis, backtesting, ML predictions, portfolio management, and more.\n\n${tradingPlaybook ? `### Current Playbook\n\n${tradingPlaybook}\n` : ""}${tradingRegime ? `### Current Regime\n\n${tradingRegime}\n` : ""}` : ""}
-${chatContext ? buildChatContextSection(chatContext) : ""}
+${chatContext ? buildChatContextSection(chatContext, memory) : ""}
 ## Guidelines
 
 - Be concise and helpful
@@ -84,6 +73,29 @@ When the user asks for research + text output + audio:
 }
 
 /**
+ * Render the "Available Subagents" section dynamically from the agents table.
+ * This means new agents created via the dashboard are immediately discoverable
+ * by the main conversation without a restart.
+ */
+function buildSubagentListing(): string {
+  const agents = listAgents();
+  if (agents.length === 0) {
+    return "## Available Subagents\n\n(none registered)";
+  }
+  const lines = [
+    "## Available Subagents",
+    "",
+    "You can spawn specialized subagents using the Task tool. Each handles a specific domain:",
+    "",
+  ];
+  for (const agent of agents) {
+    const blurb = agent.description || agent.role || agent.name;
+    lines.push(`- **${agent.slug}**: ${blurb}`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * Lightweight system prompt for scheduled jobs.
  * Jobs only need basic identity + time context — not the full persona,
  * memory, subagent docs, or trading context. This keeps token usage low
@@ -106,9 +118,38 @@ export function buildJobPrompt(): string {
 - Do NOT add [SILENT] to your response. Notification filtering is handled externally.`;
 }
 
-function buildChatContextSection(ctx: ChatContext): string {
+/**
+ * Known topic configurations for topic-aware prompt injection.
+ * Each topic can specify a name, knowledge files to load, and a persona overlay.
+ */
+interface TopicConfig {
+  name: string;
+  knowledgeFiles: string[];
+  persona: string;
+}
+
+const TOPIC_CONFIGS: Record<number, TopicConfig> = {
+  103: {
+    name: "Trading",
+    knowledgeFiles: ["trading/GLOSSARY.md", "trading/CHAT_FORMAT.md"],
+    persona: `You are in the **Trading** topic. In this context you are a trading analyst assistant.
+
+Your priorities in this topic:
+1. Use the trading-bot MCP tools to fetch live data before answering (analyze_symbol, get_options_flow, get_market_regime, etc.)
+2. Always follow the CHAT_FORMAT.md formatting rules below — structured sections, expanded acronyms, bold tickers
+3. Reference the GLOSSARY.md definitions when using technical terms — expand every acronym on first use
+4. Synthesize across prior research: check PLAYBOOK.md for active positions, REGIME.md for current regime, and the user's recent questions in this session
+5. Prefer spawning trading subagents (technical-analyst, fundamental-analyst, macro-strategist, sentiment-scout) for deep analysis
+6. When presenting data for multiple tickers, use tables or per-ticker breakdowns — never walls of text
+7. Every response with an actionable opinion MUST include specific price levels (support, resistance, entry, exit, stop)`,
+  },
+};
+
+function buildChatContextSection(ctx: ChatContext, memory: MemorySystem): string {
   const isGroup = ctx.chatType === "group" || ctx.chatType === "supergroup";
   if (!isGroup) return "";
+
+  const topicConfig = ctx.topicId ? TOPIC_CONFIGS[ctx.topicId] : undefined;
 
   const lines = [
     `## Current Chat Context`,
@@ -118,7 +159,7 @@ function buildChatContextSection(ctx: ChatContext): string {
   ];
 
   if (ctx.topicId) {
-    lines.push(`- Topic/Thread ID: ${ctx.topicId}`);
+    lines.push(`- Topic/Thread ID: ${ctx.topicId}${topicConfig ? ` (${topicConfig.name})` : ""}`);
   }
 
   lines.push(
@@ -126,6 +167,18 @@ function buildChatContextSection(ctx: ChatContext): string {
     `IMPORTANT: When using telegram_send_message, telegram_send_photo, or telegram_send_voice tools, you MUST specify chat_id="${ctx.chatId}"${ctx.topicId ? ` and topic_id=${ctx.topicId}` : ""} to send the response to the correct group${ctx.topicId ? " topic" : ""}. Do NOT omit these parameters or the message will go to the wrong chat.`,
     ``
   );
+
+  // Inject topic-specific persona and knowledge
+  if (topicConfig) {
+    lines.push(`## Topic: ${topicConfig.name}`, ``, topicConfig.persona, ``);
+
+    for (const file of topicConfig.knowledgeFiles) {
+      const content = memory.readKnowledgeFileOptional(file);
+      if (content) {
+        lines.push(content, ``);
+      }
+    }
+  }
 
   return lines.join("\n") + "\n";
 }
