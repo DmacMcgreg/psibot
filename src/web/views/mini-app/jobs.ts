@@ -1,6 +1,21 @@
 import { miniAppLayout } from "./shell.ts";
 import { escapeHtml } from "../../../shared/html.ts";
-import type { Job, JobRun } from "../../../shared/types.ts";
+import type { AgentNotifyPolicy, Job, JobRun } from "../../../shared/types.ts";
+
+const NOTIFY_POLICY_OPTIONS: Array<{ value: "" | AgentNotifyPolicy; label: string }> = [
+  { value: "", label: "(inherit from agent)" },
+  { value: "always", label: "Always" },
+  { value: "on_error", label: "On error" },
+  { value: "on_change", label: "On change" },
+  { value: "silent", label: "Silent" },
+  { value: "dynamic", label: "Dynamic" },
+];
+
+function notifyPolicyLabel(policy: AgentNotifyPolicy | null): string {
+  if (!policy) return "(inherit)";
+  const opt = NOTIFY_POLICY_OPTIONS.find((o) => o.value === policy);
+  return opt?.label ?? policy;
+}
 
 // Topic ID -> human label mapping (from INSTANCE.md)
 const TOPIC_LABELS: Record<number, string> = {
@@ -294,6 +309,8 @@ export function tmaJobDetailFragment(job: Job, runs: JobRun[], allJobs?: Job[]):
       <tr><td class="tma-dt-label">Browser</td><td>${job.use_browser ? "Yes" : "No"}</td></tr>
       <tr><td class="tma-dt-label">Agent</td><td>${job.agent_name ? escapeHtml(job.agent_name) : "Default"}</td></tr>
       <tr><td class="tma-dt-label">Subagents</td><td>${job.subagents ? escapeHtml(JSON.parse(job.subagents).join(", ")) : "All"}</td></tr>
+      <tr><td class="tma-dt-label">Notify</td><td>${escapeHtml(notifyPolicyLabel(job.notify_policy))}</td></tr>
+      <tr><td class="tma-dt-label">Template</td><td>${job.output_template ? "<em>custom</em>" : "none"}</td></tr>
       <tr><td class="tma-dt-label">Pipeline</td><td>${job.next_job_id && allJobs ? escapeHtml("-> " + (allJobs.find((j) => j.id === job.next_job_id)?.name ?? `Job #${job.next_job_id}`)) : "None"}</td></tr>
       <tr><td class="tma-dt-label">Last run</td><td>${lastRun}</td></tr>
       ${job.next_run_at ? `<tr><td class="tma-dt-label">Next run</td><td>${escapeHtml(job.next_run_at)}</td></tr>` : ""}
@@ -406,6 +423,18 @@ export function tmaJobEditFragment(job: Job, agentNames: string[], allJobs: Job[
       <div class="tma-form-row">
         <label class="tma-form-label">Agent Prompt Override (optional)</label>
         <textarea name="agent_prompt" rows="3" class="tma-input tma-input-sm" style="font-size:12px; line-height:1.4; resize:vertical;">${escapeHtml(job.agent_prompt ?? "")}</textarea>
+      </div>
+
+      <div class="tma-form-row">
+        <label class="tma-form-label">Notify policy (override)</label>
+        <select name="notify_policy" class="tma-input tma-input-sm">
+          ${NOTIFY_POLICY_OPTIONS.map((o) => `<option value="${o.value}"${(job.notify_policy ?? "") === o.value ? " selected" : ""}>${o.label}</option>`).join("")}
+        </select>
+      </div>
+
+      <div class="tma-form-row">
+        <label class="tma-form-label">Output template (override, optional)</label>
+        <textarea name="output_template" rows="3" class="tma-input tma-input-sm" placeholder="{{headline}} &#8212; {{summary}}" style="font-size:12px; line-height:1.4; resize:vertical; font-family:monospace;">${escapeHtml(job.output_template ?? "")}</textarea>
       </div>
 
       <div class="tma-form-row">

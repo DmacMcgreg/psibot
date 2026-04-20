@@ -26,6 +26,7 @@ import type {
   SignalCluster,
   Agent,
   AgentNotifyPolicy,
+  AgentBackend,
 } from "../shared/types.ts";
 
 // --- Chat Messages ---
@@ -441,6 +442,11 @@ export function getAllMemoryEntries(limit: number = 200): MemoryEntry[] {
   return db
     .prepare<MemoryEntry, [number]>(`SELECT * FROM memory_entries ORDER BY file_path LIMIT ?`)
     .all(limit);
+}
+
+export function deleteMemoryEntry(file_path: string): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM memory_entries WHERE file_path = ?`).run(file_path);
 }
 
 // --- Session Lookup ---
@@ -1526,18 +1532,19 @@ export interface CreateAgentParams {
   notify_topic_id?: number | null;
   notify_policy?: AgentNotifyPolicy;
   output_template?: string | null;
+  backend?: AgentBackend | null;
   is_builtin?: boolean;
 }
 
 export function createAgent(params: CreateAgentParams): Agent {
   const db = getDb();
   return db
-    .prepare<Agent, [string, string, string, string, string, string, string, string, number, string | null, string | null, string | null, string, string | null, number | null, string, string | null, number]>(
+    .prepare<Agent, [string, string, string, string, string, string, string, string, number, string | null, string | null, string | null, string, string | null, number | null, string, string | null, string | null, number]>(
       `INSERT INTO agents (
         slug, name, role, goal, backstory, description, prompt, model, max_turns,
         allowed_tools, allowed_subagents, critic_agent_slug, memory_dir,
-        notify_chat_id, notify_topic_id, notify_policy, output_template, is_builtin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        notify_chat_id, notify_topic_id, notify_policy, output_template, backend, is_builtin
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *`
     )
     .get(
@@ -1558,6 +1565,7 @@ export function createAgent(params: CreateAgentParams): Agent {
       params.notify_topic_id ?? null,
       params.notify_policy ?? "always",
       params.output_template ?? null,
+      params.backend ?? null,
       params.is_builtin ? 1 : 0,
     )!;
 }
@@ -1620,12 +1628,15 @@ export function upsertBuiltinAgent(params: CreateAgentParams): Agent {
   const criticSlug = existing.critic_agent_slug === null && params.critic_agent_slug
     ? params.critic_agent_slug
     : existing.critic_agent_slug;
+  const backend = existing.backend === null && params.backend
+    ? params.backend
+    : existing.backend;
 
   return db
-    .prepare<Agent, [string, string, string, number, string, string, string | null, string]>(
+    .prepare<Agent, [string, string, string, number, string, string, string | null, string | null, string]>(
       `UPDATE agents
        SET name = ?, description = ?, prompt = ?, max_turns = ?, model = ?,
-           notify_policy = ?, critic_agent_slug = ?,
+           notify_policy = ?, critic_agent_slug = ?, backend = ?,
            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE slug = ?
        RETURNING *`
@@ -1638,6 +1649,7 @@ export function upsertBuiltinAgent(params: CreateAgentParams): Agent {
       params.model ?? existing.model,
       notifyPolicy,
       criticSlug,
+      backend,
       params.slug,
     )!;
 }
@@ -1648,4 +1660,11 @@ export function countJobsUsingAgent(slug: string): number {
     .prepare<{ c: number }, [string]>(`SELECT COUNT(*) as c FROM jobs WHERE agent_name = ?`)
     .get(slug);
   return row?.c ?? 0;
+}
+
+export function getJobsUsingAgent(slug: string): Job[] {
+  const db = getDb();
+  return db
+    .prepare<Job, [string]>(`SELECT * FROM jobs WHERE agent_name = ? ORDER BY name`)
+    .all(slug);
 }

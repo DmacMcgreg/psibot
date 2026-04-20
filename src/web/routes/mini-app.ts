@@ -22,6 +22,7 @@ import {
   updateAgent,
   deleteAgent,
   countJobsUsingAgent,
+  getJobsUsingAgent,
 } from "../../db/queries.ts";
 import { tmaChatPage, tmaChatStreamFragment } from "../views/mini-app/chat.ts";
 import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment, tmaJobDetailFragment, tmaJobEditFragment } from "../views/mini-app/jobs.ts";
@@ -36,7 +37,7 @@ import {
   tmaAgentListFragment,
   tmaAgentMemoryPage,
 } from "../views/mini-app/agents.ts";
-import type { AgentNotifyPolicy } from "../../shared/types.ts";
+import type { AgentBackend, AgentNotifyPolicy } from "../../shared/types.ts";
 import { getAgentNames } from "../../agent/subagents.ts";
 import { formatRunMeta } from "../../telegram/format.ts";
 import { getConfig } from "../../config.ts";
@@ -128,6 +129,13 @@ export function createMiniAppRoutes() {
     const memory = c.get("memory");
     const content = memory.readAgentMemoryOptional(agent.memory_dir, filename) ?? "";
     return c.html(tmaAgentMemoryPage(agent, filename, content));
+  });
+
+  app.get("/agents/:slug/memory-new", (c) => {
+    const slug = c.req.param("slug");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    return c.html(tmaAgentMemoryPage(agent, "", ""));
   });
 
   app.get("/sessions", (c) => {
@@ -328,6 +336,15 @@ export function createMiniAppRoutes() {
       const nj = parseInt(String(body.next_job_id), 10);
       updates.next_job_id = nj > 0 ? nj : null;
     }
+    if (body.notify_policy !== undefined) {
+      const p = String(body.notify_policy).trim();
+      const valid: AgentNotifyPolicy[] = ["always", "on_error", "on_change", "silent", "dynamic"];
+      updates.notify_policy = valid.includes(p as AgentNotifyPolicy) ? (p as AgentNotifyPolicy) : null;
+    }
+    if (body.output_template !== undefined) {
+      const t = String(body.output_template).trim();
+      updates.output_template = t.length > 0 ? t : null;
+    }
     // subagents comes as checkboxes - may be string, array, or undefined
     const subagentValues = body["subagents"];
     if (subagentValues !== undefined) {
@@ -396,7 +413,8 @@ export function createMiniAppRoutes() {
     if (!agent) return c.text("Agent not found", 404);
     const memory = c.get("memory");
     const files = memory.listAgentMemoryFiles(agent.memory_dir);
-    return c.html(tmaAgentDetailFragment(agent, countJobsUsingAgent(slug), files));
+    const jobs = getJobsUsingAgent(slug);
+    return c.html(tmaAgentDetailFragment(agent, jobs, files));
   });
 
   app.get("/api/agents/:slug/edit", (c) => {
@@ -441,12 +459,17 @@ export function createMiniAppRoutes() {
       const t = String(body.output_template).trim();
       patch.output_template = t.length > 0 ? t : null;
     }
+    if (body.backend !== undefined) {
+      const b = String(body.backend).trim();
+      patch.backend = b === "claude" || b === "glm" ? (b as AgentBackend) : null;
+    }
 
     updateAgent(slug, patch as Parameters<typeof updateAgent>[1]);
     const updated = getAgentBySlug(slug)!;
     const memory = c.get("memory");
     const files = memory.listAgentMemoryFiles(updated.memory_dir);
-    return c.html(tmaAgentDetailFragment(updated, countJobsUsingAgent(slug), files));
+    const jobs = getJobsUsingAgent(slug);
+    return c.html(tmaAgentDetailFragment(updated, jobs, files));
   });
 
   app.post("/api/agents/create", async (c) => {
@@ -465,6 +488,9 @@ export function createMiniAppRoutes() {
     }
 
     const notifyPolicy = (String(body.notify_policy ?? "always") as AgentNotifyPolicy);
+    const backendRaw = String(body.backend ?? "").trim();
+    const backend: AgentBackend | null =
+      backendRaw === "claude" || backendRaw === "glm" ? (backendRaw as AgentBackend) : null;
     createAgent({
       slug,
       name,
@@ -473,6 +499,7 @@ export function createMiniAppRoutes() {
       model: String(body.model ?? "sonnet"),
       memory_dir: `agents/${slug}`,
       notify_policy: notifyPolicy,
+      backend,
       is_builtin: false,
     });
 
@@ -509,6 +536,49 @@ export function createMiniAppRoutes() {
       return c.html(`<span style="color:#ef4444;">Error: ${String(err instanceof Error ? err.message : err)}</span>`);
     }
     return c.html(`<span style="color:#10b981;">Saved ${new Date().toLocaleTimeString()}</span>`);
+  });
+
+  app.post("/api/agents/:slug/memory/create", async (c) => {
+    const slug = c.req.param("slug");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    const body = await c.req.parseBody();
+    const rawName = String(body.filename ?? "").trim();
+    if (!rawName) return c.text("filename required", 400);
+    const filename = /\.md$/i.test(rawName) ? rawName : `${rawName}.md`;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_\-.]*\.md$/.test(filename)) {
+      return c.text("filename must be alphanumeric + _-. and end in .md", 400);
+    }
+    const initial = String(body.content ?? `# ${filename.replace(/\.md$/i, "")}\n\n`);
+    const memory = c.get("memory");
+    try {
+      await memory.writeAgentMemory(slug, agent.memory_dir, filename, initial);
+    } catch (err) {
+      return c.text(String(err instanceof Error ? err.message : err), 400);
+    }
+    const target = `/tma/agents/${encodeURIComponent(slug)}/memory/${encodeURIComponent(filename)}`;
+    // HX-Redirect triggers client-side navigation when HTMX; plain POST falls back to 302.
+    if (c.req.header("hx-request")) {
+      c.header("HX-Redirect", target);
+      return c.body(null, 204);
+    }
+    return c.redirect(target);
+  });
+
+  app.post("/api/agents/:slug/memory/:filename/delete", async (c) => {
+    const slug = c.req.param("slug");
+    const filename = c.req.param("filename");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    const memory = c.get("memory");
+    try {
+      await memory.deleteAgentMemory(slug, agent.memory_dir, filename);
+    } catch (err) {
+      return c.text(String(err instanceof Error ? err.message : err), 400);
+    }
+    const files = memory.listAgentMemoryFiles(agent.memory_dir);
+    const jobs = getJobsUsingAgent(slug);
+    return c.html(tmaAgentDetailFragment(agent, jobs, files));
   });
 
   return app;

@@ -440,4 +440,8 @@ export const MIGRATIONS = [
   `ALTER TABLE jobs ADD COLUMN notify_policy TEXT CHECK(notify_policy IN ('always','on_error','on_change','silent','dynamic'))`,
   `ALTER TABLE jobs ADD COLUMN output_template TEXT`,
   `ALTER TABLE jobs ADD COLUMN last_output_hash TEXT`,
+
+  // Phase 6: per-agent backend selection (claude vs glm). NULL = fall back to
+  // the job's backend, which in turn defaults to the global DEFAULT_BACKEND.
+  `ALTER TABLE agents ADD COLUMN backend TEXT CHECK(backend IN ('claude','glm'))`,
 ];

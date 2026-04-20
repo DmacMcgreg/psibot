@@ -93,41 +93,72 @@ export async function validateInitData(
   }
 }
 
+function requestIp(c: Parameters<MiddlewareHandler>[0]): string {
+  return (
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+    c.req.header("x-real-ip") ??
+    "127.0.0.1"
+  );
+}
+
+function ipAllowlisted(ip: string, tailscalePrefix: string): boolean {
+  return (
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    (tailscalePrefix.length > 0 && ip.startsWith(tailscalePrefix))
+  );
+}
+
+/**
+ * Mini-App API auth. Accepts either a valid Telegram initData header OR a
+ * request from an IP-allowlisted origin (localhost / tailnet). The IP
+ * fallback lets the same /tma admin UI work from a browser on the tailnet —
+ * previously clicks from a plain browser 401'd because no Telegram initData
+ * was available. When the IP fallback is used, a synthetic telegramUser is
+ * set so downstream handlers (chat) still see the primary admin identity.
+ */
 export function telegramAuthMiddleware(): MiddlewareHandler {
   return async (c, next) => {
     const config = getConfig();
     const initData = c.req.header("x-telegram-init-data");
 
-    if (!initData) {
-      return c.text("Missing Telegram auth", 401);
-    }
+    if (initData) {
+      const cached = authCache.get(initData);
+      if (cached && cached.expires > Date.now()) {
+        if (config.ALLOWED_TELEGRAM_USER_IDS.includes(cached.user.id)) {
+          c.set("telegramUser" as never, cached.user);
+          await next();
+          return;
+        }
+      }
 
-    // Check cache first
-    const cached = authCache.get(initData);
-    if (cached && cached.expires > Date.now()) {
-      if (config.ALLOWED_TELEGRAM_USER_IDS.includes(cached.user.id)) {
-        c.set("telegramUser" as never, cached.user);
+      const user = await validateInitData(initData, config.TELEGRAM_BOT_TOKEN);
+      if (user) {
+        if (!config.ALLOWED_TELEGRAM_USER_IDS.includes(user.id)) {
+          log.warn("Unauthorized Mini App user", { userId: user.id });
+          return c.text("Unauthorized", 403);
+        }
+        pruneAuthCache();
+        authCache.set(initData, { user, expires: Date.now() + 300_000 });
+        c.set("telegramUser" as never, user);
         await next();
         return;
       }
+      // Fall through to IP check — initData was present but invalid
     }
 
-    const user = await validateInitData(initData, config.TELEGRAM_BOT_TOKEN);
-    if (!user) {
-      return c.text("Invalid Telegram auth", 401);
+    const ip = requestIp(c);
+    if (ipAllowlisted(ip, config.TAILSCALE_IP_PREFIX)) {
+      const primaryUserId = config.ALLOWED_TELEGRAM_USER_IDS[0] ?? 0;
+      c.set("telegramUser" as never, {
+        id: primaryUserId,
+        first_name: "Browser",
+        username: "browser",
+      } satisfies TelegramUser);
+      await next();
+      return;
     }
 
-    // Check against allowed user IDs
-    if (!config.ALLOWED_TELEGRAM_USER_IDS.includes(user.id)) {
-      log.warn("Unauthorized Mini App user", { userId: user.id });
-      return c.text("Unauthorized", 403);
-    }
-
-    // Cache successful validation (5-min TTL)
-    pruneAuthCache();
-    authCache.set(initData, { user, expires: Date.now() + 300_000 });
-
-    c.set("telegramUser" as never, user);
-    await next();
+    return c.text("Missing Telegram auth", 401);
   };
 }

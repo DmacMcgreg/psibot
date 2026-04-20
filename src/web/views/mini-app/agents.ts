@@ -1,6 +1,6 @@
 import { miniAppLayout } from "./shell.ts";
 import { escapeHtml } from "../../../shared/html.ts";
-import type { Agent, AgentNotifyPolicy } from "../../../shared/types.ts";
+import type { Agent, AgentBackend, AgentNotifyPolicy, Job } from "../../../shared/types.ts";
 
 const TOPIC_OPTIONS = [
   { value: 0, label: "DM (no topic)" },
@@ -18,6 +18,19 @@ const NOTIFY_POLICIES: AgentNotifyPolicy[] = [
 ];
 
 const MODEL_OPTIONS = ["opus", "sonnet", "haiku"];
+
+const BACKEND_OPTIONS: Array<{ value: AgentBackend | ""; label: string }> = [
+  { value: "", label: "(default)" },
+  { value: "claude", label: "Claude" },
+  { value: "glm", label: "GLM (api.z.ai)" },
+];
+
+function backendLabel(backend: AgentBackend | null): string {
+  if (!backend) return "default";
+  if (backend === "claude") return "Claude";
+  if (backend === "glm") return "GLM";
+  return backend;
+}
 
 function policyLabel(policy: AgentNotifyPolicy): string {
   switch (policy) {
@@ -99,6 +112,7 @@ export function tmaAgentCardFragment(agent: Agent, jobCount: number): string {
   const policy = agent.notify_policy;
   const pills = [
     `<span class="tma-pill">${escapeHtml(agent.model)}</span>`,
+    agent.backend ? `<span class="tma-pill">${backendLabel(agent.backend)}</span>` : "",
     `<span class="tma-pill" style="background:${policyColor(policy)}20; color:${policyColor(policy)};">${policyLabel(policy)}</span>`,
     agent.critic_agent_slug ? `<span class="tma-pill">Critic: ${escapeHtml(agent.critic_agent_slug)}</span>` : "",
     jobCount > 0 ? `<span class="tma-pill">${jobCount} job${jobCount === 1 ? "" : "s"}</span>` : "",
@@ -121,7 +135,7 @@ export function tmaAgentCardFragment(agent: Agent, jobCount: number): string {
 
 export function tmaAgentDetailFragment(
   agent: Agent,
-  jobCount: number,
+  jobs: Job[],
   memoryFiles: string[],
 ): string {
   const policy = agent.notify_policy;
@@ -131,9 +145,27 @@ export function tmaAgentDetailFragment(
 
   const memoryList = memoryFiles.length > 0
     ? memoryFiles.map((f) =>
-        `<li style="margin:4px 0;"><a href="/tma/agents/${encodeURIComponent(agent.slug)}/memory/${encodeURIComponent(f)}" style="color:var(--tma-link);">${escapeHtml(f)}</a></li>`
+        `<li style="margin:4px 0; display:flex; align-items:center; gap:8px;">
+          <a href="/tma/agents/${encodeURIComponent(agent.slug)}/memory/${encodeURIComponent(f)}" style="color:var(--tma-link); flex:1;">${escapeHtml(f)}</a>
+          <button class="tma-btn-icon" style="color:#ef4444; font-size:14px;"
+            hx-post="/tma/api/agents/${encodeURIComponent(agent.slug)}/memory/${encodeURIComponent(f)}/delete"
+            hx-confirm="Delete ${escapeHtml(f)}?"
+            hx-target="#agent-${agent.slug}" hx-swap="outerHTML" title="Delete">&times;</button>
+        </li>`
       ).join("")
     : `<li class="tma-hint">No files yet</li>`;
+
+  const jobList = jobs.length > 0
+    ? jobs.map((j) => {
+        const statusPill = j.status === "enabled"
+          ? `<span class="tma-pill" style="background:#10b98120; color:#10b981;">on</span>`
+          : `<span class="tma-pill" style="background:#6b728020; color:#6b7280;">off</span>`;
+        return `<li style="margin:4px 0;">
+          <a href="/tma/jobs#job-${j.id}" style="color:var(--tma-link);">${escapeHtml(j.name)}</a>
+          ${statusPill}
+        </li>`;
+      }).join("")
+    : `<li class="tma-hint">No jobs using this agent</li>`;
 
   return `<div class="tma-card" id="agent-${agent.slug}">
     <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
@@ -148,16 +180,25 @@ export function tmaAgentDetailFragment(
 
     <dl style="margin-top:10px; font-size:12px; display:grid; grid-template-columns: 100px 1fr; gap:4px 8px;">
       <dt class="tma-hint">Model</dt><dd>${escapeHtml(agent.model)}</dd>
+      <dt class="tma-hint">Backend</dt><dd>${escapeHtml(backendLabel(agent.backend))}</dd>
       <dt class="tma-hint">Notify</dt><dd><span class="tma-pill" style="background:${policyColor(policy)}20; color:${policyColor(policy)};">${policyLabel(policy)}</span></dd>
       <dt class="tma-hint">Topic</dt><dd>${escapeHtml(topicLabel)}</dd>
       ${agent.critic_agent_slug ? `<dt class="tma-hint">Critic</dt><dd>${escapeHtml(agent.critic_agent_slug)}</dd>` : ""}
       <dt class="tma-hint">Memory</dt><dd><code>knowledge/${escapeHtml(agent.memory_dir)}/</code></dd>
-      <dt class="tma-hint">Jobs</dt><dd>${jobCount} using this agent</dd>
+      <dt class="tma-hint">Jobs</dt><dd>${jobs.length} using this agent</dd>
     </dl>
 
     <details style="margin-top:10px;">
+      <summary style="cursor:pointer; font-size:13px; font-weight:600;">Jobs (${jobs.length})</summary>
+      <ul style="margin:6px 0 0; padding-left:20px; font-size:12px;">${jobList}</ul>
+    </details>
+
+    <details style="margin-top:10px;">
       <summary style="cursor:pointer; font-size:13px; font-weight:600;">Memory files (${memoryFiles.length})</summary>
-      <ul style="margin:6px 0 0; padding-left:20px; font-size:12px;">${memoryList}</ul>
+      <ul style="margin:6px 0 0; padding-left:20px; font-size:12px; list-style:none;">${memoryList}</ul>
+      <div style="margin-top:8px;">
+        <a href="/tma/agents/${encodeURIComponent(agent.slug)}/memory-new" class="tma-btn" style="font-size:12px; padding:4px 10px;">+ New file</a>
+      </div>
     </details>
 
     ${agent.role || agent.goal || agent.backstory ? `
@@ -181,7 +222,7 @@ export function tmaAgentDetailFragment(
       ${!agent.is_builtin ? `
         <button class="tma-btn" style="color:#ef4444;"
           hx-post="/tma/api/agents/${encodeURIComponent(agent.slug)}/delete"
-          hx-confirm="Delete agent '${escapeHtml(agent.slug)}'? ${jobCount > 0 ? `${jobCount} job(s) will fall back to the main agent.` : ""}"
+          hx-confirm="Delete agent '${escapeHtml(agent.slug)}'? ${jobs.length > 0 ? `${jobs.length} job(s) will fall back to the main agent.` : ""}"
           hx-target="#agent-list" hx-swap="outerHTML">Delete</button>
       ` : ""}
     </div>
@@ -195,6 +236,10 @@ export function tmaAgentEditFragment(agent: Agent, allAgents: Agent[]): string {
 
   const modelOpts = MODEL_OPTIONS
     .map((m) => `<option value="${m}"${m === agent.model ? " selected" : ""}>${m}</option>`)
+    .join("");
+
+  const backendOpts = BACKEND_OPTIONS
+    .map((b) => `<option value="${b.value}"${(b.value || null) === agent.backend ? " selected" : ""}>${b.label}</option>`)
     .join("");
 
   const topicOpts = TOPIC_OPTIONS
@@ -230,10 +275,14 @@ export function tmaAgentEditFragment(agent: Agent, allAgents: Agent[]): string {
     <label class="tma-form-label">Backstory</label>
     <textarea class="tma-input" name="backstory" rows="3" placeholder="Context, constraints, operating style">${escapeHtml(agent.backstory)}</textarea>
 
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
       <div>
         <label class="tma-form-label">Model</label>
         <select class="tma-input" name="model">${modelOpts}</select>
+      </div>
+      <div>
+        <label class="tma-form-label">Backend</label>
+        <select class="tma-input" name="backend">${backendOpts}</select>
       </div>
       <div>
         <label class="tma-form-label">Notify policy</label>
@@ -289,13 +338,21 @@ export function tmaAgentNewFragment(): string {
       <label class="tma-form-label">System prompt</label>
       <textarea class="tma-input" name="prompt" rows="6" required placeholder="You are a specialized agent that..."></textarea>
 
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
         <div>
           <label class="tma-form-label">Model</label>
           <select class="tma-input" name="model">
             <option value="sonnet">sonnet</option>
             <option value="haiku">haiku</option>
             <option value="opus">opus</option>
+          </select>
+        </div>
+        <div>
+          <label class="tma-form-label">Backend</label>
+          <select class="tma-input" name="backend">
+            <option value="">(default)</option>
+            <option value="claude">Claude</option>
+            <option value="glm">GLM</option>
           </select>
         </div>
         <div>
@@ -337,20 +394,30 @@ export function tmaAgentListFragment(agents: Agent[], jobCounts: Map<string, num
 // --- Memory file viewer/editor ---
 
 export function tmaAgentMemoryPage(agent: Agent, filename: string, content: string): string {
+  const isNew = filename === "";
+  const breadcrumb = `<a href="/tma/agents" style="color:var(--tma-link);">Agents</a> /
+     <a href="/tma/agents#agent-${encodeURIComponent(agent.slug)}" style="color:var(--tma-link);">${escapeHtml(agent.slug)}</a> /
+     <strong>${isNew ? "New file" : escapeHtml(filename)}</strong>`;
+
+  const formAttrs = isNew
+    ? `hx-post="/tma/api/agents/${encodeURIComponent(agent.slug)}/memory/create" hx-encoding="multipart/form-data"`
+    : `hx-post="/tma/api/agents/${encodeURIComponent(agent.slug)}/memory/${encodeURIComponent(filename)}/save" hx-target="#memory-status" hx-swap="innerHTML" hx-encoding="multipart/form-data"`;
+
+  const filenameInput = isNew
+    ? `<label class="tma-form-label">Filename</label>
+       <input class="tma-input" name="filename" required pattern="[a-zA-Z0-9][a-zA-Z0-9_\\-.]*(\\.md)?" placeholder="e.g. notes.md" style="font-size:13px; margin-bottom:8px;">`
+    : "";
+
   return miniAppLayout("agents", `
     <div style="padding:8px 16px;">
-      <div style="font-size:13px; margin-bottom:6px;">
-        <a href="/tma/agents" style="color:var(--tma-link);">Agents</a> /
-        <a href="/tma/agents#agent-${encodeURIComponent(agent.slug)}" style="color:var(--tma-link);">${escapeHtml(agent.slug)}</a> /
-        <strong>${escapeHtml(filename)}</strong>
-      </div>
-      <form hx-post="/tma/api/agents/${encodeURIComponent(agent.slug)}/memory/${encodeURIComponent(filename)}/save"
-            hx-target="#memory-status" hx-swap="innerHTML" hx-encoding="multipart/form-data">
+      <div style="font-size:13px; margin-bottom:6px;">${breadcrumb}</div>
+      <form ${formAttrs}>
+        ${filenameInput}
         <textarea class="tma-input" name="content" rows="20" style="font-family:monospace; font-size:12px;">${escapeHtml(content)}</textarea>
         <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
-          <button type="submit" class="tma-btn tma-btn-primary">Save</button>
+          <button type="submit" class="tma-btn tma-btn-primary">${isNew ? "Create" : "Save"}</button>
           <a href="/tma/agents" class="tma-btn">Back</a>
-          <span id="memory-status" class="tma-hint"></span>
+          ${isNew ? "" : `<span id="memory-status" class="tma-hint"></span>`}
         </div>
       </form>
     </div>

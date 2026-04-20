@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
-import { upsertMemoryEntry, searchMemory } from "../db/queries.ts";
+import { upsertMemoryEntry, searchMemory, deleteMemoryEntry } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("memory");
@@ -262,6 +262,19 @@ export class MemorySystem {
       writeFileSync(fullPath, `${existing}${separator}${content}\n`);
       this.indexFile(join(memoryDir, file));
       log.info("Appended agent memory", { slug, file });
+    });
+  }
+
+  async deleteAgentMemory(
+    slug: string,
+    memoryDir: string,
+    file: string,
+  ): Promise<void> {
+    await this.withAgentLock(slug, () => {
+      const fullPath = this.agentMemoryPath(memoryDir, file);
+      if (existsSync(fullPath)) unlinkSync(fullPath);
+      deleteMemoryEntry(join(memoryDir, file));
+      log.info("Deleted agent memory", { slug, file });
     });
   }
 }

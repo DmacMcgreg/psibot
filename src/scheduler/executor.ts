@@ -89,6 +89,13 @@ export class JobExecutor {
       const localTime = now.toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
       const jobPrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n${job.prompt}`;
 
+      // Backend precedence: job.backend > agent.backend > global default.
+      const agentForBackend = job.agent_name ? getAgentBySlug(job.agent_name) : null;
+      const resolvedBackend =
+        (job.backend as "claude" | "glm" | null) ??
+        (agentForBackend?.backend as "claude" | "glm" | null) ??
+        undefined;
+
       const result = await this.agent.run({
         prompt: jobPrompt,
         source: "job",
@@ -98,7 +105,7 @@ export class JobExecutor {
         allowedTools,
         useBrowser: Boolean(job.use_browser),
         model: job.model ?? undefined,
-        backend: (job.backend as "claude" | "glm") ?? undefined,
+        backend: resolvedBackend,
         agentName: job.agent_name ?? undefined,
         agentPrompt: job.agent_prompt ?? undefined,
         subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
@@ -230,6 +237,12 @@ export class JobExecutor {
         ? job.allowed_tools.split(",").map((t) => t.trim())
         : undefined;
 
+      const agentForBackend = job.agent_name ? getAgentBySlug(job.agent_name) : null;
+      const resolvedBackend =
+        (job.backend as "claude" | "glm" | null) ??
+        (agentForBackend?.backend as "claude" | "glm" | null) ??
+        undefined;
+
       const result = await this.agent.run({
         prompt: pipelinePrompt,
         source: "job",
@@ -238,7 +251,7 @@ export class JobExecutor {
         allowedTools,
         useBrowser: Boolean(job.use_browser),
         model: job.model ?? undefined,
-        backend: (job.backend as "claude" | "glm") ?? undefined,
+        backend: resolvedBackend,
         agentName: job.agent_name ?? undefined,
         agentPrompt: job.agent_prompt ?? undefined,
         subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,

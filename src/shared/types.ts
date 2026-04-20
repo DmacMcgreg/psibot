@@ -99,6 +99,7 @@ export interface Agent {
   notify_policy: AgentNotifyPolicy;
   output_template: string | null;      // Phase 3: markdown w/ {{placeholders}}
   last_output_hash: string | null;     // Phase 3: for on_change
+  backend: AgentBackend | null;        // Phase 6: per-agent provider (NULL = job/global default)
   is_builtin: number;                  // 0 or 1
   created_at: string;
   updated_at: string;
