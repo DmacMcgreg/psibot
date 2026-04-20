@@ -2,6 +2,7 @@ export function miniAppLayout(activePage: string, body: string): string {
   const tabs = [
     { id: "chat", label: "Chat", href: "/tma/chat" },
     { id: "jobs", label: "Jobs", href: "/tma/jobs" },
+    { id: "agents", label: "Agents", href: "/tma/agents" },
     { id: "logs", label: "Logs", href: "/tma/logs" },
     { id: "memory", label: "Memory", href: "/tma/memory" },
     { id: "sessions", label: "Sessions", href: "/tma/sessions" },

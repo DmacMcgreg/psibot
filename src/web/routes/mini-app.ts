@@ -16,12 +16,27 @@ import {
   searchMemory,
   getRecentSessionLogs,
   getSessionPreviews,
+  listAgents,
+  getAgentBySlug,
+  createAgent,
+  updateAgent,
+  deleteAgent,
+  countJobsUsingAgent,
 } from "../../db/queries.ts";
 import { tmaChatPage, tmaChatStreamFragment } from "../views/mini-app/chat.ts";
 import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment, tmaJobDetailFragment, tmaJobEditFragment } from "../views/mini-app/jobs.ts";
 import { tmaLogsPage, tmaLogListFragment } from "../views/mini-app/logs.ts";
 import { tmaMemoryPage, tmaMemoryListFragment } from "../views/mini-app/memory.ts";
 import { tmaSessionsPage } from "../views/mini-app/sessions.ts";
+import {
+  tmaAgentsPage,
+  tmaAgentCardFragment,
+  tmaAgentDetailFragment,
+  tmaAgentEditFragment,
+  tmaAgentListFragment,
+  tmaAgentMemoryPage,
+} from "../views/mini-app/agents.ts";
+import type { AgentNotifyPolicy } from "../../shared/types.ts";
 import { getAgentNames } from "../../agent/subagents.ts";
 import { formatRunMeta } from "../../telegram/format.ts";
 import { getConfig } from "../../config.ts";
@@ -96,6 +111,23 @@ export function createMiniAppRoutes() {
   app.get("/memory", (c) => {
     const entries = getAllMemoryEntries();
     return c.html(tmaMemoryPage(entries));
+  });
+
+  app.get("/agents", (c) => {
+    const agents = listAgents();
+    const jobCounts = new Map<string, number>();
+    for (const a of agents) jobCounts.set(a.slug, countJobsUsingAgent(a.slug));
+    return c.html(tmaAgentsPage(agents, jobCounts));
+  });
+
+  app.get("/agents/:slug/memory/:filename", (c) => {
+    const slug = c.req.param("slug");
+    const filename = c.req.param("filename");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    const memory = c.get("memory");
+    const content = memory.readAgentMemoryOptional(agent.memory_dir, filename) ?? "";
+    return c.html(tmaAgentMemoryPage(agent, filename, content));
   });
 
   app.get("/sessions", (c) => {
@@ -347,6 +379,136 @@ export function createMiniAppRoutes() {
     activeSessionId = null;
     // Fork will be handled by next chat message with context
     return c.html(tmaChatPage([]));
+  });
+
+  // --- Agents API (Phase 5) ---
+
+  app.get("/api/agents/:slug/card", (c) => {
+    const slug = c.req.param("slug");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    return c.html(tmaAgentCardFragment(agent, countJobsUsingAgent(slug)));
+  });
+
+  app.get("/api/agents/:slug/detail", (c) => {
+    const slug = c.req.param("slug");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    const memory = c.get("memory");
+    const files = memory.listAgentMemoryFiles(agent.memory_dir);
+    return c.html(tmaAgentDetailFragment(agent, countJobsUsingAgent(slug), files));
+  });
+
+  app.get("/api/agents/:slug/edit", (c) => {
+    const slug = c.req.param("slug");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    return c.html(tmaAgentEditFragment(agent, listAgents()));
+  });
+
+  app.post("/api/agents/:slug/update", async (c) => {
+    const slug = c.req.param("slug");
+    const body = await c.req.parseBody();
+    const existing = getAgentBySlug(slug);
+    if (!existing) return c.text("Agent not found", 404);
+
+    const patch: Record<string, string | number | null> = {};
+    if (body.name !== undefined) patch.name = String(body.name);
+    if (body.description !== undefined) patch.description = String(body.description);
+    if (body.role !== undefined) patch.role = String(body.role);
+    if (body.goal !== undefined) patch.goal = String(body.goal);
+    if (body.backstory !== undefined) patch.backstory = String(body.backstory);
+    if (body.prompt !== undefined) patch.prompt = String(body.prompt);
+    if (body.model !== undefined) patch.model = String(body.model);
+    if (body.notify_policy !== undefined) {
+      patch.notify_policy = String(body.notify_policy) as AgentNotifyPolicy;
+    }
+    if (body.notify_topic_id !== undefined) {
+      const topicId = parseInt(String(body.notify_topic_id), 10);
+      if (topicId > 0) {
+        patch.notify_chat_id = "-1003762174787";
+        patch.notify_topic_id = topicId;
+      } else {
+        patch.notify_chat_id = null;
+        patch.notify_topic_id = null;
+      }
+    }
+    if (body.critic_agent_slug !== undefined) {
+      const cs = String(body.critic_agent_slug).trim();
+      patch.critic_agent_slug = cs.length > 0 ? cs : null;
+    }
+    if (body.output_template !== undefined) {
+      const t = String(body.output_template).trim();
+      patch.output_template = t.length > 0 ? t : null;
+    }
+
+    updateAgent(slug, patch as Parameters<typeof updateAgent>[1]);
+    const updated = getAgentBySlug(slug)!;
+    const memory = c.get("memory");
+    const files = memory.listAgentMemoryFiles(updated.memory_dir);
+    return c.html(tmaAgentDetailFragment(updated, countJobsUsingAgent(slug), files));
+  });
+
+  app.post("/api/agents/create", async (c) => {
+    const body = await c.req.parseBody();
+    const slug = String(body.slug ?? "").trim();
+    const name = String(body.name ?? "").trim();
+    const prompt = String(body.prompt ?? "").trim();
+    if (!slug || !name || !prompt) {
+      return c.text("slug, name, prompt required", 400);
+    }
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      return c.text("slug must be lowercase alphanumeric + hyphens", 400);
+    }
+    if (getAgentBySlug(slug)) {
+      return c.text(`Agent '${slug}' already exists`, 409);
+    }
+
+    const notifyPolicy = (String(body.notify_policy ?? "always") as AgentNotifyPolicy);
+    createAgent({
+      slug,
+      name,
+      prompt,
+      description: String(body.description ?? ""),
+      model: String(body.model ?? "sonnet"),
+      memory_dir: `agents/${slug}`,
+      notify_policy: notifyPolicy,
+      is_builtin: false,
+    });
+
+    const agents = listAgents();
+    const jobCounts = new Map<string, number>();
+    for (const a of agents) jobCounts.set(a.slug, countJobsUsingAgent(a.slug));
+    return c.html(tmaAgentListFragment(agents, jobCounts));
+  });
+
+  app.post("/api/agents/:slug/delete", (c) => {
+    const slug = c.req.param("slug");
+    try {
+      deleteAgent(slug);
+    } catch (err) {
+      return c.text(String(err instanceof Error ? err.message : err), 400);
+    }
+    const agents = listAgents();
+    const jobCounts = new Map<string, number>();
+    for (const a of agents) jobCounts.set(a.slug, countJobsUsingAgent(a.slug));
+    return c.html(tmaAgentListFragment(agents, jobCounts));
+  });
+
+  app.post("/api/agents/:slug/memory/:filename/save", async (c) => {
+    const slug = c.req.param("slug");
+    const filename = c.req.param("filename");
+    const agent = getAgentBySlug(slug);
+    if (!agent) return c.text("Agent not found", 404);
+    const body = await c.req.parseBody();
+    const content = String(body.content ?? "");
+    const memory = c.get("memory");
+    try {
+      await memory.writeAgentMemory(slug, agent.memory_dir, filename, content);
+    } catch (err) {
+      return c.html(`<span style="color:#ef4444;">Error: ${String(err instanceof Error ? err.message : err)}</span>`);
+    }
+    return c.html(`<span style="color:#10b981;">Saved ${new Date().toLocaleTimeString()}</span>`);
   });
 
   return app;

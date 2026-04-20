@@ -316,6 +316,9 @@ export function updateJob(
       | "agent_prompt"
       | "subagents"
       | "next_job_id"
+      | "notify_policy"
+      | "output_template"
+      | "last_output_hash"
     >
   >
 ): void {
@@ -1607,10 +1610,22 @@ export function upsertBuiltinAgent(params: CreateAgentParams): Agent {
   if (!existing) {
     return createAgent({ ...params, is_builtin: true });
   }
+  // Update code-owned fields unconditionally. For notify_policy and
+  // critic_agent_slug, only upgrade from the *schema defaults* — this migrates
+  // existing built-ins to the new seed values on first boot after the seed
+  // changed, but leaves any user-edited value intact.
+  const notifyPolicy = existing.notify_policy === "always" && params.notify_policy
+    ? params.notify_policy
+    : existing.notify_policy;
+  const criticSlug = existing.critic_agent_slug === null && params.critic_agent_slug
+    ? params.critic_agent_slug
+    : existing.critic_agent_slug;
+
   return db
-    .prepare<Agent, [string, string, string, number, string, string]>(
+    .prepare<Agent, [string, string, string, number, string, string, string | null, string]>(
       `UPDATE agents
        SET name = ?, description = ?, prompt = ?, max_turns = ?, model = ?,
+           notify_policy = ?, critic_agent_slug = ?,
            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE slug = ?
        RETURNING *`
@@ -1621,6 +1636,8 @@ export function upsertBuiltinAgent(params: CreateAgentParams): Agent {
       params.prompt,
       params.max_turns ?? existing.max_turns,
       params.model ?? existing.model,
+      notifyPolicy,
+      criticSlug,
       params.slug,
     )!;
 }

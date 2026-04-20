@@ -435,4 +435,9 @@ export const MIGRATIONS = [
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug)`,
+
+  // Phase 3: per-job overrides for notify policy, output template, change detection
+  `ALTER TABLE jobs ADD COLUMN notify_policy TEXT CHECK(notify_policy IN ('always','on_error','on_change','silent','dynamic'))`,
+  `ALTER TABLE jobs ADD COLUMN output_template TEXT`,
+  `ALTER TABLE jobs ADD COLUMN last_output_hash TEXT`,
 ];

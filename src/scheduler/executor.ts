@@ -6,18 +6,33 @@ import {
   updateJob,
   getJobRuns,
   isTopicMuted,
+  getAgentBySlug,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
 import { splitMessage, markdownToTelegramV2 } from "../telegram/format.ts";
 import { briefKeyboard } from "../telegram/keyboards.ts";
 import { PLIST_LABEL } from "../cli/paths.ts";
-import type { RunStatus } from "../shared/types.ts";
+import { decideNotify } from "../agent/notify-policy.ts";
+import { applyOutputTemplate } from "../agent/output-template.ts";
+import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
 import type { Bot, InlineKeyboard } from "grammy";
 
 const log = createLogger("scheduler:executor");
 
 /** Cooldown per job to prevent diagnostic loops (15 min) */
 const DIAG_COOLDOWN_MS = 15 * 60 * 1000;
+
+/** Build a ChatContext from a job's notify routing so the agent's inline
+ *  telegram_send_* tools default to the job's configured topic instead of DM. */
+function jobChatContext(job: Job): ChatContext | undefined {
+  if (!job.notify_chat_id) return undefined;
+  const chatType = job.notify_chat_id.startsWith("-") ? "supergroup" : "private";
+  return {
+    chatId: job.notify_chat_id,
+    topicId: job.notify_topic_id ?? undefined,
+    chatType,
+  };
+}
 
 export class JobExecutor {
   private agent: AgentService;
@@ -78,6 +93,7 @@ export class JobExecutor {
         prompt: jobPrompt,
         source: "job",
         sourceId: String(jobId),
+        chatContext: jobChatContext(job),
         // maxBudgetUsd: job.max_budget_usd, // Budget enforcement disabled
         allowedTools,
         useBrowser: Boolean(job.use_browser),
@@ -129,30 +145,31 @@ export class JobExecutor {
         }
       }
 
-      // Notify via Telegram — skip no-ops and routine results
-      const isSilent = result.result.includes("[SILENT]")
-        || /no (new |pending )?items/i.test(result.result)
-        || /nothing to/i.test(result.result)
-        || /\b0 (new |items)/i.test(result.result)
-        || /\bfound 0\b/i.test(result.result)
-        || /no new /i.test(result.result)
-        || /don't have access to/i.test(result.result)
-        || /tool isn't available/i.test(result.result)
-        || /cannot invoke it manually/i.test(result.result)
-        || /doesn't appear to be registered/i.test(result.result);
-      if (!isSilent) {
-        // Attach interactive keyboard for briefs
+      // Notify via Telegram — policy-driven (agent.notify_policy with job override)
+      const agent = job.agent_name ? getAgentBySlug(job.agent_name) : null;
+      const decision = decideNotify({
+        agent,
+        job,
+        status,
+        result: result.result,
+        previousHash: job.last_output_hash,
+      });
+      updateJob(jobId, { last_output_hash: decision.hash });
+
+      if (decision.notify) {
+        const template = job.output_template ?? agent?.output_template ?? null;
+        const rendered = template ? applyOutputTemplate(template, decision.cleanedResult) : decision.cleanedResult;
         const isBrief = /brief/i.test(job.name);
         const keyboard = isBrief ? briefKeyboard(run.id) : undefined;
 
         await this.notify(
-          `Job "${job.name}" completed\n\n${result.result}`,
+          `Job "${job.name}" completed\n\n${rendered}`,
           job.notify_chat_id ?? undefined,
           job.notify_topic_id ?? undefined,
           keyboard,
         );
       } else {
-        log.info("Job notification suppressed (silent/no-op)", { jobId, name: job.name });
+        log.info("Job notification suppressed", { jobId, name: job.name, policy: decision.policy, reason: decision.reason });
       }
 
       // Check for pending restart after notification is sent
@@ -217,6 +234,7 @@ export class JobExecutor {
         prompt: pipelinePrompt,
         source: "job",
         sourceId: String(jobId),
+        chatContext: jobChatContext(job),
         allowedTools,
         useBrowser: Boolean(job.use_browser),
         model: job.model ?? undefined,
@@ -246,17 +264,27 @@ export class JobExecutor {
         }
       }
 
-      // Notify only at the end of the pipeline (no next job)
+      // Notify only at the end of the pipeline (no next job) — policy-driven
       if (!job.next_job_id) {
-        const isSilent = result.result.includes("[SILENT]")
-          || /no (new |pending )?items/i.test(result.result)
-          || /nothing to/i.test(result.result);
-        if (!isSilent) {
+        const agent = job.agent_name ? getAgentBySlug(job.agent_name) : null;
+        const decision = decideNotify({
+          agent,
+          job,
+          status: "success",
+          result: result.result,
+          previousHash: job.last_output_hash,
+        });
+        updateJob(jobId, { last_output_hash: decision.hash });
+        if (decision.notify) {
+          const template = job.output_template ?? agent?.output_template ?? null;
+          const rendered = template ? applyOutputTemplate(template, decision.cleanedResult) : decision.cleanedResult;
           await this.notify(
-            `Pipeline "${job.name}" completed\n\n${result.result}`,
+            `Pipeline "${job.name}" completed\n\n${rendered}`,
             job.notify_chat_id ?? undefined,
             job.notify_topic_id ?? undefined,
           );
+        } else {
+          log.info("Pipeline notification suppressed", { jobId, policy: decision.policy, reason: decision.reason });
         }
       }
     } catch (err) {

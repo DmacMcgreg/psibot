@@ -49,6 +49,9 @@ export interface Job {
   agent_prompt: string | null;
   subagents: string | null;       // JSON array of subagent names
   next_job_id: number | null;
+  notify_policy: AgentNotifyPolicy | null; // Job-level override (null = use agent default)
+  output_template: string | null;          // Job-level template override
+  last_output_hash: string | null;         // Last result hash (for on_change policy)
   status: JobStatus;
   last_run_at: string | null;
   next_run_at: string | null;

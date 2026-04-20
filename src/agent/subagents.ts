@@ -7,6 +7,36 @@ import type { Agent } from "../shared/types.ts";
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
 
 /**
+ * Notification guidance appended to every built-in agent's prompt. Teaches the
+ * agent how to emit [SILENT] / [NOTIFY: reason] markers when running under the
+ * `dynamic` notify policy. The executor parses these markers to decide whether
+ * to deliver a Telegram message.
+ */
+const NOTIFY_MARKERS_GUIDE = `## Notification Markers
+
+When your job runs under the \`dynamic\` notify policy, prefix your final output
+with a marker so the executor knows whether to deliver it to Telegram:
+
+- \`[SILENT]\` — for routine no-ops (no new items, nothing changed, 0 results,
+  "already up to date", etc). The result is still logged; the user is not paged.
+- \`[NOTIFY: <reason>]\` — for anything worth the user's attention. Include a
+  one-line reason so it shows up in the logs (e.g. "[NOTIFY: regime flipped to
+  risk-off]").
+
+If you emit neither, the executor defaults to notifying on error and staying
+silent on success. When in doubt, emit \`[NOTIFY: ...]\` with a specific
+reason — users prefer false positives to missed signals for new information.`;
+
+const CRITIQUE_GUIDE = `## Self-Review
+
+Before returning your final answer, ask yourself: "would a second pair of eyes
+catch a mistake here?" If the answer is yes (the output drives a decision,
+involves numbers, or cites sources), spawn your configured critic agent via the
+Task tool with a one-paragraph summary of your conclusion and the reasoning
+chain. Revise if the critic finds a real issue; ignore nitpicks. Never chain
+more than one critique round — the executor caps critique depth.`;
+
+/**
  * Seed data for built-in agents. This is the source of truth on fresh installs
  * and the base set that upsertBuiltinAgent syncs on every startup.
  *
@@ -15,7 +45,7 @@ const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
  * critic_agent_slug/output_template/notify_chat_id/notify_topic_id across restarts.
  */
 export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
-  return [
+  const base: CreateAgentParams[] = [
     {
       slug: "image-generator",
       name: "Image Generator",
@@ -26,6 +56,7 @@ export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
       model: "haiku",
       max_turns: 99999,
       memory_dir: "agents/image-generator",
+      notify_policy: "silent",
       is_builtin: true,
     },
     {
@@ -38,6 +69,7 @@ export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
       model: "haiku",
       max_turns: 99999,
       memory_dir: "agents/audio-processor",
+      notify_policy: "silent",
       is_builtin: true,
     },
     {
@@ -50,6 +82,7 @@ export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/coder",
+      notify_policy: "dynamic",
       is_builtin: true,
     },
     {
@@ -62,6 +95,7 @@ export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/researcher",
+      notify_policy: "silent",
       is_builtin: true,
     },
     {
@@ -84,6 +118,8 @@ Return structured findings: key levels, pattern identification, trend assessment
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/technical-analyst",
+      notify_policy: "dynamic",
+      critic_agent_slug: "quant-researcher",
       is_builtin: true,
     },
     {
@@ -105,6 +141,8 @@ Return structured findings: valuation assessment, growth trajectory, peer compar
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/fundamental-analyst",
+      notify_policy: "dynamic",
+      critic_agent_slug: "quant-researcher",
       is_builtin: true,
     },
     {
@@ -125,6 +163,7 @@ Return: regime classification, sector recommendations (overweight/underweight), 
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/macro-strategist",
+      notify_policy: "on_change",
       is_builtin: true,
     },
     {
@@ -145,6 +184,7 @@ Return: sentiment scores, narrative summary, unusual activity flags, momentum si
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/sentiment-scout",
+      notify_policy: "dynamic",
       is_builtin: true,
     },
     {
@@ -220,6 +260,7 @@ Return a structured report:
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/quant-researcher",
+      notify_policy: "on_change",
       is_builtin: true,
     },
     {
@@ -262,9 +303,19 @@ For each idea:
       model: "sonnet",
       max_turns: 99999,
       memory_dir: "agents/strategy-scout",
+      notify_policy: "on_change",
       is_builtin: true,
     },
   ];
+
+  // Append shared guidance (notification markers + self-review) to each agent's
+  // prompt so the code-owned prompt sync propagates these behaviors on every
+  // boot. Critique guide is only added if the agent has a configured critic.
+  return base.map((seed) => {
+    const guide = [NOTIFY_MARKERS_GUIDE];
+    if (seed.critic_agent_slug) guide.push(CRITIQUE_GUIDE);
+    return { ...seed, prompt: `${seed.prompt}\n\n${guide.join("\n\n")}` };
+  });
 }
 
 /** Idempotent seeder — call once at startup after initDb(). */
