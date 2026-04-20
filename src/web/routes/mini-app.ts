@@ -29,6 +29,8 @@ import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment, tmaJobDetailFragme
 import { tmaLogsPage, tmaLogListFragment } from "../views/mini-app/logs.ts";
 import { tmaMemoryPage, tmaMemoryListFragment } from "../views/mini-app/memory.ts";
 import { tmaSessionsPage } from "../views/mini-app/sessions.ts";
+import { tmaYoutubePage, tmaVideoListFragment } from "../views/mini-app/youtube.ts";
+import { listVideos, getVideoCount } from "../../youtube/db.ts";
 import {
   tmaAgentsPage,
   tmaAgentCardFragment,
@@ -112,6 +114,11 @@ export function createMiniAppRoutes() {
   app.get("/memory", (c) => {
     const entries = getAllMemoryEntries();
     return c.html(tmaMemoryPage(entries));
+  });
+
+  app.get("/youtube", (c) => {
+    const videos = listVideos({ limit: 50 });
+    return c.html(tmaYoutubePage(videos, getVideoCount()));
   });
 
   app.get("/agents", (c) => {
@@ -376,6 +383,14 @@ export function createMiniAppRoutes() {
     const q = c.req.query("q")?.trim() ?? "";
     const entries = q ? searchMemory(q) : getAllMemoryEntries();
     return c.html(tmaMemoryListFragment(entries));
+  });
+
+  // --- YouTube API ---
+
+  app.get("/api/youtube/search", (c) => {
+    const q = c.req.query("q")?.trim() ?? "";
+    const videos = q ? listVideos({ keyword: q, limit: 50 }) : listVideos({ limit: 50 });
+    return c.html(tmaVideoListFragment(videos));
   });
 
   // --- Session API ---
