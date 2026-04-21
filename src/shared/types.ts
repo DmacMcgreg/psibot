@@ -350,6 +350,14 @@ export interface AgentRunResult {
   outputTokens: number;
   cacheReadTokens: number;
   contextWindow: number;
+  /**
+   * Size of the final prompt sent to the model in tokens
+   * (input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+   * from the LAST streamed assistant message). This is the true "current
+   * context size" — the cumulative inputTokens field above over-counts on
+   * multi-turn runs.
+   */
+  promptTokens: number;
   numTurns: number;
   stopReason: StopReason;
 }

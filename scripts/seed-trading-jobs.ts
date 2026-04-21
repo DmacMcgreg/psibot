@@ -128,7 +128,7 @@ Rules for output:
 const PORTFOLIO_PROMPT = `You are the Portfolio Manager. Review current positions and manage entries/exits using MCP trading tools.
 
 READ CONTEXT FIRST:
-1. Read knowledge/trading/PLAYBOOK.md for strategy rules and position sizing
+1. Read knowledge/trading/PLAYBOOK.md for strategy rules and position sizing (NOTE: Tier A vs Tier B)
 2. Read knowledge/trading/REGIME.md for current regime
 3. Read the latest scan from knowledge/trading/scans/ directory
 
@@ -138,25 +138,29 @@ PHASE 1: REVIEW CURRENT PORTFOLIO
    a. Call analyze_symbol for current technicals
    b. Call get_options_flow for options signals
    c. Check exit rules from PLAYBOOK against current data
-   d. Process ALL exits BEFORE any new entries
+   d. For TIER B positions (strategy_name = "signal-cluster"), apply these additional rules:
+      - Stop is 1.5×ATR (tighter than Tier A 2×ATR)
+      - Signal-decay exit: call get_signal_clusters({ since_hours: 48 }) and check if the ticker still appears. If the originating cluster has decayed (NO clusters for this ticker in last 48h), close the position regardless of P/L
+   e. Process ALL exits BEFORE any new entries
 
 PHASE 2: EXECUTE EXITS
-For positions hitting exit criteria (stop loss, take profit, signal reversal):
+For positions hitting exit criteria (stop loss, take profit, signal reversal, Tier-B signal decay):
 - Use portfolio_close_position tool to close
-- Log the trade to knowledge/trading/JOURNAL.md with full reasoning and outcome
+- Log the trade to knowledge/trading/JOURNAL.md with full reasoning and outcome. For Tier-B exits, note originating signal sources.
 
-PHASE 3: NEW ENTRIES
+PHASE 3: NEW ENTRIES (Tier A only — Signal Trader handles Tier B automatically)
 Using top buy candidates from the latest scan:
 1. Verify each with analyze_symbol + get_sentiment
-2. Check get_options_flow (unusual put buying = skip)
-3. Apply position sizing from PLAYBOOK (STRONG_BUY: 5%, BUY: 3%)
-4. Ensure max 15 positions and min 25% cash reserve
-5. Use portfolio_open_position to enter new positions
-6. Log each trade to knowledge/trading/JOURNAL.md
+2. Call list_trading_signals({ ticker, since_hours: 48 }) to cross-reference with multi-source signals — if signals AGREE with the scan, that's additional conviction
+3. Check get_options_flow (unusual put buying = skip)
+4. Apply Tier-A position sizing from PLAYBOOK (STRONG_BUY: 5%, BUY: 3%)
+5. Ensure max 15 positions and min 25% cash reserve
+6. Use portfolio_open_position to enter new positions with strategy_name reflecting the Tier-A source (e.g., "regime-detection", "kalman", "poc")
+7. Log each trade to knowledge/trading/JOURNAL.md
 
 PHASE 4: REPORT
 Send Telegram portfolio update:
-- Current positions with P/L
+- Current positions with P/L (separate Tier A and Tier B counts/P&L)
 - Any trades executed (entries/exits) with reasoning
 - Total exposure and cash position
 - Key watchlist items for next session`;
@@ -189,17 +193,34 @@ Update knowledge/trading/PLAYBOOK.md:
 - Adjust entry/exit rules based on observed patterns
 - Update regime-specific weights if current regime shifted
 
+PHASE 2.5: SIGNAL SOURCE PERFORMANCE
+Evaluate per-source predictive value for the signal pipeline:
+1. Call list_trading_signals({ since_hours: 168 }) to pull the last week of signals.
+2. For each source (wsb, reddit-stocks, reddit-options, reddit-investing, reddit-pennystocks, reddit-securityanalysis, openinsider, finviz-analyst, shadow-tipranks, shadow-c2zulu, shadow-afterhour, shadow-quiver, shadow-autopilot):
+   a) Count acted_on=1 signals
+   b) For each acted signal with trade_id, look up the realized P&L of that trade
+   c) Compute per-source: total trades, win rate, avg P&L per trade, total P&L attribution
+3. Read knowledge/trading/shadow-weights.yaml.
+4. Adjust weights (within range 0.2–1.0):
+   - Boost sources with win rate ≥55% and positive avg P&L: weight *= 1.1 (cap at 1.0)
+   - Penalize sources with win rate ≤35% or strongly negative P&L: weight *= 0.8 (floor at 0.2)
+   - Leave neutral sources unchanged
+5. Write updated weights back to knowledge/trading/shadow-weights.yaml with a YAML comment line noting the review date.
+6. Record the per-source scoreboard in a new "Signal Source Performance" section of knowledge/trading/SCOREBOARD.md.
+
 PHASE 3: EXTRACT LESSONS
 Update knowledge/trading/LESSONS.md:
 - New entry patterns that worked or failed
 - Exit timing insights
 - Regime-specific observations
+- Signal source behavior (which sources produced winners vs losers)
 
 PHASE 4: REPORT
 Send Telegram weekly review:
 - Week's P/L and win rate
 - Best and worst trades with analysis
 - Strategy weight changes made
+- Signal source performance table (top 3 and bottom 3 sources by P&L attribution, weight adjustments applied)
 - Key lessons extracted
 - Recommendations for next week`;
 
@@ -248,6 +269,14 @@ READ CONTEXT FIRST:
 2. Read knowledge/trading/LESSONS.md for areas needing improvement
 3. Read knowledge/trading/MODELS.md for model performance gaps
 
+PHASE 1.5: SIGNAL CLUSTER AWARENESS
+Before diving into research tasks, surface any active multi-source signal clusters so the user sees them alongside your research:
+1. Call get_signal_clusters({ since_hours: 24, min_sources: 2, direction: "long" })
+2. Call get_signal_clusters({ since_hours: 24, min_sources: 2, direction: "short" })
+3. For each watchlist ticker you were planning to cover today, call list_trading_signals({ ticker, since_hours: 48 }) and note source breadth.
+4. Include a "Signal Clusters (last 24h)" section in your Telegram report: list tickers where ≥2 distinct sources agree, with sources and composite score.
+5. DO NOT auto-open trades. The Signal Trader job handles Tier-B entries automatically. Your role is awareness + research only.
+
 RESEARCH TASKS (rotate through these — pick the most relevant for today):
 
 A) STRATEGY COMPARISON: Pick 5 strategies from the 175+ available (use list_strategies). Run backtest on each using current market leaders. Compare against playbook strategies via compare_strategies.
@@ -260,12 +289,14 @@ D) REGIME ANALYSIS: Study how current playbook strategies perform across differe
 
 E) FEATURE HUNTING: Review ml_accuracy for weak areas. Research new technical or fundamental features that could improve ML predictions.
 
+F) SIGNAL SOURCE RESEARCH: Review the active sources feeding trading_signals (wsb, openinsider, finviz-analyst, shadow-tipranks, shadow-c2zulu, shadow-afterhour, shadow-quiver, shadow-autopilot). Suggest new sources or refinements (e.g. specific subreddits, specific insider classes, specific TipRanks expert tiers) that could improve signal quality.
+
 UPDATE KNOWLEDGE:
 1. Update knowledge/trading/RESEARCH.md with findings
 2. If a finding shows >10% improvement in backtest win rate, flag for promotion to PLAYBOOK.md
 
 REPORT:
-Send brief Telegram update on what was researched and any notable findings.`;
+Send brief Telegram update on what was researched, the active signal clusters surfaced in Phase 1.5, and any notable findings.`;
 
 // ---------------------------------------------------------------------------
 // SEED / UPDATE JOBS

@@ -1,9 +1,14 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { createLogger } from "../shared/logger.ts";
+import {
+  listTradingSignals,
+  getSignalClusters,
+  markSignalActed,
+} from "../db/queries.ts";
 
 const log = createLogger("mcp:trading");
-const BASE_URL = "http://localhost:8000/api/v1";
+const BASE_URL = "http://127.0.0.1:8000/api/v1";
 const BACKEND_DIR = `${process.env.HOME}/Documents/2_Code/2026/trading-bot/backend`;
 const HEALTH_URL = `${BASE_URL.replace("/api/v1", "")}/docs`; // FastAPI serves /docs by default
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -320,7 +325,7 @@ export function createTradingMcpServer() {
         },
         async (args) => {
           try {
-            const data = await api("/portfolio/positions", {
+            const data = await api<Record<string, unknown>>("/portfolio/positions", {
               method: "POST",
               body: JSON.stringify({
                 symbol: args.symbol,
@@ -684,6 +689,78 @@ export function createTradingMcpServer() {
             return ok(JSON.stringify(data, null, 2));
           } catch (e) {
             return err(`Report generation failed: ${e}`);
+          }
+        }
+      ),
+
+      // --- Trading Signals (multi-source firehose, insider, analyst, shadow) ---
+
+      tool(
+        "list_trading_signals",
+        "Query the unified trading_signals table populated by WSB/Reddit firehose, OpenInsider, analyst ratings, and social trader shadow pollers. Filter by ticker, source, age, or strength. Use this BEFORE calling get_trending or intelligence_scan — it's the primary signal source.",
+        {
+          ticker: z.string().optional().describe("Filter by ticker symbol (uppercase)"),
+          source: z.string().optional().describe("Filter by source: 'wsb', 'reddit-stocks', 'openinsider', 'finviz-analyst', 'shadow-tipranks', 'shadow-c2zulu', 'shadow-afterhour', 'shadow-quiver', 'shadow-autopilot'"),
+          since_hours: z.number().optional().describe("Only return signals captured within the last N hours (default 48)"),
+          min_strength: z.number().optional().describe("Minimum signal strength threshold 0-1"),
+          limit: z.number().optional().describe("Max signals to return (default 200)"),
+        },
+        async (args) => {
+          try {
+            const signals = listTradingSignals({
+              ticker: args.ticker,
+              source: args.source,
+              since_hours: args.since_hours ?? 48,
+              min_strength: args.min_strength,
+              limit: args.limit ?? 200,
+            });
+            return ok(JSON.stringify({ count: signals.length, signals }, null, 2));
+          } catch (e) {
+            return err(`list_trading_signals failed: ${e}`);
+          }
+        }
+      ),
+
+      tool(
+        "get_signal_clusters",
+        "Returns tickers where MULTIPLE independent sources agree on direction within a time window. This is the actionability primitive for Tier-B paper entries — only tickers with 2+ distinct sources and same direction are clusters. Sorted by source_count desc, then total_strength desc.",
+        {
+          since_hours: z.number().optional().describe("Lookback window in hours (default 24)"),
+          min_sources: z.number().optional().describe("Minimum distinct sources required (default 2)"),
+          direction: z.enum(["long", "short", "neutral"]).optional().describe("Only return clusters with this direction"),
+        },
+        async (args) => {
+          try {
+            const clusters = getSignalClusters({
+              since_hours: args.since_hours ?? 24,
+              min_sources: args.min_sources ?? 2,
+              direction: args.direction,
+            });
+            return ok(JSON.stringify({ count: clusters.length, clusters }, null, 2));
+          } catch (e) {
+            return err(`get_signal_clusters failed: ${e}`);
+          }
+        }
+      ),
+
+      tool(
+        "mark_signal_acted",
+        "Mark trading_signals for a ticker as acted_on with the resulting trade_id. Call this AFTER opening a Tier-B paper position so Strategy Reviewer can attribute P&L back to signal sources.",
+        {
+          ticker: z.string().describe("Ticker symbol (uppercase)"),
+          trade_id: z.number().describe("Paper trade ID returned by open_paper_position"),
+          since_hours: z.number().optional().describe("Only mark signals captured within this window (default 24)"),
+        },
+        async (args) => {
+          try {
+            const changed = markSignalActed({
+              ticker: args.ticker,
+              trade_id: args.trade_id,
+              since_hours: args.since_hours ?? 24,
+            });
+            return ok(JSON.stringify({ marked: changed }));
+          } catch (e) {
+            return err(`mark_signal_acted failed: ${e}`);
           }
         }
       ),

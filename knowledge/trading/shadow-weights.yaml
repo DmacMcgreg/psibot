@@ -1,0 +1,29 @@
+# Shadow trading credibility weights
+# Strength applied to signals from each shadow source. 0.1 = ignore, 1.0 = max conviction.
+# Strategy Reviewer job updates these over time based on realized P&L attribution.
+
+# Default weight applied when a specific trader/analyst has no entry below
+default: 0.5
+
+# TipRanks — top analysts and top insiders (5-star ratings get starBoost on top)
+tipranks:
+  # Firms/analysts with strong track records get explicit boost
+  "Goldman Sachs": 0.75
+  "Morgan Stanley": 0.7
+  "JP Morgan": 0.7
+  "Bank of America": 0.7
+  "Jefferies": 0.65
+  "Evercore ISI": 0.65
+  "Wedbush": 0.55
+
+# Collective2 / ZuluTrade — top algorithmic traders
+c2zulu:
+  # Track top traders by alias once we observe their P/L attribution
+  # Starts empty; Strategy Reviewer will populate from performance.
+
+# AfterHour — real brokerage-connected users sharing portfolios
+afterhour:
+  # Starts empty; Strategy Reviewer will populate.
+  # Known high-engagement AfterHour personalities to seed:
+  # "ziptradzz": 0.6
+  # "tommybrad": 0.55

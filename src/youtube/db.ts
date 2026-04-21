@@ -138,6 +138,7 @@ export function getVideo(videoId: string): StoredVideo | null {
 export function listVideos(params?: {
   keyword?: string;
   channel?: string;
+  tag?: string;
   limit?: number;
 }): StoredVideo[] {
   const db = getDb();
@@ -151,8 +152,13 @@ export function listVideos(params?: {
   }
 
   if (params?.channel) {
-    conditions.push(`channel_title LIKE ?`);
-    values.push(`%${params.channel}%`);
+    conditions.push(`channel_title = ?`);
+    values.push(params.channel);
+  }
+
+  if (params?.tag) {
+    conditions.push(`tags LIKE ?`);
+    values.push(`%${JSON.stringify(params.tag).slice(1, -1)}%`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -164,6 +170,41 @@ export function listVideos(params?: {
       `SELECT * FROM youtube_videos ${where} ORDER BY processed_at DESC LIMIT ?`
     )
     .all(...values);
+}
+
+export function getAllTagsWithCounts(): Array<{ tag: string; count: number }> {
+  const db = getDb();
+  const rows = db.prepare<{ tags: string }, []>(`SELECT tags FROM youtube_videos`).all();
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    try {
+      const arr = JSON.parse(row.tags);
+      if (Array.isArray(arr)) {
+        for (const t of arr) {
+          if (typeof t === "string" && t.trim().length > 0) {
+            counts.set(t, (counts.get(t) ?? 0) + 1);
+          }
+        }
+      }
+    } catch {
+      // skip malformed tags
+    }
+  }
+  return Array.from(counts.entries())
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
+export function getAllChannelsWithCounts(): Array<{ channel: string; count: number }> {
+  const db = getDb();
+  const rows = db
+    .prepare<{ channel_title: string; count: number }, []>(
+      `SELECT channel_title, COUNT(*) as count FROM youtube_videos
+       WHERE channel_title IS NOT NULL AND channel_title != ''
+       GROUP BY channel_title ORDER BY count DESC, channel_title ASC`
+    )
+    .all();
+  return rows.map((r) => ({ channel: r.channel_title, count: r.count }));
 }
 
 /**

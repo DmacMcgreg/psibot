@@ -281,7 +281,6 @@ ${quotesStr}`;
               limit: args.limit,
               retryFailed: args.retry_failed,
               model: config.YOUTUBE_ANALYSIS_MODEL,
-              onProgress: notifyTelegram,
             });
 
             const statusIcon = (status: VideoDetail["status"]): string => {

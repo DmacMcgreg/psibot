@@ -1,0 +1,21 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "typescript",
+  "project": "telegram-claude-code",
+  "schemaVersion": 1,
+  "type": "webapp",
+  "version": 2,
+  "recipeOverrides": {
+    "maxTicketsPerSession": 5,
+    "handoverInterval": 3,
+    "reviewBackends": [
+      "agent"
+    ]
+  }
+}

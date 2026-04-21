@@ -29,8 +29,17 @@ import { tmaJobsPage, tmaJobListFragment, tmaJobCardFragment, tmaJobDetailFragme
 import { tmaLogsPage, tmaLogListFragment } from "../views/mini-app/logs.ts";
 import { tmaMemoryPage, tmaMemoryListFragment } from "../views/mini-app/memory.ts";
 import { tmaSessionsPage } from "../views/mini-app/sessions.ts";
-import { tmaYoutubePage, tmaVideoListFragment } from "../views/mini-app/youtube.ts";
-import { listVideos, getVideoCount } from "../../youtube/db.ts";
+import { tmaYoutubePage, tmaVideoListFragment, tmaYoutubeTagsPage, tmaYoutubeChannelsPage } from "../views/mini-app/youtube.ts";
+import { tmaYoutubeGraphPage } from "../views/mini-app/youtube-graph.ts";
+import { listVideos, getVideoCount, getVideo, getAllTagsWithCounts, getAllChannelsWithCounts } from "../../youtube/db.ts";
+import {
+  buildTopicClusterGraph,
+  buildVideoSimilarityGraph,
+  buildHybridGraph,
+  getTopicWithRelations,
+  getRelatedVideos,
+} from "../../youtube/graph.ts";
+import type { ParsedTranscript } from "../../youtube/analyzer.ts";
 import {
   tmaAgentsPage,
   tmaAgentCardFragment,
@@ -117,9 +126,16 @@ export function createMiniAppRoutes() {
   });
 
   app.get("/youtube", (c) => {
-    const videos = listVideos({ limit: 50 });
-    return c.html(tmaYoutubePage(videos, getVideoCount()));
+    const tag = c.req.query("tag")?.trim() || undefined;
+    const channel = c.req.query("channel")?.trim() || undefined;
+    const keyword = c.req.query("q")?.trim() || undefined;
+    const videos = listVideos({ tag, channel, keyword, limit: 50 });
+    return c.html(tmaYoutubePage(videos, getVideoCount(), { tag, channel, keyword }));
   });
+
+  app.get("/youtube/graph", (c) => c.html(tmaYoutubeGraphPage()));
+  app.get("/youtube/tags", (c) => c.html(tmaYoutubeTagsPage(getAllTagsWithCounts())));
+  app.get("/youtube/channels", (c) => c.html(tmaYoutubeChannelsPage(getAllChannelsWithCounts())));
 
   app.get("/agents", (c) => {
     const agents = listAgents();
@@ -388,9 +404,43 @@ export function createMiniAppRoutes() {
   // --- YouTube API ---
 
   app.get("/api/youtube/search", (c) => {
-    const q = c.req.query("q")?.trim() ?? "";
-    const videos = q ? listVideos({ keyword: q, limit: 50 }) : listVideos({ limit: 50 });
+    const q = c.req.query("q")?.trim() || undefined;
+    const tag = c.req.query("tag")?.trim() || undefined;
+    const channel = c.req.query("channel")?.trim() || undefined;
+    const videos = listVideos({ keyword: q, tag, channel, limit: 50 });
     return c.html(tmaVideoListFragment(videos));
+  });
+
+  app.get("/api/youtube/graph/topics", (c) => c.json(buildTopicClusterGraph()));
+  app.get("/api/youtube/graph/similarity", (c) => {
+    const threshold = parseFloat(c.req.query("threshold") ?? "0.78");
+    const maxEdges = parseInt(c.req.query("maxEdges") ?? "5", 10);
+    return c.json(buildVideoSimilarityGraph(threshold, maxEdges));
+  });
+  app.get("/api/youtube/graph/hybrid", (c) => c.json(buildHybridGraph()));
+  app.get("/api/youtube/graph/topic/:id", (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    const topic = getTopicWithRelations(id);
+    if (!topic) return c.json({ error: "Topic not found" }, 404);
+    return c.json(topic);
+  });
+  app.get("/api/youtube/graph/video/:id", (c) => {
+    const videoId = c.req.param("id");
+    const video = getVideo(videoId);
+    if (!video) return c.json({ error: "Video not found" }, 404);
+    const analysis: ParsedTranscript = JSON.parse(video.analysis_json);
+    const tags: string[] = JSON.parse(video.tags);
+    const related = getRelatedVideos(videoId, 5);
+    return c.json({
+      video_id: video.video_id,
+      title: video.title,
+      channel_title: video.channel_title,
+      url: video.url,
+      tags,
+      summary: video.markdown_summary,
+      themes: analysis.themes,
+      related,
+    });
   });
 
   // --- Session API ---

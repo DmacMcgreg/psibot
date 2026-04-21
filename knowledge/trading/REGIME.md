@@ -1,147 +1,169 @@
 # Market Regime
 
-Last updated: 2026-03-30 17:00 ET (Scan — Monday EOD)
+## Current: RISK-OFF ESCALATION / STAGFLATION CORE (80%) — Apr 20, 5:00 PM ET
 
-## Current Regime
-- Classification: **RISK-OFF / STAGFLATION OVERLAY** (Confidence: 85%)
-- Upgraded from 80% (March 27) → 85% (March 30 open) — UNCHANGED at EOD
-- Key confirmation today: Energy stocks DECLINED late afternoon despite Brent $115 (exhaustion signal), MSFT RSI 21.8 / GOOGL RSI 24.8 (capitulation zone but no reversal yet), META RSI 22.2
-- Backend regime tool returns "mixed" — OVERRIDDEN. Tool lacks geopolitical context weighting.
+**UPGRADED from 75%** (2 AM scan)
 
-## Critical Regime Update: PCE DELAYED
-- PCE Feb 2026 was NOT released March 28 as scheduled
-- BEA rescheduled to **April 9, 2026 at 8:30 AM ET** (post-shutdown calendar adjustment)
-- Most recent data: January 2026 core PCE +3.1% YoY / 3.66% 3-month annualized
-- Full-year 2026 PCE consensus revised to 3.1% (from 2.6%)
-- MR activation gate: PCE <2.5% AND VIX <25 simultaneously on April 9
-- April 8-10 = THREE-DAY DATA GAUNTLET: FOMC Minutes (Apr 8) + PCE (Apr 9) + CPI (Apr 10)
+SPY $710.14 RSI 73.78 OB | QQQ $648.97 RSI 75.02 OB | IWM $275.78 RSI 73.47 OB | VIX ~17.5 (complacency) | WTI $88.87 (+7.6%) | Brent $95.42 (+5.3%) | Gold $4,804-4,809 | 10yr ~4.32% | DXY 98.12 | HY OAS 2.85% (extreme tight)
 
-## Current Market Levels (March 30 EOD)
-- WTI: ~$101.25
-- Brent: ~$115.35 — CRISIS THRESHOLD BREACHED
-- VIX: 31.06 (broke above 30 for first time this cycle)
-- 10yr Yield: ~4.41% (8-month highs, no safe-haven bid = stagflation confirmed)
-- SPX: ~6,368 (7-month low, 5th consecutive weekly decline, worst monthly loss since 2022)
-- HY Spreads: ~319 bps (widening)
-- DXY: sub-100 (weak dollar in hawkish-Fed environment = stagflation signal)
-- XLE: RSI 84.22 (declining late session — exhaustion confirmed)
-- EOG: RSI 85.28 (most overbought in scanned universe)
+## CRITICAL DEVELOPMENTS (2 AM to 5 PM)
 
-## Iran & Geopolitical Update (March 30)
-- Iran-US: Trump granted 10-day extension, expires April 6 8PM ET. Iran called proposal "one-sided." Channel fragile.
-- Strait of Hormuz: Week 4+. Fewer than 10 ships/day (baseline 40-50). Tehran Toll Booth $2M/vessel.
-- Houthis: New Bab al-Mandeb front opened March 28 (~5 mb/d at risk).
-- CVX Wheatstone LNG: weeks-long outage continues — independent Pacific supply shock.
-- **April 6, 8:00 PM ET = THE single most binary macro event of 2026**
+### Iran Escalation
+- **Trump: Ceasefire expires Wednesday evening, extension "HIGHLY UNLIKELY"**
+- Iran Foreign Ministry: "No decision" on new peace talks
+- Hormuz remains CLOSED after Saturday recapture
+- **Collapse probability: 45-55%** (up from 35-45%)
+- **Extension probability: 30-45%** (down from 35-50%)
+- Trump threat: "Knock out every single Power Plant and Bridge in Iran" if no deal
 
-## ENERGY REDUCTION ALERT — URGENT
-Brent at $115 + XLE declining late session today = FULL CRISIS threshold. Begin reduction NOW.
-- TRIM IMMEDIATELY: EOG (RSI 85.3), COP (RSI 81.2), OXY (RSI 81.2), DVN (RSI 80.8)
-- RETAIN WITH TIGHTENED STOPS: XOM (stop $165), VLO (stop $241)
-- SLB: Wait for pullback to $49-50 (currently $51-53 = above max pain $48 by 7%). Do NOT enter at current levels.
-- Goal: 50% of peak energy weight reduced before April 6
+### Market Response
+- **Oil spike**: WTI +$6.37 (+7.6%), Brent +$4.80 (+5.3%) Monday
+- **Gold stable**: Holding $4,800+ (multi-year highs, +40% YoY)
+- **Indices flat**: QQQ $648.97 (essentially unchanged), SPY ~$710, RSI >73 OVERBOUGHT
+- **VIX calm**: ~17.5 (NO fear priced in)
+- **Credit tight**: HY OAS 2.85% (risk-on pricing despite geopolitical chaos)
 
-## Strategy Weights (Risk-Off Regime — March 30 EOD)
-### ACTIVE
-- **Kalman Filter (50%)**: T (long — active, at max pain $29), MRK (long — hold, enlicitide catalyst), WEAT (new long), SLB (wait for pullback), META (short — REDUCE to 1.5%, squeeze risk), BA (short — hold, stop $200)
-- **Regime Detection (50%)**: DBA (long — hold, no adds, aging RSI 72), QQQ (short — best regime short), ZS (short — 1.5% only, tighten stop $142, PCR 0.43 conflict)
+**MAJOR DISCONNECT**: Oil spiking, indices overbought, VIX low, credit spreads tight = market NOT pricing ceasefire collapse risk
 
-### INACTIVE (0% weight in Risk-Off)
-- Z-Score MR, VWAP MR, BB MR, Williams %R, OBV Divergence: ALL 0%
-- MR activation gate: Core PCE <2.5% AND VIX <25 simultaneously on April 9
-- Trend-following (Turtle/TripleMA): NDX breadth 35% — 0%
-- Short volatility: VIX in backwardation — 0%
+---
 
-## Sector Rotation Analysis (Updated March 30 EOD)
+## Macro Environment
 
-### Leading Sectors (Overweight — aging, begin reduction)
-- **Energy (XLE)**: RSI 84.22, DECLINING late session. REDUCE NOW.
-  - TRIM: EOG (85.3), COP (81.2), OXY (81.2), DVN (80.8)
-  - HOLD: XOM (75.9, stop $165), VLO (71.4, stop $241)
-  - ENTRY ONLY AT PULLBACK: SLB (wait $49-50, not $53)
-- **Ag Commodities (DBA)**: RSI 72.02, MACD/SMA bullish — hold. No adds.
-- **Wheat (WEAT)**: RSI 58.64, SMA/EMA bullish — NEW long. Houthi Bab al-Mandeb adds risk premium.
+### Inflation (STICKY)
+- March CPI: 3.3% YoY (2-year high)
+- Cleveland Fed Nowcast: 3.58% (April 15)
+- Energy-driven: gasoline +21.2%, energy +10.9% MoM
+- **If Iran collapses**: WTI $100-115, CPI forecast 4.0-4.5%
 
-### Confirmed Defensives
-- **T**: RSI 64.33, BUY, triple bullish. P/E 9.6x, yield 3.84%. ACTIVE LONG.
-- **MRK**: RSI 58.33, HOLD. NEW: enlicitide cholesterol treatment outperformed today.
-- **ABBV**: RSI 37.2 (pulling back), PCR 0.34 bullish options. Wait for RSI stabilization before entry. Max pain $207.50, above $209 = bearish pin risk.
-- **GILD**: RSI 31.76 (near oversold), wait for bounce confirmation.
-- **JNJ**: RSI 53.31, neutral — no signal.
+### Fed Posture (HAWKISH)
+- Rates: 3.50-3.75% (held at January FOMC)
+- Fed updated forecast April 10: "Worse outlook, slower progress than expected"
+- Powell: "No progress on inflation in 12 months"
+- **FOMC April 29**: CRITICAL (one week away)
+- Market pricing: No June cut
 
-### Lagging Sectors (Underweight/Short)
-- **Technology**: MSFT RSI 21.8, GOOGL RSI 24.8, NVDA RSI 35.5 — capitulation zone but no reversal. Wait for VIX <25 + PCE gate.
-  - ARM: EXCEPTION — RSI 61.79, Kalman uptrend intact, PCR 0.49 bullish. Only valid tech long.
-- **QQQ SHORT**: RSI 29.47, MACD -9.07 — best regime detection short.
-- **ZS SHORT**: RSI 28.56, MACD -8.68 — hold short, tighten stop to $142 (options conflict PCR 0.43).
-- **META SHORT**: RSI 22.2 — SQUEEZE WARNING. Morgan Stanley upgrade. Reduce to 1.5%.
-- **BA SHORT**: RSI 29.47, strongest fundamental short (D/E 1,033x). Hold.
-- **Defense (ITA)**: Down 11%. Technically broken. EXCEPTION: NOC — PCR 0.17 most bullish options in universe, max pain $715, Pentagon budget this week. LIMIT ORDERS ONLY on reversal.
+### Credit Paradox
+- HY OAS 2.85% = tightest in years (pricing low default risk)
+- **LAGGING INDICATOR**: Could widen violently to 4.0-5.0% on Iran collapse
 
-### Watchlist — Not Active
-- **GLD/GDX**: RSI 38.2/38.9 — forced liquidation confirmed by options (107x OI put buying). Do NOT short. Watch RSI 35 stabilization for staged entry. Dalio bullish medium-term.
-- **MSTR**: RSI 40.5, SELL 60%. Saylor broke 13-week BTC buying ritual — CONFIRMED AVOID.
-- **ABBV**: RSI 37.2 — wait for technical stabilization. Fundamental BUY when ready.
-- **TLT**: Not safe haven in stagflation. Avoid.
-- **XLF**: RSI 26.95 — hold until bank earnings Apr 14-15.
+---
 
-## Key Upcoming Events (Revised)
-1. **Apr 1 (Wed)**: EIA Petroleum Status Report — job #47
-2. **Apr 3 (Thu)**: CPI MoM + Initial Jobless Claims (200K forecast)
-3. **Apr 5 (Sat)**: Nonfarm Payrolls — first Iran-conflict period reading
-4. **Apr 6, 8:00 PM ET**: IRAN DEADLINE — MOST BINARY EVENT
-   - No deal → Brent $120+, energy adds, VIX spike
-   - Framework → Oil -10-15%, energy STOP-OUTS immediately, MR regime reassessment
-5. **Apr 8 (Wed)**: FOMC March meeting minutes
-6. **Apr 9, 8:30 AM ET**: PCE Feb 2026 (rescheduled) — MR activation GATE
-7. **Apr 10 (Thu)**: CPI March 2026 — HIGHEST DATA IMPACT
-8. **Apr 14**: JPM earnings | **Apr 15**: BAC earnings
-9. **Apr 28**: Pre-FOMC GLD entry signal (job #48 fires)
-10. **Late April**: April FOMC — first live hike meeting
+## Sector Rotation
 
-## Regime Change Triggers
+### Monday April 20 Flows
+- **INTO**: Energy commodities (WTI +7.6%, Brent +5.3%), Gold/miners (GDX $100.34), Refiners (VLO +100% 12-mo), Consumer staples (WMT $3M+ flow), Defensive REITs (AMT)
+- **OUT OF**: Energy equities (XLE distribution despite oil spike = BEARISH DIVERGENCE), Tech at ATH (XLK -$476M QTD), Overbought semis (MRVL RSI 85, ON RSI 83, AMD RSI 77)
 
-### Upgrade to FULL CRISIS (90%+ confidence)
-- Iran strikes resume April 6 with no framework
-- Brent breaks $120 sustained
-- Core PCE >3.0% on April 9
-- April FOMC hike explicitly signaled
-- HY spreads through 400 bps
+### 2026 YTD Pattern
+- Energy: +34.6% YTD (likely higher post-Monday spike)
+- Industrials, Consumer Defensive leading
+- Tech stumbling, small-caps outpacing large-caps
+- Rotation to "real economy" away from AI/tech
 
-### Downgrade to CAUTIOUS NEUTRAL (50%)
-- Iran ceasefire framework announced (energy stop-outs trigger immediately)
-- Core PCE <2.3% on April 9
-- Nasdaq breadth recovers above 50%
-- VIX closes below 25 for 3 sessions
+---
 
-### MR Strategy Activation (partial)
-- Core PCE <2.5% AND VIX <25 simultaneously on April 9
-- Both conditions must be met — one is insufficient
+## Top 3 Risks
 
-### Shift to RISK-ON (requires multiple simultaneous)
-- Hormuz fully reopens + insurance normalizes
-- Fed signals June cut back on table
-- VIX closes below 20 for 3 consecutive sessions
+1. **Iran Ceasefire Collapse (45-55% probability)**
+   - Timeline: Wednesday evening deadline
+   - Impact: WTI $100-115, VIX 28-35, SPY -3-7%
+   - Evidence: Trump "highly unlikely" extension
 
-## Active Position Monitoring
+2. **Market Mispricing / Complacency**
+   - Indices at ATH (RSI >73) despite escalation
+   - Credit spreads 2.85% (risk-on) vs geopolitical chaos (risk-off)
+   - VIX 17.5 = no fear
+   - **When reality hits, repricing will be VIOLENT**
 
-| Symbol | Side | Entry Zone | Stop | Target | Status |
-|--------|------|-----------|------|--------|--------|
-| T | LONG | $28.79 | $27.99 | $31.67 | Active — at max pain $29 |
-| MRK | LONG | ~$118 | $116 | $125 | Active — enlicitide catalyst |
-| DBA | LONG | ~$26.50 | $25.50 | $29 | Active — aging RSI 72 |
-| META | SHORT | ~$530s | $545 | $490 | REDUCE to 1.5%, squeeze risk |
-| BA | SHORT | ~$195 | $200 | $175 | Active — strongest fundamental short |
-| QQQ | SHORT | ~$570 | $580 | $540 | Active — best regime short |
-| ZS | SHORT | ~$140 | $142 | $120 | Active — TIGHTEN STOP, PCR conflict |
+3. **Earnings into Volatility + FOMC**
+   - HAL earnings Mon Apr 21 (pre-open)
+   - ISRG earnings Mon Apr 21 (after close)
+   - FOMC Apr 29 + AMD/GOOGL earnings same day
+   - GDP/PCE/ECI Apr 30
+   - Binary events in overbought market with no cushion
 
-## Scan Notes
-- ML predictions: no data returned (model not trained on current regime)
-- Sentiment backend: sparse data for most symbols
-- market_scan API: only returns last symbol in batch — individual calls required
-- Intelligence scan: confirmed META MS upgrade, MRK drug catalyst, MSTR bearish, NOC budget catalyst
+---
 
-## Macro Scorecard (March 30 EOD)
-Score: 15 BEARISH, 1 NEUTRAL, 0 BULLISH
-No change from morning scan directionally.
-New data point: Energy declining late session = exhaustion signal (bearish for sustained energy run, confirms reduction urgency)
+## Top 3 Opportunities
+
+1. **GDX Long (HIGHEST CONVICTION - INCREASED)**
+   - Entry: $99-101 | Stop: $93.50 | Target: $110+
+   - Works in BOTH scenarios: collapse = gold surge, extension = gold holds on DXY weakness
+   - Options: $683K block $107c, PCR 0.32, 100% MTF bullish
+   - Weight: Regime Detection 60%
+
+2. **VLO/PSX/MPC Refiners (NEW ENTRY)**
+   - Refiner margins exploding on oil spike
+   - VLO +100% 12-mo, PSX +31-40% YTD
+   - Crack spreads expanding (commodity spike, lagged product pricing)
+   - Massively outperforming XLE
+   - Weight: Regime Detection 15%
+
+3. **AMT Hold (Paper +2.23%)**
+   - Price: $182.36 | Stop: $173.38 | Target: $196-205
+   - Defensive REIT, insulated from macro
+   - PCR 0.19 (lowest in watchlist), Mizuho PT $205
+   - Weight: Regime Detection 15%
+
+---
+
+## Strategy Weights (Risk-Off/Stagflation Regime)
+
+- **Regime Detection: 60%** (increased from 55%)
+  - GDX long (highest conviction)
+  - VLO/PSX/MPC refiners (new)
+  - AMT hold
+
+- **Kalman: 20%** (decreased from 25%)
+  - Zero entries until confluence >70 AND Iran clarity
+
+- **Consecutive Days: 10%**
+  - WMT monitoring (needs 100% MTF)
+
+- **ADXR/VolImb: 10%**
+  - Deferred until post-Wednesday
+
+- **Mean Reversion: 0% GATED** (PCE 3.58%, threshold 2.5%)
+
+- **Trend: 0%** (inappropriate for regime)
+
+- **CASH TARGET: 75-85%** (increased from 70-80%)
+  - Current: 96.7% cash
+  - Only add on confirmed setups with 100% MTF
+
+---
+
+## Key Events Calendar (Next 10 Days)
+
+- **Apr 21 (Mon)**: HAL earnings pre-open, ISRG earnings, Retail Sales
+- **Apr 22-24**: Google Cloud Next (NOT earnings)
+- **Apr 23 (Wed)**: **IRAN CEASEFIRE EXPIRES EVENING**, GILD + NEE earnings
+- **Apr 29 (Tue)**: FOMC decision + AMD + GOOGL Q1 earnings (after close)
+- **Apr 30 (Wed)**: GDP + PCE + ECI data
+- **May 12**: Next CPI release (April data)
+
+---
+
+## Regime Summary
+
+**80% confidence Risk-Off Escalation / Stagflation Core** because:
+- Iran collapse probability 45-55% (highest since ceasefire began)
+- Oil spiked 5-7% Monday
+- Inflation 3.58% and rising (energy-driven)
+- Fed hawkish, no cuts priced
+- **Credit spreads disconnected from reality** (2.85% = complacent)
+- **Indices overbought with VIX only 17.5** (no fear)
+
+**Primary Risk**: Market mispricing Wednesday's Iran deadline. Current positioning assumes extension/deal, but Trump said "highly unlikely."
+
+**If ceasefire collapses Wednesday**:
+- WTI $100-115, gold $5,000+, VIX 28-35
+- SPY -3-7% (correction from ATH)
+- Credit spreads widen to 4.0-5.0%
+- Flight to safety: GDX, refiners, AMT outperform
+
+**Positioning**: 75-85% cash, GDX long on pullback, VLO/PSX/MPC refiners, AMT hold, avoid binary events. NOT a dip-buying environment until Iran resolves and/or indices correct to RSI <60.
+
+---
+
+Last updated: 2026-04-20 17:00 ET

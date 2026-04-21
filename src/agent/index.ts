@@ -284,6 +284,13 @@ export class AgentService {
     let outputTokens = 0;
     let cacheReadTokens = 0;
     let contextWindow = 0;
+    /**
+     * Snapshot of the LAST streamed assistant message's prompt size
+     * (input + cache_read + cache_creation). Unlike cumulative `inputTokens`,
+     * this reflects the actual current context on the final API call — the
+     * right number to compare against `contextWindow` for a "% of limit" display.
+     */
+    let promptTokens = 0;
     let numTurns = 0;
     let stopReason: StopReason = "unknown";
     const toolCache = new Map<string, { name: string; input?: Record<string, unknown>; emitted: boolean }>();
@@ -360,6 +367,16 @@ export class AgentService {
 
           case "assistant": {
             firstAssistantMessageReceived = true;
+            // Capture this turn's true prompt size. Overwriting on each
+            // assistant message means we end with the LAST turn's snapshot,
+            // which is the current conversation size.
+            const turnUsage = message.message.usage;
+            if (turnUsage) {
+              promptTokens =
+                (turnUsage.input_tokens ?? 0) +
+                (turnUsage.cache_read_input_tokens ?? 0) +
+                (turnUsage.cache_creation_input_tokens ?? 0);
+            }
             const content = message.message.content;
             let hasToolUse = false;
             if (Array.isArray(content)) {
@@ -499,6 +516,7 @@ export class AgentService {
         outputTokens,
         cacheReadTokens,
         contextWindow,
+        promptTokens,
         numTurns,
         stopReason,
       };
@@ -541,6 +559,7 @@ export class AgentService {
           outputTokens,
           cacheReadTokens,
           contextWindow,
+          promptTokens,
           numTurns,
           stopReason,
         };

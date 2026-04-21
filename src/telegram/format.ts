@@ -26,13 +26,33 @@ function convertTablesToCodeBlocks(text: string): string {
 }
 
 /**
+ * Convert inline HTML tags (from agent output) to standard Markdown equivalents.
+ * Agents sometimes output HTML formatting instead of Markdown; this ensures
+ * it gets properly rendered when sent through the MarkdownV2 pipeline.
+ */
+function convertHtmlToMarkdown(text: string): string {
+  return text
+    .replace(/<b>(.*?)<\/b>/gs, "**$1**")
+    .replace(/<strong>(.*?)<\/strong>/gs, "**$1**")
+    .replace(/<i>(.*?)<\/i>/gs, "*$1*")
+    .replace(/<em>(.*?)<\/em>/gs, "*$1*")
+    .replace(/<code>(.*?)<\/code>/gs, "`$1`")
+    .replace(/<pre>(.*?)<\/pre>/gs, "```\n$1\n```")
+    .replace(/<a\s+href="([^"]*)"[^>]*>(.*?)<\/a>/gs, "[$2]($1)")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?p>/gi, "\n");
+}
+
+/**
  * Convert standard Markdown (from Claude agent output) to Telegram MarkdownV2.
  * Preserves formatting: bold, italic, code blocks, lists, links, headers.
  * Converts tables to monospace code blocks (Telegram has no native table support).
+ * Pre-processes HTML tags to Markdown equivalents before conversion.
  * Use for agent responses that contain intentional Markdown formatting.
  */
 export function markdownToTelegramV2(text: string): string {
-  const withCodeTables = convertTablesToCodeBlocks(text);
+  const withMarkdown = convertHtmlToMarkdown(text);
+  const withCodeTables = convertTablesToCodeBlocks(withMarkdown);
   return telegramifyMarkdown(withCodeTables, "escape");
 }
 
@@ -82,7 +102,21 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
-export function formatRunMeta(result: { sessionId: string; costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; numTurns: number; stopReason?: string }, verbose: boolean): string {
+/**
+ * Format "current prompt tokens / context window (N%)" for display.
+ * Returns empty string if we don't have both numbers.
+ *
+ * `promptTokens` is the LAST-turn prompt size (see AgentRunResult.promptTokens) —
+ * the true current context state. Do NOT use cumulative `inputTokens + cacheReadTokens`
+ * here: on multi-turn runs it over-counts and can exceed 100%.
+ */
+export function formatContextUsage(promptTokens: number, contextWindow: number): string {
+  if (!promptTokens || !contextWindow) return "";
+  const pct = Math.round((100 * promptTokens) / contextWindow);
+  return `${formatTokenCount(promptTokens)}/${formatTokenCount(contextWindow)} ctx (${pct}%)`;
+}
+
+export function formatRunMeta(result: { sessionId: string; costUsd: number; durationMs: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; contextWindow: number; promptTokens?: number; numTurns: number; stopReason?: string }, verbose: boolean): string {
   const base = `${formatCost(result.costUsd)} / ${formatDuration(result.durationMs)}`;
   const shortSession = result.sessionId.slice(0, 8);
 
@@ -97,9 +131,12 @@ export function formatRunMeta(result: { sessionId: string; costUsd: number; dura
     ? ` [${stopLabels[result.stopReason]}]`
     : "";
 
-  if (!verbose) return `${base} | ${shortSession}${stopTag}`;
+  const ctx = formatContextUsage(result.promptTokens ?? 0, result.contextWindow);
+  const ctxPart = ctx ? ` | ${ctx}` : "";
+
+  if (!verbose) return `${base}${ctxPart} | ${shortSession}${stopTag}`;
   const totalIn = result.inputTokens + result.cacheReadTokens;
-  return `${base} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns | ${shortSession}${stopTag}`;
+  return `${base}${ctxPart} | ${formatTokenCount(totalIn)} in / ${formatTokenCount(result.outputTokens)} out | ${result.numTurns} turns | ${shortSession}${stopTag}`;
 }
 
 export function formatToolLine(toolName: string, input?: Record<string, unknown>, subagent?: boolean): string {

@@ -127,6 +127,25 @@ export function tmaJobsPage(jobs: Job[]): string {
     `<button class="tma-filter-btn" data-filter-model="${f}" onclick="filterByModel('${f}')">${f}</button>`
   ).join("");
 
+  const typeFilters: Array<{ label: string; value: string }> = [
+    { label: "All", value: "All" },
+    { label: "Recurring", value: "cron" },
+    { label: "One-off", value: "once" },
+  ];
+  const typeFilterHtml = typeFilters.map((f) =>
+    `<button class="tma-filter-btn" data-filter-type="${f.value}" onclick="filterByType('${f.value}')">${f.label}</button>`
+  ).join("");
+
+  const sortOptions: Array<{ label: string; value: string }> = [
+    { label: "Default", value: "default" },
+    { label: "Name", value: "name" },
+    { label: "Last run", value: "lastrun" },
+    { label: "Next run", value: "nextrun" },
+  ];
+  const sortHtml = sortOptions.map((s) =>
+    `<button class="tma-filter-btn" data-sort="${s.value}" onclick="sortJobs('${s.value}')">${s.label}</button>`
+  ).join("");
+
   const groupedHtml = groups.map(([group, items]) =>
     `<div class="tma-group" data-group="${escapeHtml(group)}">
       <div class="tma-group-header">${escapeHtml(group)} <span class="tma-hint">(${items.length})</span></div>
@@ -148,12 +167,20 @@ export function tmaJobsPage(jobs: Job[]): string {
           oninput="searchJobs(this.value)" style="font-size:13px; padding:8px 12px;">
       </div>
       <div style="padding:4px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
+        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Type:</span>
+        ${typeFilterHtml}
+      </div>
+      <div style="padding:2px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
         <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Topic:</span>
         ${topicFilters}
       </div>
-      <div style="padding:2px 16px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
+      <div style="padding:2px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
         <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Model:</span>
         ${modelFilters}
+      </div>
+      <div style="padding:2px 16px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
+        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Sort:</span>
+        ${sortHtml}
       </div>
       <div id="job-list">
         ${groupedHtml}
@@ -163,15 +190,19 @@ export function tmaJobsPage(jobs: Job[]): string {
     <script>
     var activeTopic = 'All';
     var activeModel = 'All';
+    var activeType = 'All';
+    var activeSort = 'default';
     var searchQuery = '';
 
     function applyFilters() {
       document.querySelectorAll('.tma-card[data-name]').forEach(function(card) {
         var name = card.getAttribute('data-name') || '';
         var model = card.getAttribute('data-model') || '';
+        var type = card.getAttribute('data-type') || '';
         var matchSearch = !searchQuery || name.includes(searchQuery);
         var matchModel = activeModel === 'All' || model === activeModel;
-        card.style.display = (matchSearch && matchModel) ? '' : 'none';
+        var matchType = activeType === 'All' || type === activeType;
+        card.style.display = (matchSearch && matchModel && matchType) ? '' : 'none';
       });
       document.querySelectorAll('.tma-group').forEach(function(g) {
         var matchTopic = activeTopic === 'All' || g.getAttribute('data-group') === activeTopic;
@@ -198,9 +229,47 @@ export function tmaJobsPage(jobs: Job[]): string {
       });
       applyFilters();
     }
-    // Activate "All" on load
+    function filterByType(f) {
+      activeType = f;
+      document.querySelectorAll('[data-filter-type]').forEach(function(b) {
+        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter-type') === f);
+      });
+      applyFilters();
+    }
+    function sortJobs(mode) {
+      activeSort = mode;
+      document.querySelectorAll('[data-sort]').forEach(function(b) {
+        b.classList.toggle('tma-filter-active', b.getAttribute('data-sort') === mode);
+      });
+      document.querySelectorAll('.tma-group').forEach(function(group) {
+        var cards = Array.from(group.querySelectorAll('.tma-card[data-name]'));
+        if (cards.length < 2) return;
+        cards.sort(function(a, b) {
+          if (mode === 'name') {
+            return (a.getAttribute('data-name') || '').localeCompare(b.getAttribute('data-name') || '');
+          }
+          if (mode === 'lastrun') {
+            var la = parseInt(a.getAttribute('data-lastrun') || '0', 10);
+            var lb = parseInt(b.getAttribute('data-lastrun') || '0', 10);
+            return lb - la;
+          }
+          if (mode === 'nextrun') {
+            var na = parseInt(a.getAttribute('data-nextrun') || '0', 10) || Infinity;
+            var nb = parseInt(b.getAttribute('data-nextrun') || '0', 10) || Infinity;
+            return na - nb;
+          }
+          var oa = parseInt(a.getAttribute('data-order') || '0', 10);
+          var ob = parseInt(b.getAttribute('data-order') || '0', 10);
+          return oa - ob;
+        });
+        cards.forEach(function(c) { group.appendChild(c); });
+      });
+    }
+    // Activate "All" / "default" on load
     document.querySelector('[data-filter-topic="All"]')?.classList.add('tma-filter-active');
     document.querySelector('[data-filter-model="All"]')?.classList.add('tma-filter-active');
+    document.querySelector('[data-filter-type="All"]')?.classList.add('tma-filter-active');
+    document.querySelector('[data-sort="default"]')?.classList.add('tma-filter-active');
     </script>
   `);
 }
@@ -229,8 +298,13 @@ export function tmaJobCardFragment(job: Job): string {
   const backend = backendLabel(job);
   const sched = scheduleLabel(job);
   const dest = topicLabel(job);
+  const isRecurring = job.type === "cron";
+  const typePill = isRecurring
+    ? `<span class="tma-pill" style="background:#4f46e520; color:#818cf8;">Recurring</span>`
+    : `<span class="tma-pill" style="background:#f59e0b20; color:#f59e0b;">One-off</span>`;
 
   const pills = [
+    typePill,
     `<span class="tma-pill">${escapeHtml(sched)}</span>`,
     `<span class="tma-pill">${escapeHtml(model)}</span>`,
     backend !== "Claude" ? `<span class="tma-pill">${escapeHtml(backend)}</span>` : "",
@@ -241,7 +315,10 @@ export function tmaJobCardFragment(job: Job): string {
 
   const lastRun = job.last_run_at ? relativeTime(job.last_run_at) : "never";
 
-  return `<div class="tma-card" id="job-${job.id}" data-name="${escapeHtml(job.name.toLowerCase())}" data-dest="${escapeHtml(dest)}" data-model="${escapeHtml(model)}">
+  const lastRunTs = job.last_run_at ? new Date(job.last_run_at.endsWith("Z") ? job.last_run_at : job.last_run_at + "Z").getTime() : 0;
+  const nextRunTs = job.next_run_at ? new Date(job.next_run_at.endsWith("Z") ? job.next_run_at : job.next_run_at + "Z").getTime() : 0;
+
+  return `<div class="tma-card" id="job-${job.id}" data-name="${escapeHtml(job.name.toLowerCase())}" data-dest="${escapeHtml(dest)}" data-model="${escapeHtml(model)}" data-type="${job.type}" data-order="${job.id}" data-lastrun="${lastRunTs}" data-nextrun="${nextRunTs}">
     <div style="display:flex; justify-content:space-between; align-items:start; gap:8px; cursor:pointer;"
          hx-get="/tma/api/jobs/${job.id}/detail" hx-target="#job-${job.id}" hx-swap="outerHTML">
       <div style="min-width:0; flex:1;">

@@ -394,9 +394,18 @@ export function createCallbackHandler(deps: CallbackDeps) {
         }
 
         case "bp": {
-          // Bill PAID
+          // Bill PAID — also sync source system (Apple Reminders) when source_id is known.
           const id = parseInt(payload, 10);
+          const reminder = getReminder(id);
           completeReminder(id);
+          if (reminder?.source_id?.startsWith("apple-rem:")) {
+            const appleId = reminder.source_id.slice("apple-rem:".length);
+            Bun.spawn(["remindctl", "complete", appleId], {
+              stdout: "ignore",
+              stderr: "ignore",
+              stdin: "ignore",
+            });
+          }
           await ctx.answerCallbackQuery({ text: "Marked as PAID" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;

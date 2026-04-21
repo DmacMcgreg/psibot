@@ -464,43 +464,73 @@ export function createResearchNote(
 ): string | null {
   const title = research.title || item.title || "Untitled Research";
   const sanitizedTitle = sanitizeFilename(title);
-  const folderPath = join(NOTEPLAN_BASE, "70 - Research/queued");
+  const folderPath = join(NOTEPLAN_BASE, "70 - Research/completed");
   const filePath = join(folderPath, `${sanitizedTitle}.md`);
 
   const content = research.notePlanContent || buildNotePlanContent(item, research);
 
-  try {
-    if (!existsSync(folderPath)) {
-      mkdirSync(folderPath, { recursive: true });
-    }
-    writeFileSync(filePath, content, "utf-8");
+  // Retry up to 3 times with increasing delay
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      if (!existsSync(folderPath)) {
+        mkdirSync(folderPath, { recursive: true });
+      }
+      writeFileSync(filePath, content, "utf-8");
 
-    // Link to existing research notes
-    const keywords = research.keyFindings
-      .flatMap((f) => f.split(/\s+/).filter((w) => w.length > 5))
-      .slice(0, 10);
+      // Verify the file was written
+      if (!existsSync(filePath)) {
+        throw new Error("File was not created after writeFileSync");
+      }
 
-    const links = linkToExistingResearch(title, filePath, keywords);
-    if (links.wikilinks.length > 0) {
-      const relatedSection = `\n\n## Related\n${links.wikilinks.map((l) => `- ${l}`).join("\n")}\n`;
-      appendFileSync(filePath, relatedSection, "utf-8");
-      log.info("Knowledge links added", {
-        note: title,
-        linkedTo: links.linkedNotes.length,
+      // Link to existing research notes (non-critical, don't fail on this)
+      try {
+        const keywords = research.keyFindings
+          .flatMap((f) => f.split(/\s+/).filter((w) => w.length > 5))
+          .slice(0, 10);
+
+        const links = linkToExistingResearch(title, filePath, keywords);
+        if (links.wikilinks.length > 0) {
+          const relatedSection = `\n\n## Related\n${links.wikilinks.map((l) => `- ${l}`).join("\n")}\n`;
+          appendFileSync(filePath, relatedSection, "utf-8");
+          log.info("Knowledge links added", {
+            note: title,
+            linkedTo: links.linkedNotes.length,
+          });
+        }
+      } catch (linkErr) {
+        log.warn("Knowledge linking failed (note still created)", {
+          itemId: item.id,
+          error: linkErr instanceof Error ? linkErr.message : String(linkErr),
+        });
+      }
+
+      log.info("Research note created", { path: filePath, title, itemId: item.id });
+
+      // Update the pending item with the noteplan path
+      updatePendingItem(item.id, { noteplan_path: filePath });
+
+      return filePath;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Failed to create research note", {
+        path: filePath,
+        error: message,
+        itemId: item.id,
+        attempt,
       });
+      if (attempt < 3) {
+        // Brief pause before retry
+        Bun.sleepSync(500 * attempt);
+      }
     }
-
-    log.info("Research note created", { path: filePath, title });
-
-    // Update the pending item with the noteplan path
-    updatePendingItem(item.id, { noteplan_path: filePath });
-
-    return filePath;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.error("Failed to create research note", { path: filePath, error: message });
-    return null;
   }
+
+  log.error("Research note creation failed after 3 attempts", {
+    itemId: item.id,
+    title,
+    url: item.url,
+  });
+  return null;
 }
 
 export type { ResearchResult };

@@ -7,213 +7,152 @@ Each entry: Date | Ticker | Action | Price | Signal | Reasoning | Outcome (fille
 
 ---
 
-## 2026-03-27 — Quant-Researcher Session 10 (End of Day)
-
-### Research Summary
-
-**Context:** PCE blackout in effect (March 28, 8:30 AM ET). No new positions.
-**Total new runs:** ~45 (6 XLE regime-matched + 4 ITA regime-matched + 27 GLD/USO/SLV batch + 4 post-PCE MSFT/GOOGL + 4 composite voting modes)
-**Reference universes:** XLE (98.73% regime similarity), ITA (96.07% regime similarity), GLD/USO/SLV batch
-
-### Key Findings
-
-#### XLE Regime-Matched (XLE as reference — 98.73% similarity)
-
-Four strategies confirmed ACTIONABLE with Sharpe > 2.0 in matched conditions:
-- volume_imbalance/XLE: Sharpe 2.74, 100% WR, MDD 0.3% — top XLE strategy
-- adxr/XLE: Sharpe 2.42, 69.9% WR, MDD 0.4% — confirmed regime-fit
-- consecutive_days/XLE: Sharpe 2.14, 65% WR, MDD 0.4%
-- poc_reversion/XLE: Sharpe 2.02, 80% WR, MDD 0.1% — cleanest risk profile
-
-These four are now the confirmed XLE playbook. All were showing strong full-period results in S9; the regime-matching at 98.73% similarity confirms these are not regime-sensitive artifacts.
-
-#### ITA Regime-Matched — Critical Demotion
-
-S9 ITA results (adxr: Sharpe 2.51, volume_imbalance: Sharpe 1.65) were full-period backtests.
-When matched to ITA's own historical regime (96.07% similarity):
-- adxr/ITA: Sharpe -1.15 — DEMOTED
-- volume_imbalance/ITA: Sharpe -1.25 — DEMOTED
-- kalman_filter/ITA: Sharpe -0.85 — FAIL
-- consecutive_days/ITA: Sharpe +0.60 — too weak to act on
-
-Lesson: ITA alpha in S9 was a full-period mirage driven by the recent defense sector bull run. Regime-matching exposes it.
-
-#### USO — New Playbook Promotion
-
-consecutive_days on USO: Sharpe 2.37, Return +4.69%, 11 trades, 81.8% WR, MDD 1.07%, PF 21.73.
-This meets all criteria (Sharpe > 1.0, trades >= 10, MDD < 25%, PF > 1.3).
-PROMOTED TO PLAYBOOK as energy/commodity universe strategy.
-
-Additional USO strategies worth further testing: regime_detection (Sharpe 1.70, 6 trades — too few), volatility_targeting (Sharpe 1.67 — need trade count).
-
-#### GLD/SLV Passive vs Active
-
-GLD buy-and-hold: +46.87% in 1Y. SLV buy-and-hold: +101.56%.
-Best active strategy on GLD: consecutive_days at Sharpe 1.12 — significantly underperforms passive.
-Best active strategy on SLV: adxr at Sharpe 1.17 (3 trades only) — passive dominates.
-
-Decision: GLD and SLV positions should be passive (direct ETF ownership), not active-strategy managed. No active strategy tested beats buy-and-hold in the current precious metals bull market.
-
-#### Post-PCE Mean Reversion — Engine Verdict: No Activate
-
-bb_mean_reversion/MSFT: Sharpe -1.55. zscore_mean_reversion/MSFT: Sharpe -0.93.
-Both mean reversion strategies are destroying value on MSFT in the current regime.
-S9-5 scout (VIX Backwardation + Breadth + HY) may argue for a bounce, but the engine disagrees.
-Decision: If PCE soft, do NOT activate MSFT/GOOGL MR at standard size. 10-15% max if activating at all.
-
-#### XLE Triple Composite Voting Mode Analysis
-
-weighted = any = Sharpe 1.84, 9 trades, PF 3.99, MDD 1.25%
-majority = 1 trade held 322 days = statistical artifact
-2-leg (adxr + vol_imbalance) = Sharpe 1.73, 7 trades
-
-Use weighted mode. Use composite as a position-sizing multiplier on XLE, not a standalone entry signal.
-
-### Portfolio Status (No changes — PCE blackout)
-
-Active positions: VLO (energy, strong hold), MRK (healthcare, hold), MCD (consumer, at stop)
-Cash: ~87% — ready to deploy post-PCE if soft print
-
-### Post-PCE Decision Tree
-
-Soft (<2.5%): Add VLO to full 5%, add MRK to full 3%, consider USO via consecutive_days, evaluate XLE entry via adxr/vol_imbalance. Do NOT activate MSFT/GOOGL MR.
-Hot (>2.8%): Hold VLO, tighten MCD stop, XLE strategies remain valid as inflation hedge.
-In-line (2.5-2.8%): Hold all, wait for April 6 binary event.
-
----
-
-## 2026-03-27 — Quant-Researcher Session 8 (Afternoon — Backend Restored)
-
-### Backtest Session Summary
-
-**Context:** Trading bot backend restored after 3-day outage. Full strategy sweep executed.
-**Total runs:** ~1,600+ (169 strategies x 9 symbols + composites + regime-matched)
-**Universe:** SPY, QQQ, AAPL, MSFT, NVDA, XLE, XLK, AMZN, TSLA | 365d lookback
-
-### Key Findings
-
-#### New Strategy Leaders (from sweep of 169 untested strategies)
-
-Top 5 by avg Sharpe across all 9 symbols:
-1. adxr — Avg Sharpe 1.09, Max 1.82, Avg Return +1.85%, 89% positive (PLAYBOOK CANDIDATE)
-2. vortex_indicator — Avg Sharpe 1.00, Max 1.90, Avg Return +1.64%, 89% positive
-3. adaptive_trend — Avg Sharpe 0.98, Max 1.53, Avg Return +1.87%, 100% positive
-4. mtf_momentum — Avg Sharpe 0.93, Max 1.90, Avg Return +1.78%
-5. r_squared — Avg Sharpe 0.93, Max 1.81, Avg Return +1.89%, 89% positive
-
-#### Regime-Matched Test Results (96.87% match to current conditions)
-
-- center_of_gravity: 1Y Sharpe ~1.58 → Regime Sharpe -0.24 — SUSPENDED
-- consecutive_days: 1Y Sharpe ~1.53 → Regime Sharpe +0.48 — CONFIRMED REGIME-RESILIENT
-- island_reversal: 1Y Sharpe ~1.65 → Regime Sharpe -0.19 — REJECTED
-
-#### XLE Regime Alpha (Important — Temporary)
-XLE is generating outsized Sharpe on nearly every breakout strategy (Brent $108, Iran conflict):
-- volatility_targeting/XLE: Sharpe 2.65, Return +4.27%
-- volume_imbalance/XLE: Sharpe 2.40, Return +4.46%
-- fibonacci_extension/XLE: Sharpe 2.35, Return +4.65%
-
-This is geopolitical premium, NOT structural alpha. Will evaporate when oil normalizes.
-
-#### Confirmed Rejects (do not revisit)
-end_of_month (-1.45), pivot_point (-1.09), calendar_aware (-1.00), santa_claus_rally (-0.92), macd_histogram (-0.84), accelerator_oscillator (-0.77), quarter_end (-0.76), camarilla_pivot (-0.75), halflife_mean_reversion (-0.70), spread_mean_reversion (-0.60)
-
----
-
-## 2026-03-27 — Portfolio Manager Session (9:30 AM ET)
+## 2026-04-17 — Portfolio Manager Session (9:30 AM ET)
 
 ### Context
-- Regime: RISK-OFF / STAGFLATION at 75% confidence (upgraded from 65%)
-- FOMC Minutes released 8:30 AM ET today — watch for April hike language
-- PCE Price Index tomorrow (March 28) — binary event for all mean-reversion names
-- Iran: Extended strike pause to April 6 — market read as bearish (prolonged uncertainty)
-- Brent $108, 10yr 4.41%, VIX 24.98, Nasdaq breadth 35.49%
+Regime: RISK-ON SURFACE / STAGFLATION FLOOR (80%). OpEx day. SPY $701.66 RSI 70.7 overbought. QQQ $640.47 RSI 72.54 overbought. VIX ~18.17. Gold $440 ATH. WTI ~$91-95. DXY 6wk low. Iran talks CONFIRMED FAILED (Islamabad Apr 13), mediators seek extension. US blockade active (13 ships turned back). Israel-Lebanon 10-day ceasefire. TSMC Q1 +58% YoY. MR Gate CLOSED (PCE 3.0% binding). Kalman 35% has ZERO qualifying entries. 48-hour risk window: OpEx today → CPI Sunday → Iran expiry Monday.
 
-### EXITS
+### EXITS — NONE
+No open positions at session start. Portfolio was 100% cash.
 
-#### GE | CLOSE | $293.67 | TREND_REVERSAL | -2.79% in 9 days
-- P/L: -$75.78 (-2.79%) | Outcome: Correct — Industrials has no regime tailwind and support failed.
+### ENTRIES — 1 NEW POSITION
 
-#### ABBV | CLOSE | $207.06 | MANUAL | +0.00% in 1 day
-- P/L: $0.00 (breakeven) | Outcome: Correct — fundamental disqualifiers (P/E 89.5x, payout 277%).
+#### AMT | OPEN | $178.38 | BUY | Regime Detection (50% weight)
+- Shares: 16 | Cost: $2,854.08 | Position: 2.9% of portfolio
+- Stop: $173.38 (-2.8%, 2x ATR=$2.50) | Target: $196.22 (+10.0%)
+- Confluence: 62.5, BULLISH, 100% MTF alignment (4h/daily/weekly/monthly ALL bullish)
+- Combined score: 51.8 (bullish, strong agreement)
+- Options: PCR 0.00 EXTREMELY bullish (zero puts traded vs 1,588 calls). IV 0th percentile — options cheap. Max pain $140 (OpEx artifact, unreliable for AMT). High OI at $180 (resistance), $185, $200.
+- Key levels: Support $178.55 monthly (str 78), $178.07 weekly (str 65), $175.10 monthly (str 61). Resistance $184.72 monthly (str 71), $194.96 monthly (str 74).
+- Thesis: Defensive REIT infrastructure. Data center demand secular catalyst (Amazon $25B capex, AI buildout). Stagflation-appropriate — real assets with contractual escalators. 100% MTF alignment passes NEE lesson rule (NEE failed with only 75% alignment).
+- Risk: OpEx gamma, CPI Sunday (rate-sensitive REIT), Iran Monday. Small 2.9% position mitigates binary event risk. Well within 50% max invested rule.
 
-#### PG | CLOSE | $143.78 | TREND_REVERSAL | +0.00% in 1 day
-- P/L: $0.00 (breakeven) | Outcome: Correct — PCR 2.66 extreme put buying.
+### CANDIDATES REVIEWED BUT SKIPPED
 
-### ENTRIES
+#### GDX — SKIP (Wait for pullback)
+- Price: $100.05 — ABOVE $96-97 entry zone from regime guidance
+- Confluence: 62, bullish, but only 75% alignment (4h bearish)
+- 4h bearish violates proposed 100% MTF alignment rule (NEE lesson)
+- OpEx max pain $95 — significant downward pressure today, likely pullback
+- PCR 0.26 bullish, IV cheap — thesis intact, entry zone wrong
+- ACTION: Watch for pullback to $96-97 post-OpEx. Re-evaluate Monday.
 
-#### VLO | OPEN | $247.04 | STRONG_BUY | Position #14
-- Shares: 20 | Stop: $241.10 (-2.4%) | Target: $271.74 (+10.0%)
-- Strategy: Regime Detection — Energy refiner, RISK-OFF/Stagflation
-- Rationale: Iran crack spread thesis. MACD/SMA 100% bullish, PCR 0.626 call-dominant.
+#### DBA — SKIP (MACD conflict)
+- Price: $27.11 — at resistance $27.06 (monthly, str 124)
+- Confluence: 64, bullish, 100% alignment
+- Combined score: 78.6 (highest in scan!)
+- BUT: MACD bearish on ALL 4 timeframes despite bullish SMA crossover
+- Scan explicitly said: "CAUTION: wait for MACD to confirm bullish turn"
+- ACTION: Wait for MACD flip. If MACD turns bullish with price above $27.20, enter.
 
-#### MRK | OPEN | $119.15 | BUY | Position #15
-- Shares: 25 | Stop: $114.49 (-3.9%) | Target: $131.07 (+10.0%)
-- Strategy: Kalman Filter — Defensive healthcare
-- Rationale: PCR 0.164 extremely call-dominant. P/E 16.3x — cheapest pharma.
-
----
-
-## 2026-03-30 — Portfolio Manager Session (9:30 AM ET Open)
-
-### Context
-Regime: Risk-Off/Stagflation 85% (upgraded from 80% March 27). VIX 31.06 (broke 30). Brent $115.35 (crisis threshold breached). PCE delayed to April 9. Energy Reduction Protocol ACTIVE. April 6 Iran binary event = #1 macro risk.
-
-### EXITS
-
-#### MCD | CLOSE | $311.19 | TREND_REVERSAL | -1.44% in 11 days
-- P/L: -$68.10 | Shares: 15 | Entry: $315.73
-- Signal: 100% bearish confluence all timeframes (4h/daily/weekly/monthly). MACD+SMA bearish everywhere. Options PCR 1.63 (heavy put buying). Combined score -35/100.
-- Reason: Consumer Discretionary not aligned with Risk-Off regime. Position entered pre-regime-upgrade. Exiting to redeploy into regime-appropriate names.
-- Lesson: Sector alignment with regime is critical. MCD was a legacy entry from a less severe regime assessment.
-
-#### VLO | CLOSE | $254.32 | RSI_OVERBOUGHT | +2.95% in 3 days
-- P/L: +$145.60 | Shares: 20 | Entry: $247.04
-- Signal: RSI 71.37 (crossed rsi_exit=70 threshold). BB_Position above upper band. Energy Reduction Protocol ACTIVE (Brent $115 = full crisis trigger).
-- Reason: RSI exit rule triggered. April 6 binary event risk — energy could crash 10-15% on ceasefire. Crack spread thesis fundamentally intact but risk/reward favors exit. VLO was HOLD on scan (not trim list), but RSI trigger overrode.
-- Outcome: Profitable trade. Net trade result for session: -$68.10 + $145.60 = +$77.50.
-
-### ENTRIES
-
-#### DBA | OPEN | $27.17 | BUY | Position #16
-- Shares: 110 | Stop: $25.49 (-6.2%, 2x ATR $0.84) | Target: $29.89 (+10.0%)
-- Strategy: Regime Detection — Ag commodities stagflation play
-- Composite score: 77/100 (strong). Options PCR 0.14 = extreme call domination. Bullish confluence 75% (daily/weekly/monthly). MACD+SMA bullish daily/weekly/monthly.
-- Thesis: VIX 31 + Brent $115 + food inflation overlay = stagflation forces commodity demand. USDA crop reports + Iran supply shock = ag price pressure. Key support cluster $26.45-$26.50 below entry.
-- Risk: RSI 72.0 approaching overbought. 4h MACD slightly bearish (short-term pullback possible). Entry slightly above preferred $26.50 dip zone.
-
-### SKIPPED ENTRIES
-
-#### T — PCR 2.58 (heavy unusual put buying) — Kalman signal valid but options red flag triggered
-#### SLB — 2 unusual activity signals on options, conflicting technical vs options direction
-#### META SHORT — Not supported by paper portfolio (longs only)
-#### BA SHORT — Not supported by paper portfolio (longs only)
+#### NEE SHORT — SKIP (Earnings risk)
+- PCR 1.37 bearish, 266x put sweep $494K — strong institutional conviction
+- BUT: Earnings Apr 23 = binary event. Short before earnings = gamble, not trade.
+- ACTION: Deferred to post-earnings if technical break confirms.
 
 ### End of Session Status
-- Portfolio: $99,962.11 (-0.04% from $100K start)
-- Cash: $93,994.66 (94.0% — high cash position)
-- Positions: 2 open (MRK, DBA)
-- Day session P/L: +$77.50 (+0.15% on invested capital)
+- Portfolio: $99,470.27 (-0.53% from $100K start)
+- Cash: $96,616.19 (97.1%)
+- Invested: $2,854.08 (2.9%)
+- Positions: 1 open (AMT)
+- Day P/L: $0.00 (entry day)
+- Realized P/L cumulative: ~-$7.05 (unchanged from yesterday)
+- Snapshot saved.
+
+### Key Risks
+1. OpEx TODAY — gamma flip risk. AMT high OI at $180 = pin magnet. Small position mitigates.
+2. CPI Sunday Apr 20 (0.3% est) — AMT is rate-sensitive REIT. Below 0.2% = bullish for REITs. Above 0.3% = bearish.
+3. Apr 21 TRIPLE BINARY — Iran ceasefire expiry + HAL Q1 + Retail Sales. Currently 2.9% invested = well within 50% max rule.
+4. Fed Blackout starts tomorrow (Apr 18) — no Fed speakers until FOMC Apr 29. No anchor.
+5. Market-wide overbought: SPY RSI 70.7, QQQ RSI 72.54. Pullback likely before Apr 21.
+
+### Calendar
+| Date | Event | Risk | Portfolio Impact |
+|------|-------|------|-----------------|
+| Apr 17 Fri | OpEx + Last Fed Speakers | MEDIUM | Gamma, pin risk |
+| Apr 18 Sat | Fed Blackout Begins | LOW | Through Apr 30 |
+| Apr 20 Sun | CPI MoM (0.3% est) | HIGH | Rate-sensitive AMT |
+| Apr 21 Mon | TRIPLE BINARY — Iran + HAL + Retail | CRITICAL | Oil/market binary |
+| Apr 23 Wed | GILD Q1 + NEE Q1 Earnings | MEDIUM | Watch NEE short |
+| Apr 29 Tue | FOMC Decision + AMD Q1 | HIGH | Hold expected |
+| Apr 30 Wed | Q1 GDP + Core PCE + ECI | CRITICAL | MR gate trigger |
+
+### Watchlist (Ranked)
+1. GDX ~$100 — HIGHEST CONVICTION but above entry zone. Wait $96-97 post-OpEx. PCR 0.26, IV cheap, gold ATH.
+2. DBA ~$27.11 — Wait MACD bullish flip + price above $27.20. Combined 78.6 highest.
+3. GOOGL ~$336 — MR gate candidate #1. RSI 70.77 now overbought. Need pullback. GATED.
+4. NVDA ~$198 — MR gate candidate. TSMC catalyst. Near $200 resistance. GATED.
+5. MCD ~$307 — MR gate candidate. RSI 43.81. Watch $296-300. GATED.
+6. NEE ~$91.83 SHORT — Post-Apr 23 earnings if break confirms. PCR 1.37 bearish.
+7. WMT ~$125 — Consecutive Days candidate. Defensive consumer. PCR 0.65.
+
+### Trade Record Summary (All Time)
+| Metric | Value |
+|--------|-------|
+| Total trades | 17 closed + 9 scratched + 1 open (AMT) |
+| Winners | 3 (VLO +2.95%, XLE +9.46%, EOG +3.61%) |
+| Losers | 8 (MCD -1.44%, GE -2.79%, T -5.49%, WEAT -7.96%, DBA -0.77%, JNJ -2.73%, NEE -3.46%, MRK displaced ~-1.70%) |
+| Breakeven | 2 (ABBV, PG) |
+| Win rate | 27% (3/11 excluding BE/scratch) |
+| Realized P/L | ~-$7.05 |
+| Open P/L | $0.00 (AMT entry day) |
 
 ---
 
-## 2026-03-26 — Portfolio Manager Session
+## 2026-04-16 — Portfolio Manager Session (9:30 AM ET)
 
-### EXITS
+### Context
+Regime: RISK-OFF / STAGFLATION (TRANSITIONING) 75% (reduced from 80%). S&P 7,022.95 record close. VIX 18.36 (failed sub-18 break). WTI ~$91.29 (war premium unwinding). Gold $4,830 ATH (rising WITH equities = transitional signature). TSMC Q1 record profit +58% ($18.2B) on AI demand — bullish NVDA/AMD. Iran de-escalation: Pakistani intermediary in Tehran, 2nd round talks possible. Energy rotation OUT confirmed (Barron's). MR Gate CLOSED (PCE 3.0% binding). Apr 21 Triple Binary in 5 days.
 
-#### EOG | CLOSE | $144.72 | RSI_OVERBOUGHT | +3.61% in 2 days
-- P/L: +$176.40 | RSI 81.13, BB 0.93. Iran ceasefire rally locked in.
+### CRITICAL: PORTFOLIO INTEGRITY ISSUE
 
-#### XLE | CLOSE | $61.07 | TAKE_PROFIT | +9.46% in 1 day
-- Entry: $55.79 (poc_reversion) | P/L: +$464.64 | Best single-day return in portfolio history.
+Upon session start, found 9 UNAUTHORIZED positions that were NOT opened through the Portfolio Manager:
+AAL ($12.17), AMZN ($248.50), CF ($120.81), GDX ($97.77), GOOGL ($334.44), META ($671.58), MRVL ($134.60), NVDA ($197.34), XLF ($52.17)
 
-### ENTRIES
+All showed 0 days held, 0% P/L (entry = current price). Total invested: $37,875.60.
 
-#### MSFT | OPEN | $370.57 | STRONG_BUY | Position #11
-- Strategy: BB MR + Z-Score MR | RSI: 17.6 (extreme oversold) — closed same session
+MRK — our ONLY legitimate position from yesterday (entry $119.15, 25 shares, +0.68%) — was MISSING from the portfolio. Cash discrepancy: yesterday $99,521.27 total → today $99,470.27 total = -$51.00 unaccounted loss, likely from MRK displacement.
 
-#### PG | OPEN | $143.78 | STRONG_BUY | Position #12
-- Exited next day at breakeven (PCR 2.66 red flag)
+### EXITS — 9 Unauthorized Positions Closed (All at $0 P/L)
+### ENTRIES — NONE
+### End of Session Status
+- Portfolio: $99,470.27 (-0.53% from $100K start). Cash: 100%. 0 positions.
 
-#### ABBV | OPEN | $207.06 | STRONG_BUY | Position #13
-- Exited next day at breakeven (fundamental disqualifiers)
+---
+
+## 2026-04-15 — Portfolio Manager Session (9:30 AM ET)
+- NEE CLOSE $90.79 STOP_LOSS -3.46%. MRK STRONG HOLD (+0.68%), tighten stop to $118.
+- Portfolio: $99,521.27 (-0.48%). Cash 97.0%. 1 position.
+
+## 2026-04-14 — Portfolio Manager Session (9:30 AM ET)
+- JNJ CLOSE $235.14 STOP_LOSS -2.73%. MRK HOLD, NEE HOLD (critical $91 level).
+- Portfolio: $99,549.27 (-0.45%). Cash 94.1%. 2 positions.
+
+## 2026-04-13 — Portfolio Manager Session (9:30 AM ET Open)
+- JNJ HOLD (earnings tomorrow), MRK STRONG HOLD (+2.80%), NEE OPEN $94.04 (Regime Detection)
+- Portfolio: $99,803.47 (-0.20%). Cash 89.0%. 3 positions.
+
+## 2026-04-09 — Portfolio Manager Session (9:30 AM ET)
+- DBA CLOSE $26.96 TREND_REVERSAL -0.77%. JNJ/MRK HOLD.
+- Portfolio: $99,803.47 (-0.20%). Cash 92.1%. 2 positions.
+
+## 2026-04-07 — Portfolio Manager Session (9:30 AM ET Open)
+- No exits, no entries. All 4 positions HOLD (DBA, JNJ, MRK, T).
+- Portfolio: $99,827.29 (-0.17%). Cash 86.3%.
+
+## 2026-04-01 — Portfolio Manager Session (9:30 AM ET Open)
+- No exits, no entries. All 4 positions HOLD (T, MRK, DBA, WEAT).
+- Portfolio: $100,012.37 (+0.01%). Cash 88.0%.
+
+## 2026-03-31 — WEAT | OPEN | $23.26 | BUY — Kalman Filter wheat war-premium
+## 2026-03-30 — T | OPEN | $28.79 | BUY — Kalman Filter defensive telecom
+## 2026-03-30 — MCD | CLOSE | $311.19 | TREND_REVERSAL | -1.44% (-$68.10)
+## 2026-03-30 — VLO | CLOSE | $254.32 | RSI_OVERBOUGHT | +2.95% (+$145.60)
+## 2026-03-30 — DBA | OPEN | $27.17 | BUY — Regime Detection ag commodities
+## 2026-03-27 — GE | CLOSE | $293.67 | TREND_REVERSAL | -2.79% (-$75.78)
+## 2026-03-27 — ABBV | CLOSE | $207.06 | MANUAL | +0.00%
+## 2026-03-27 — PG | CLOSE | $143.78 | TREND_REVERSAL | +0.00%
+## 2026-03-27 — VLO | OPEN | $247.04 | STRONG_BUY
+## 2026-03-27 — MRK | OPEN | $119.15 | BUY
+## 2026-03-26 — EOG | CLOSE | $144.72 | RSI_OVERBOUGHT | +3.61% (+$176.40)
+## 2026-03-26 — XLE | CLOSE | $61.07 | TAKE_PROFIT | +9.46% (+$464.64)

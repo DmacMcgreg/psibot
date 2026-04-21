@@ -459,14 +459,25 @@ export class HeartbeatRunner {
 
         // Both quick and deep research create NotePlan notes with theme linking
         const notePath = createResearchNote(item, result);
-        updatePendingItem(item.id, {
+
+        // Only update noteplan_path if note was created — don't overwrite existing path with null
+        const updates: Record<string, string | null> = {
           status: "archived",
           auto_decision: isDeep ? "deep_research_done" : "quick_research_done",
           quick_scan_summary: result.summary,
-          noteplan_path: notePath,
-        });
+        };
+        if (notePath) {
+          updates.noteplan_path = notePath;
+        } else {
+          log.error(`${label} research note creation failed — research content may be lost`, {
+            itemId: item.id,
+            title: result.title,
+            url: item.url,
+          });
+        }
+        updatePendingItem(item.id, updates as Parameters<typeof updatePendingItem>[1]);
 
-        log.info(`${label} research complete`, { itemId: item.id, title: result.title });
+        log.info(`${label} research complete`, { itemId: item.id, title: result.title, noteSaved: !!notePath });
 
         // Research saved silently to NotePlan — no Telegram notification
       } catch (err) {
