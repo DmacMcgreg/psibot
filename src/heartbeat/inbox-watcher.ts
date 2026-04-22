@@ -7,6 +7,22 @@ import type { PendingItem } from "../shared/types.ts";
 
 const log = createLogger("heartbeat:inbox-watcher");
 const NOTEPLAN_INBOX = join(homedir(), "Documents/NotePlan-Notes/Notes/00 - Inbox");
+const RESEARCH_OUTPUT_DIR = join(homedir(), "Documents/NotePlan-Notes/Notes/70 - Research");
+
+const RESEARCH_DECISION_STATES = new Set([
+  "deep_research_queued",
+  "deep_research_running",
+  "deep_research_done",
+  "deep_research_failed",
+  "quick_research_queued",
+  "quick_research_running",
+  "quick_research_done",
+  "quick_research_failed",
+]);
+
+function hasResearchDecision(decision: string | null): boolean {
+  return decision !== null && RESEARCH_DECISION_STATES.has(decision);
+}
 
 export interface InboxAction {
   itemId: number;
@@ -38,6 +54,11 @@ export function scanInbox(): InboxAction[] {
   for (const [filePath, item] of itemsByPath) {
     if (!existsSync(filePath)) continue; // Handled below as "deleted"
 
+    // Skip research output notes — they carry the `research` tag by design and
+    // must never re-trigger the research pipeline. Without this, completed
+    // research loops forever (it updates `noteplan_path` to its own output).
+    if (filePath.startsWith(RESEARCH_OUTPUT_DIR)) continue;
+
     const content = readFileSync(filePath, "utf-8");
     const tags = extractFrontmatterTags(content);
 
@@ -54,11 +75,11 @@ export function scanInbox(): InboxAction[] {
       });
       actions.push({ itemId: item.id, action: "retriage", noteplanPath: filePath });
       log.info("Inbox action: retriage", { itemId: item.id, path: filePath });
-    } else if (hasTag("research-quick") && item.auto_decision !== "quick_research_queued") {
+    } else if (hasTag("research-quick") && !hasResearchDecision(item.auto_decision)) {
       updatePendingItem(item.id, { auto_decision: "quick_research_queued" });
       actions.push({ itemId: item.id, action: "research-quick", noteplanPath: filePath });
       log.info("Inbox action: research-quick", { itemId: item.id, path: filePath });
-    } else if ((hasTag("research-deep") || hasTag("research")) && item.auto_decision !== "deep_research_queued") {
+    } else if ((hasTag("research-deep") || hasTag("research")) && !hasResearchDecision(item.auto_decision)) {
       updatePendingItem(item.id, { auto_decision: "deep_research_queued" });
       actions.push({ itemId: item.id, action: "research-deep", noteplanPath: filePath });
       log.info("Inbox action: research-deep", { itemId: item.id, path: filePath });
