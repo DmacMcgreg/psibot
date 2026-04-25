@@ -2,6 +2,10 @@
 
 Personal AI assistant: Telegram bot + web dashboard, powered by Claude Agent SDK.
 
+## Active plans
+
+- **2026-04-25** — [Trading agent eval + research suite v2](docs/plans/2026-04-25-trading-eval-and-research-suite.md) — **infrastructure complete; smoke gate PASS; full Russell 3000 backfill ready to launch.** Universe-wide point-in-time snapshot store + factor IC mining + Layer 1 agent context catalogue. Lives at `trading-bot/backend/app/research/` (separate `research.db`, safety-asserted, WAL). Dashboard at [/agents/eval](https://trading-bot.localhost:1355/agents/eval). Run results: [eval-suite-results.md](docs/plans/results/2026-04-25-eval-suite-results.md), [layer1-findings.md](docs/plans/results/2026-04-25-layer1-findings.md), [smoke-test-results.md](docs/plans/results/2026-04-25-smoke-test-results.md). Launch full backfill: `cd trading-bot/backend && nohup bash scripts/eval/research_backfill.sh > data/backfill.log 2>&1 &`. Halt: `bash scripts/eval/halt.sh`.
+
 ## Stack
 
 - **Runtime**: Bun
