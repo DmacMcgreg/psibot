@@ -4,9 +4,15 @@ data/
 knowledge/*
 !knowledge/trading/
 .env
+.env.*.swp
+.env.swp
+*.swp
 *.db
 *.db-wal
 *.db-shm
+
+# Claude Code worktree state (local only)
+.claude/worktrees/
 .DS_Store
 .vscode/
 INSTANCE.md
