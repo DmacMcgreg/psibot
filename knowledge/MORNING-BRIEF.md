@@ -10,6 +10,7 @@ Hard rules:
 - Keep the full brief under 2500 chars for Telegram readability.
 - Every actionable item must result in either a NotePlan `task_add` **or** a `create_reminder` call. Nothing the user needs to do should live only in the brief text.
 - Never overwhelm: tier-1 info capped at 3 per day; overflow queued to tomorrow via `task_add defer=<tomorrow>`.
+- **All temperatures must be in Celsius. Never use Fahrenheit.**
 
 ## Data Sources (fetch in parallel)
 
@@ -22,10 +23,10 @@ Use Open-Meteo (free, no API key, gives 7+ days). wttr.in is **NOT** used — it
 
 Default location: Toronto (lat=43.6532, lon=-79.3832). If `knowledge/USER.md` specifies a different city, look up its lat/lon.
 
-**One call covers both sections** — daily for 7 days (Week Ahead) + hourly for today (rain breakdown):
+**One call covers both sections** — daily for 7 days (Week Ahead) + hourly for today (rain breakdown). Always use `&temperature_unit=celsius` to ensure Celsius output:
 
 ```bash
-curl -sS 'https://api.open-meteo.com/v1/forecast?latitude=43.6532&longitude=-79.3832&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&hourly=temperature_2m,precipitation_probability,weather_code&timezone=America/Toronto&forecast_days=7' -o /tmp/wx.json
+curl -sS 'https://api.open-meteo.com/v1/forecast?latitude=43.6532&longitude=-79.3832&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&hourly=temperature_2m,precipitation_probability,weather_code&timezone=America/Toronto&forecast_days=7&temperature_unit=celsius' -o /tmp/wx.json
 ```
 
 Parse with bun:
@@ -37,7 +38,7 @@ bun -e "const d = JSON.parse(await Bun.file('/tmp/wx.json').text()); console.log
 
 **Rain-today check**: if ANY of today's hourly `precipitation_probability >= 40`, show hourly breakdown (pick waking-window buckets: 9am, 12pm, 3pm, 6pm, 9pm — use `hourly.time[i]` where hour ∈ {9,12,15,18,21}).
 
-**Week Ahead (bottom)**: 7 entries from `daily.time[0..6]` with max/min + precip% + emoji.
+**Week Ahead (bottom)**: 7 entries from `daily.time[0..6]` with max/min + precip% + emoji. Always show °C.
 
 **WMO weather code → emoji**:
 - 0 → ☀ (clear)
@@ -146,7 +147,7 @@ Single Telegram message (via `[NOTIFY]...[/NOTIFY]`):
     {date} — {event}
 
 🌤️ TODAY'S WEATHER
-  {high}°/{low}° {conditions} — precip {N}%
+  {high}°C/{low}°C {conditions} — precip {N}%
   [Rain hourly, if any bucket ≥ 40% or ≥ 0.5mm:]
   Hourly: 8am ☀ 0% · 11am ☁ 10% · 2pm 🌧 70% · 5pm 🌧 80% · 8pm ⛅ 20%
 
@@ -175,9 +176,9 @@ Single Telegram message (via `[NOTIFY]...[/NOTIFY]`):
   [Only if positions flagged HIGH:] ⚠️ Position alert: {ticker} ...
 
 🗓️ WEEK AHEAD — WEATHER
-  Mon ☀ 18°/9° · 0%
-  Tue ⛅ 16°/8° · 20%
-  Wed 🌧 12°/6° · 80%
+  Mon ☀ 18°C/9°C · 0%
+  Tue ⛅ 16°C/8°C · 20%
+  Wed 🌧 12°C/6°C · 80%
   ... (all 7 days)
 ```
 

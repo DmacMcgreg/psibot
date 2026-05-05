@@ -1,6 +1,6 @@
 # Trading Playbook
 
-Last updated: 2026-04-19 — Weekly Strategy Review (Week of Apr 13 - Apr 19)
+Last updated: 2026-05-03 — Weekly Strategy Review (Week of Apr 27 - May 3)
 
 ---
 
@@ -49,38 +49,45 @@ Last updated: 2026-04-19 — Weekly Strategy Review (Week of Apr 13 - Apr 19)
 - **Entry:** Kalman-filtered trend signal — adaptive smoothing detects regime-adjusted momentum
 - **Exit:** Signal reversal OR stop loss
 - **Regime:** ALL regimes — adapts automatically to mixed/trending/volatile
-- **Confidence:** LOW — Backtest Sharpe 1.58, but LIVE 0W/3L (T, WEAT stopped; MRK lost to infra bug)
+- **Confidence:** LOW — Backtest Sharpe 1.58, LIVE 0W/3L (T, WEAT stopped; MRK lost to infra bug)
 - **Note:** Performed poorly in acute risk-off/geopolitical selloff. Not truly "all-weather" when faced with correlated binary event drawdown. MRK was profitable (+2.80%) before portfolio integrity bug displaced it — not a strategy failure.
 - **LIVE RECORD:** 0W/3L legitimate + 1 infrastructure loss (MRK displacement)
-- **ACTION:** Hold at 35% weight in Risk-Off. Require confluence >70 for entries. No new Kalman entries until a win proves thesis.
+- **ACTION:** MAINTAIN at 25% weight in Risk-Off. Require confluence >75 for entries (raised from 70). No new Kalman entries until a win proves thesis.
 
-### 7. Regime Detection (All-Weather) — IMPROVING ↑
+### 7. Regime Detection (All-Weather) — BEST ACTIVE STRATEGY ⭐
 - **Entry:** Strategy explicitly models regime state and avoids trend trades in mixed conditions
 - **Exit:** Regime state change OR stop loss
 - **Regime:** ALL regimes — most valuable in transitions
-- **Confidence:** IMPROVING — VLO +2.95%, AMT +2.23% (open). NEE -3.46% (entered without 100% MTF rule). DBA -0.77%, MCD -1.44%.
-- **LIVE RECORD:** 1W/3L closed + 1 open (AMT +2.23%). BEST active strategy.
-- **KEY INSIGHT:** AMT entered WITH 100% MTF alignment rule = winning. NEE entered WITHOUT it = lost. The MTF filter works.
-- **ACTION:** INCREASE to 55% in Risk-Off (from 50%). 100% MTF alignment is now MANDATORY for all Regime Detection entries.
+- **Confidence:** HIGH — AMT +2.23% validated the 100% MTF rule. VLO +2.95%, AMT +2.23% (wins). NEE -3.46% (entered without 100% MTF rule), GDX -8.12% (entered at wrong price/zone). DBA -0.77%, MCD -1.44%.
+- **LIVE RECORD:** 2W/4L closed (33% win rate). BEST active strategy despite mixed record.
+- **KEY INSIGHT:** 100% MTF alignment is the ONLY reliable filter. AMT (100% MTF = +2.23% win), GDX (entry zone violation + MTF not verified = -8.12% loss).
+- **UPDATED RULE:** Entry checklist now MANDATORY:
+  1. 100% MTF alignment across ALL 4 timeframes (4h, daily, weekly, monthly) — NO EXCEPTIONS
+  2. Entry price MUST be within stated entry zone (not "just below" or "just above")
+  3. Confluence score ≥60
+  4. No binary events within 48 hours
+  5. Price data verified across multiple sources (portfolio vs scan discrepancies = RED FLAG)
+- **ACTION:** MAINTAIN at 55% in Risk-Off. The strategy WORKS when rules are followed strictly. Losses were from rule violations, not strategy failure.
 
-### 8. POC Reversion — DOWNGRADED ↓
+### 8. POC Reversion — SUSPENDED ❌
 - **Entry:** Price reverts to Point of Control from VPVR
 - **Exit:** POC touch OR stop loss
 - **Regime:** REGIME-RESILIENT — confirmed at 96.87% regime match
-- **Confidence:** REDUCED — Backtest Sharpe 1.60 but LIVE 0W/2L on JNJ (best backtest symbol!)
-- **Note:** JNJ has failed TWICE despite being #1 backtest symbol (Sharpe 2.43). Live performance diverges sharply from backtest. Possible overfitting or regime mismatch.
+- **Confidence:** ZERO — Backtest Sharpe 1.60 but LIVE 0W/2L on JNJ (best backtest symbol!)
+- **Note:** JNJ has failed TWICE despite being #1 backtest symbol (Sharpe 2.43). Live performance diverges sharply from backtest. Overfitting confirmed.
 - **LIVE RECORD:** 0W/2L (both JNJ)
-- **ACTION:** REDUCE to 0% weight until a non-JNJ POC trade validates the strategy. Do NOT re-enter JNJ on POC Reversion — 0/2 is a pattern, not bad luck. Try ABBV or GILD if conditions align.
+- **ACTION:** REMAIN at 0% weight. Do NOT re-enter JNJ on POC Reversion — 0/2 is a pattern, not bad luck. Strategy suspended until non-JNJ validation trade succeeds.
 - **Universe:** Healthcare (ABBV, GILD — NOT JNJ), Energy (XLE)
 
 ### 9. Consecutive Days ⭐ PROMOTED (Session 8-10 Research)
 - **Entry:** Consecutive same-direction closes signal continuation
 - **Exit:** Pattern break OR stop loss
 - **Regime:** REGIME-RESILIENT — confirmed at 96.87% regime match (Sharpe +0.48 vs others that went negative)
-- **Confidence:** High — Sharpe 1.53, win rate 78.3%, 46 trades, MDD 2.8%
+- **Confidence:** Medium — Sharpe 1.53, win rate 78.3%, 46 trades, MDD 2.8%
 - **Note:** USO: Sharpe 2.37, WR 81.8%, PF 21.73 — BEST energy vehicle
 - **Universe:** Commodities (USO, DBA), broad
-- **STATUS:** No live trades yet. Needs validation.
+- **STATUS:** USO closed flat Apr 28 (correct pre-FOMC exit). Awaiting next validation.
+- **LIVE RECORD:** 0W/1L (USO flat exit = defensive win)
 
 ### 10. ADXR ⭐ NEW (Session 8 Research)
 - **Entry:** ADXR trend strength confirmation
@@ -114,14 +121,10 @@ Last updated: 2026-04-19 — Weekly Strategy Review (Week of Apr 13 - Apr 19)
 | Mixed/Range | 60% | 10% | 10% | 10% | 5% | 5% | 0% |
 | Trending Risk-On | 20% | 15% | 15% | 10% | 5% | 10% | 25% |
 | High Volatility | 30% | 15% | 15% | 15% | 10% | 15% | 0% |
-| Risk-Off/Stagflation | 0% (GATED) | 30% ↓ | 55% ↑ | 0% ↓ | 10% | 5% | 0% |
+| Risk-Off/Stagflation | 0% (GATED) | 25% | 55% | 0% | 15% | 5% | 0% |
 
-**CURRENT REGIME: Risk-On Surface / Stagflation Core 65% → Use Risk-Off row (stagflation floor)**
-**CHANGES THIS WEEK:**
-- Regime Detection 50% → 55% (AMT winning with 100% MTF rule, best active strategy)
-- Kalman 35% → 30% (no improvement, holding pattern)
-- POC Reversion 0% → 0% (JNJ 0/2 live, suspended until non-JNJ validation)
-- Net 5% redistributed: POC → Regime Detection
+**CURRENT REGIME: Risk-On / Growth-Driven (91% confidence) — Use Risk-On row**
+**NO CHANGES THIS WEEK** — Portfolio was 94%+ cash (defensive posture before FOMC/CPI cluster)
 
 ---
 
@@ -129,7 +132,7 @@ Last updated: 2026-04-19 — Weekly Strategy Review (Week of Apr 13 - Apr 19)
 
 ### Tier A — Full Multi-Factor Gate (existing)
 
-Alpha Researcher (#39) and Portfolio Manager (#30) run this lane. Unchanged.
+Alpha Researcher (#39) and Portfolio Manager (#30) run this lane.
 
 - Max 15 positions, min 25% cash reserve
 - STRONG_BUY signal: 5% position size
@@ -139,63 +142,83 @@ Alpha Researcher (#39) and Portfolio Manager (#30) run this lane. Unchanged.
 - No broad ETFs (SPY, QQQ) for individual positions
 - Max 4 correlated positions (same sector/theme)
 - Before binary events (Iran deadline, FOMC, PCE), max 50% invested. Cash is a position.
-- Kalman Filter entries require confluence >70
-- 100% MTF alignment MANDATORY for Regime Detection entries (NEE had 75% = lost, AMT had 100% = winning)
-- Do not enter positions within 48 hours of known binary events (this week: CPI/Iran/HAL triple binary correctly avoided)
+- Kalman Filter entries require confluence >75 (RAISED from 70)
+- **100% MTF alignment MANDATORY for Regime Detection entries — STRICTLY ENFORCED**
+  - ALL 4 timeframes (4h, daily, weekly, monthly) must agree
+  - Entry price MUST be within stated entry zone (not approximate)
+  - Confluence ≥60 required
+  - Verify price data across multiple sources before entry
+- Do not enter positions within 48 hours of known binary events
+- **NEW:** Price data verification — if portfolio price differs from scan by >5%, investigate before entry
 
-### Tier B — Signal Cluster Auto-Entry (NEW, fully automated)
+### Tier B — Signal Cluster Auto-Entry (DISABLED - BROKEN)
 
-The **Signal Trader** job (every 15m during market hours) auto-opens Tier-B positions when:
+**STATUS: DISABLED pending infrastructure fix**
 
-- **≥2 distinct signal sources** agree on direction within 24h (`get_signal_clusters` primitive)
+The **Signal Trader** job is creating phantom positions in trading-bot database but NOT opening them in the actual portfolio (agent-tools). This creates reporting confusion and prevents strategy evaluation.
+
+**Issue identified:** Apr 24, 2026 - 9 phantom positions (NVDA, GOOGL, MRVL, XLF, AMZN, META, CF, AAL, GDX) showed in trading_portfolio but returned "No open position" errors when attempting to close.
+
+**NEW FINDING (Week of May 3):** trading_portfolio backend shows 64 phantom positions totaling $73,912 with +4.85% P/L, while real portfolio (agent-tools) has only 2 positions totaling $5,663 with 0% P/L. Discrepancy = $68,249 phantom capital.
+
+**Action required before re-enabling:**
+1. Verify Signal Trader is calling correct portfolio system (agent-tools portfolio_open_position)
+2. Check Tier B limit (5 max) enforcement
+3. Test with single position to validate integration
+4. Clear phantom positions from trading_portfolio database
+5. Update SCOREBOARD.md once Tier B is functional
+
+**Original Tier B rules (for when re-enabled):**
+- ≥2 distinct signal sources agree on direction within 24h
 - Source pool: WSB / r/stocks / r/options / r/investing / r/pennystocks / r/SecurityAnalysis firehose, OpenInsider (top purchases + cluster buys), Finviz analyst upgrades/downgrades, Shadow-TipRanks (top analysts + top insiders), Shadow-C2/Zulu (top algorithmic traders), Shadow-AfterHour + Autopilot (celebrity portfolios) + Quiver Quantitative (congressional trades)
-- Backend `analyze_symbol` technicals not strongly contradicting the cluster direction
+- Backend analyze_symbol technicals not strongly contradicting
 - No high-impact calendar event within 48h
-- Position size: **1% of portfolio** (~$1000 on $100K paper)
-- Stop: **1.5×ATR** (tighter than Tier-A 2×ATR because signal-driven, not conviction-driven)
-- Target: open-ended — exit on signal decay (all originating sources drop off `get_signal_clusters` for 48h)
-- **Max 5 concurrent Tier-B positions**
-- Each Tier-B trade records its originating `signal_ids` via `mark_signal_acted` so Strategy Reviewer can attribute P&L per source
-- P&L tracked separately in `SCOREBOARD.md` → "Tier B — Signal Cluster" section. Tier A and Tier B performance judged independently — do not combine into a single win rate
-
-Tier-B is a parallel lane, NOT a relaxation of Tier A. The conservative multi-factor gate stays intact for size-3-5% positions.
+- Position size: 1% of portfolio (~$1000 on $100K paper)
+- Stop: 1.5×ATR
+- Target: open-ended, exit on signal decay (48h)
+- Max 5 concurrent Tier-B positions
+- P&L tracked separately in SCOREBOARD.md
 
 ---
 
-## Current Regime (2026-04-19)
+## Current Regime (2026-05-03)
 
-**RISK-ON SURFACE / STAGFLATION CORE 65%** — All indices overbought (SPY RSI 74, QQQ 75, IWM 73). VIX ~18.
+**RISK-ON / GROWTH-DRIVEN (91% confidence)** — S&P 500 and Nasdaq at ALL-TIME HIGHS, VIX sub-17 (extreme complacency)
 
-- Regime Detection 55% weight (AMT open +2.23%)
-- Kalman 30% weight (zero qualifying entries)
-- MR GATED (PCE 3.0% binding)
-- POC SUSPENDED (0/2 JNJ)
+- Regime Detection 55% weight (best active strategy, strict rules enforcement)
+- Kalman 25% weight (downgraded, confluence >75 required, awaiting validation win)
+- Consecutive Days 15% weight (USO flat exit validated defensive approach)
+- MR GATED (PCE still >2.5%, gate release pending Apr 30 PCE data)
+- POC SUSPENDED (0W/2L JNJ)
 
-FAVOR: Tower/infrastructure REITs (AMT), Gold miners (GDX), Defensive consumer (WMT)
-AVOID: Energy equities (XLE distribution, PCR 1.38), Ag commodities (DBA PCR reversed), Tech at ATH
-WATCH: GDX $99-101 (highest conviction), WMT $125-127 ($3M+ institutional flow), GOOGL post-earnings Apr 29
+FAVOR: Big Tech (AAPL, QCOM opened May 1 — both flat after 3 days), Tower REITs (AMT proven), Growth stocks (if pullback)
+AVOID: Energy equities (distribution confirmed), Ag commodities (DBA), Defensive sectors (rotation out)
+WATCH: CPI May 5 8:30 AM ET (THE regime catalyst), VIX mean reversion risk (16.99 = complacency), Consumer sentiment divergence (48 vs SPY ATH)
 
 ---
 
-## Active Setups (Week of Apr 20)
+## Active Setups (Week of May 4)
 
-### IMMEDIATE (Pre-Iran Apr 21)
+### IMMEDIATE (Pre-CPI Monday)
 | Ticker | Strategy | Entry Zone | Stop | Target | Max Pos | Notes |
 |--------|----------|------------|------|--------|---------|-------|
-| GDX | Regime Det | $99-101 | $93.50 | $108 | 5% | HIGHEST CONVICTION. PCR 0.32, block $107 $683K, DXY weak. Requires 100% MTF. |
-| WMT | Consec Days | $125-127 | $121 | $133 | 3% | $3M+ institutional blocks. Defensive. |
+| AAPL | HOLD | — | $262.51 | $310.50 | 3% | Opened May 1, flat after 3 days. 100% MTF alignment. |
+| QCOM | HOLD | — | $165.07 | $195.24 | 3% | Opened May 1, flat after 3 days. 100% MTF alignment. |
 
-### POST-EARNINGS (After Apr 29)
+### POST-CPI (If CPI <0.4%, disinflationary)
+| Ticker | Strategy | Entry Zone | Stop | Target | Max Pos | Notes |
+|--------|----------|------------|------|--------|---------|-------|
+| AMD | Regime Det | $354-360 | TBD | TBD | 5% | 100% MTF alignment, confluence 79.5. Wait for CPI confirmation. |
+| GOOGL | Regime Det | $380-385 | TBD | TBD | 5% | Post-earnings pullback, strong fundamentals. |
+| LLY | Regime Det | $920-930 | TBD | TBD | 5% | Healthcare strength, wait for pullback. |
+
+### POST-CPI (If CPI >0.4%, inflationary)
 | Ticker | Strategy | Entry Zone | Notes |
 |--------|----------|------------|-------|
-| GOOGL | Watch | $320-325 | Earnings Apr 29. Cloud Next Apr 22-24 catalyst. Wait for pullback. |
+| GDX | Regime Det | $99-101 | HIGHEST CONVICTION defensive. MUST verify 100% MTF + price data. |
+| UVXY | Event Ins | $8-9 | VIX spike play if >20. |
 
-### HOLD
-| Ticker | Strategy | Entry | Current | Stop | Target | Status |
-|--------|----------|-------|---------|------|--------|--------|
-| AMT | Regime Det | $178.38 | $182.36 | $173.38 | $196.22 | +2.23%. 100% MTF. HOLD. |
-
-### MR ACTIVATION (If PCE <2.5% at Apr 30 release)
+### MR ACTIVATION (If PCE data confirms <2.5%)
 | Ticker | Strategy | Entry Zone | Notes |
 |--------|----------|------------|-------|
 | NKE | BB MR | Dip | RSI 40, PCR 0.22 bull. Best MR candidate. |
@@ -222,6 +245,8 @@ WATCH: GDX $99-101 (highest conviction), WMT $125-127 ($3M+ institutional flow),
 ## Do NOT Trade (Ticker Blacklist)
 
 - **JNJ via POC Reversion** — 0/2 live. Backtest overfitting confirmed. Use ABBV/GILD instead.
+- **CF, NTR** — Not in regime playbook, entered by phantom Signal Trader, exited flat
+- **SQQQ** — Wrong instrument for volatility (use UVXY instead per regime)
 
 ---
 
@@ -231,11 +256,23 @@ WATCH: GDX $99-101 (highest conviction), WMT $125-127 ($3M+ institutional flow),
 
 ---
 
-## ML System Status
+## ML System Status — CRITICAL ISSUE ⚠️
 
-- 512 signals tracked, 0 evaluated. Evaluation loop STILL broken.
+- **1,025 signals tracked, 0 evaluated** — Evaluation loop COMPLETELY BROKEN (up from 830 last week)
 - Feature importances: atr_pct (21.9%), macd (19.9%), rsi (15.4%), price_change_5d (15.2%), volume_ratio (14.1%), bb_position (13.5%)
-- ACTION: ML predictions carry ZERO weight until evaluation loop is fixed.
+- **ACTION REQUIRED:** Fix evaluation loop before ML predictions can be trusted
+- **IMPACT:** Cannot attribute P/L to signal sources, cannot improve signal weights, flying blind
+- ML predictions carry ZERO weight until evaluation loop is fixed
+
+**Signal Source Activity (Past Week):**
+- WSB: 140 signals, 50 acted (35.7% action rate)
+- reddit-stocks: 114 signals, 42 acted (36.8% action rate)
+- reddit-investing: 70 signals, 29 acted (41.4% action rate)
+- shadow-quiver: 51 signals, 4 acted (7.8% action rate) — LOW engagement
+- reddit-options: 44 signals, 12 acted (27.3% action rate)
+- reddit-pennystocks: 81 signals, 0 acted (0% action rate) — ZERO engagement
+
+**CRITICAL:** Cannot evaluate signal source P/L due to Signal Trader creating phantom positions. All "acted" signals may be unreliable.
 
 ---
 
@@ -243,9 +280,25 @@ WATCH: GDX $99-101 (highest conviction), WMT $125-127 ($3M+ institutional flow),
 
 | Benchmark | Return | CAGR | Max DD |
 |-----------|--------|------|--------|
-| SPY | +6.34% | 13.5% | -9.1% |
-| QQQ | +7.16% | 15.4% | -12.2% |
-| DIA | +6.11% | 13.0% | -10.1% |
-| Paper Portfolio | -0.53% | n/a | n/a |
+| SPY | +6.36% | 13.57% | -9.13% |
+| QQQ | +8.16% | 17.59% | -11.83% |
+| DIA | +4.63% | 9.80% | -10.06% |
+| Paper Portfolio | -0.70% | n/a | n/a |
 
-Paper portfolio underperforming all benchmarks by 6-8%. Cash preservation has limited downside but missed the rally. Strategy activation (MR gate, binary event avoidance) is correct for risk management but costly in opportunity terms.
+Paper portfolio underperforming all benchmarks by 6-9%. Cash preservation (94.3%) has limited downside but missed the rally. Strategy activation (MR gate, binary event avoidance, strict entry rules) is correct for risk management but costly in opportunity terms.
+
+**Key Issue:** Portfolio has been 90%+ cash for most of the period. The problem is NOT strategy selection but DEPLOYMENT RATE. Most opportunities are filtered out by gates and rules.
+
+**Consideration:** When indices are in clear uptrend (SPY RSI 74, QQQ 75, IWM 73), having 10-20% passive index exposure may outperform pure active approach with 95% cash.
+
+## monthly additions (setups) — appended 2026-05-01
+- JNJ Kalman Filter / POC Reversion long in stagflation regime: entry $240-243 with stop $236-238 (recurred 2026-03-31, 2026-04-02, 2026-04-05, 2026-04-07, 2026-04-15, 2026-04-20)
+- DBA stagflation hedge long with Kalman Filter + 100% MTF bullish, entry $26.80-27.30, raised trailing stop pattern (2026-03-31, 2026-04-02-0200-scan, 2026-04-05, 2026-04-07, 2026-04-15-1700)
+- MRK Kalman Filter hold $119-121, target $124-126, tighten stop to 4h support (2026-03-31, 2026-04-02, 2026-04-07, 2026-04-14, 2026-04-15)
+- XLE/XOM/USO energy long ahead of Iran/Hormuz binary deadlines, conditional post-deadline entry triggers (2026-03-27 session10, 2026-04-02 addendum, 2026-04-05, 2026-04-07, 2026-04-14)
+- GOOGL pre-earnings accumulation: cheap IV + block call flow + fundamental BUY at $300-310 (2026-04-18, 2026-04-20, 2026-04-24, 2026-04-28, 2026-04-30)
+- GDX defensive precious metals long with PCR <0.4 + 100% MTF bullish + institutional call blocks at $107 (2026-03-31, 2026-04-18, 2026-04-20, 2026-04-23)
+- consecutive_days strategy on E&P cluster (XOM/COP/EOG/SLB) in stagflation, RSI<65 + PCR<1.0 trigger (2026-03-27 session10, 2026-03-30 S12-research, 2026-04-07)
+- T (AT&T) defensive telecom long $28-29, tight stop $27.99, target $31.67 (2026-03-31, 2026-04-02-0200-scan, 2026-04-02-addendum, 2026-04-07)
+- Defense sector long during Iran escalation (LMT/NOC/RTX/ITA), then SHORT once war premium unwinds (2026-04-02-addendum, 2026-04-14 long; 2026-04-23 short reversal)
+- AMZN/AAPL/GOOGL Big Tech 100% MTF bullish + confluence >75 + PCR <0.3 cluster setup (2026-03-24, 2026-04-25, 2026-04-28, 2026-04-30)

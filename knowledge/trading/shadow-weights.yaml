@@ -1,11 +1,29 @@
 # Shadow trading credibility weights
 # Strength applied to signals from each shadow source. 0.1 = ignore, 1.0 = max conviction.
 # Strategy Reviewer job updates these over time based on realized P&L attribution.
+# Last updated: 2026-04-26 (Weekly Strategy Review - Week of Apr 20-26)
 
 # Default weight applied when a specific trader/analyst has no entry below
 default: 0.5
 
+# REDDIT SOURCES — Downweighted based on Apr 23 Session 19 research
+reddit:
+  wsb: 0.1  # DOWNWEIGHTED from 0.5 — Momentum chasing, gain porn posted AFTER rallies (lagging)
+  stocks: 0.0  # DISABLED from 0.5 — Zero-score posts, pure noise, no quality filter
+  options: 0.3  # MAINTAINED — Neutral, useful for IV context only, not directional signals
+  investing: 0.3  # MAINTAINED — Similar to options, context not alpha
+  pennystocks: 0.2  # MAINTAINED — High noise but occasionally early on small caps
+  SecurityAnalysis: 0.5  # MAINTAINED — More thoughtful posts, not evaluated yet
+
+# CONGRESSIONAL / INSIDER SOURCES
+shadow-quiver: 0.0  # DISABLED from 0.5 — NEGATIVE alpha confirmed. 26-day reporting lag = price moves 13% against position by signal time
+
+# INSTITUTIONAL / ANALYST SOURCES (not yet evaluated, maintaining defaults)
+openinsider: 0.6  # Top executive purchases, cluster buys — waiting for evaluation data
+finviz-analyst: 0.5  # Analyst upgrades/downgrades — waiting for evaluation data
+
 # TipRanks — top analysts and top insiders (5-star ratings get starBoost on top)
+# Waiting for evaluation data to adjust individual analyst weights
 tipranks:
   # Firms/analysts with strong track records get explicit boost
   "Goldman Sachs": 0.75
@@ -17,13 +35,22 @@ tipranks:
   "Wedbush": 0.55
 
 # Collective2 / ZuluTrade — top algorithmic traders
+# Waiting for evaluation data to populate
 c2zulu:
-  # Track top traders by alias once we observe their P/L attribution
+  # Track top traders by alias once we observe their P&L attribution
   # Starts empty; Strategy Reviewer will populate from performance.
 
 # AfterHour — real brokerage-connected users sharing portfolios
+# Waiting for evaluation data to populate
 afterhour:
   # Starts empty; Strategy Reviewer will populate.
   # Known high-engagement AfterHour personalities to seed:
   # "ziptradzz": 0.6
   # "tommybrad": 0.55
+
+# NOTES:
+# - shadow-quiver (congressional trades): MU/NVDA analysis showed 26-day lag, trades captured ~1 month after execution, price moved 13% AGAINST by signal time. This is anti-alpha.
+# - wsb: Retail gain porn posted AFTER price rallies. Useful as sentiment indicator (contrarian at extremes) but not for entry signals.
+# - reddit-stocks: Zero-score cross-posted content, no quality filter. Disable until quality filter implemented.
+# - Evaluation loop is BROKEN (830 signals tracked, 0 evaluated). Once fixed, will have P&L attribution per source to fine-tune weights.
+# - Signal Trader (Tier B) is DISABLED due to phantom position bug. Once fixed, will generate evaluation data.
