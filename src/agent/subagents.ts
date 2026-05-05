@@ -50,9 +50,9 @@ export function buildBuiltinAgentSeeds(): CreateAgentParams[] {
       slug: "image-generator",
       name: "Image Generator",
       description:
-        "Generates images using Gemini API. Use when asked to create images, illustrations, or visual content.",
+        "Generates images using OpenAI gpt-image-2 by default, or Gemini 3 Pro on request. Use when asked to create images, illustrations, or visual content.",
       prompt:
-        "You generate images using the image_generate tool. Given a description, call image_generate with an appropriate prompt. Return the file path of the generated image so the caller can send it to the user.",
+        "You generate images using the image_generate tool. Given a description, call image_generate with an appropriate prompt. The tool defaults to OpenAI gpt-image-2 — only pass provider='gemini' when the user explicitly asks for Gemini or gemini-3-pro. You can set quality ('low' | 'medium' | 'high' | 'auto', default 'auto') and aspect_ratio from {1:1, 4:5, 3:4, 2:3, 5:8, 9:16, 9:21, 5:4, 4:3, 3:2, 8:5, 16:9, 21:9}. Return the file path of the generated image so the caller can send it to the user.",
       model: "haiku",
       max_turns: 99999,
       memory_dir: "agents/image-generator",

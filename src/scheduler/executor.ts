@@ -14,6 +14,7 @@ import { briefKeyboard } from "../telegram/keyboards.ts";
 import { PLIST_LABEL } from "../cli/paths.ts";
 import { decideNotify } from "../agent/notify-policy.ts";
 import { applyOutputTemplate } from "../agent/output-template.ts";
+import { tryPublishFromText } from "../agent/agent-run-publisher.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
 import type { Bot, InlineKeyboard } from "grammy";
 
@@ -124,6 +125,19 @@ export class JobExecutor {
 
       updateJob(jobId, { last_run_at: new Date().toISOString() });
 
+      // Publish agent-run envelope to trading-bot dashboard (non-blocking).
+      // Failure here never affects the upstream job — see agent-run-publisher.ts.
+      const completedAt = new Date().toISOString();
+      const startedAt = new Date(startTime).toISOString();
+      tryPublishFromText(result.result, {
+        jobId,
+        runId: run.id,
+        startedAt,
+        completedAt,
+        costUsd: result.costUsd ?? null,
+        durationMs: result.durationMs ?? null,
+      }).catch((err) => log.warn("Envelope publish threw", { jobId, error: String(err) }));
+
       if (job.type === "once") {
         updateJob(jobId, { status: "completed" });
       } else if (job.type === "cron" && job.status === "failed") {
@@ -163,7 +177,9 @@ export class JobExecutor {
       });
       updateJob(jobId, { last_output_hash: decision.hash });
 
-      if (decision.notify) {
+      if (decision.notify && result.deliveredViaTool) {
+        log.info("Job wrapper notification suppressed (agent already sent via telegram tool)", { jobId, name: job.name });
+      } else if (decision.notify) {
         const template = job.output_template ?? agent?.output_template ?? null;
         const rendered = template ? applyOutputTemplate(template, decision.cleanedResult) : decision.cleanedResult;
         const isBrief = /brief/i.test(job.name);
@@ -267,6 +283,18 @@ export class JobExecutor {
 
       updateJob(jobId, { last_run_at: new Date().toISOString() });
 
+      // Pipeline-step envelopes also get published. Same non-blocking semantics.
+      const stepCompletedAt = new Date().toISOString();
+      const stepStartedAt = new Date(startTime).toISOString();
+      tryPublishFromText(result.result, {
+        jobId,
+        runId: run.id,
+        startedAt: stepStartedAt,
+        completedAt: stepCompletedAt,
+        costUsd: result.costUsd ?? null,
+        durationMs: result.durationMs ?? null,
+      }).catch((err) => log.warn("Envelope publish threw (pipeline)", { jobId, error: String(err) }));
+
       log.info("Pipeline step completed", { jobId, name: job.name, cost: result.costUsd });
 
       // Continue pipeline
@@ -288,7 +316,9 @@ export class JobExecutor {
           previousHash: job.last_output_hash,
         });
         updateJob(jobId, { last_output_hash: decision.hash });
-        if (decision.notify) {
+        if (decision.notify && result.deliveredViaTool) {
+          log.info("Pipeline wrapper notification suppressed (agent already sent via telegram tool)", { jobId });
+        } else if (decision.notify) {
           const template = job.output_template ?? agent?.output_template ?? null;
           const rendered = template ? applyOutputTemplate(template, decision.cleanedResult) : decision.cleanedResult;
           await this.notify(

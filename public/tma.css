@@ -60,6 +60,35 @@ body {
 .tma-btn-secondary {
   background: var(--tg-theme-hint-color, #999);
 }
+/* HTMX loading states */
+.tma-btn.htmx-request {
+  opacity: 0.6;
+  pointer-events: none;
+}
+/* Toast notification */
+.tma-toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2e7d32;
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  z-index: 1000;
+  animation: tma-toast-in 0.2s ease, tma-toast-out 0.3s ease 1.5s forwards;
+  pointer-events: none;
+}
+@keyframes tma-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@keyframes tma-toast-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
 .tma-input {
   width: 100%;
   background: var(--tg-theme-secondary-bg-color, #f5f5f5);

@@ -19,6 +19,9 @@ export interface NotifyInput {
 
 const DYNAMIC_NOTIFY_RE = /\[NOTIFY(?::\s*([^\]]+))?\]/i;
 const DYNAMIC_SILENT_RE = /\[SILENT\]/i;
+// Trading agents emit a fenced JSON envelope at the end for the dashboard.
+// Strip it before sending to Telegram so users don't see the JSON dump.
+const TRAILING_ENVELOPE_RE = /\n*```json\s*\n[\s\S]*?"agent_id"[\s\S]*?\n```\s*$/;
 
 export function resolveNotifyPolicy(agent: Agent | null, job: Job): AgentNotifyPolicy {
   return (job.notify_policy as AgentNotifyPolicy | null) ?? agent?.notify_policy ?? "always";
@@ -32,6 +35,7 @@ function stripMarkers(result: string): string {
   return result
     .replace(DYNAMIC_NOTIFY_RE, "")
     .replace(DYNAMIC_SILENT_RE, "")
+    .replace(TRAILING_ENVELOPE_RE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

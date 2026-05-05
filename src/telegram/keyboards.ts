@@ -21,6 +21,8 @@ import {
 import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
 import { updateAutonomyFromFeedback } from "../heartbeat/autonomy.ts";
+import type { AutonomyLevelChange } from "../heartbeat/autonomy.ts";
+import type { MemorySystem } from "../memory/index.ts";
 import { getPendingItemById } from "../db/queries.ts";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
@@ -189,9 +191,80 @@ interface CallbackDeps {
   agent: AgentService;
   scheduler: Scheduler;
   state: ChatState;
+  memory: MemorySystem;
   runAgent: (ctx: Context, prompt: string) => Promise<void>;
   runQuickResearch: (ctx: Context, itemId: number) => Promise<void>;
   runDeepResearch: (ctx: Context, itemId: number) => Promise<void>;
+  digestChatId?: string;
+  digestTopicId?: number;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Record an autonomy-rule level change to the daily log and post a News-topic ping.
+ * Silent on null (no change) or on transient network failures.
+ */
+async function surfaceAutonomyChange(
+  change: AutonomyLevelChange | null,
+  deps: Pick<CallbackDeps, "memory" | "digestChatId" | "digestTopicId">,
+  ctx: Context,
+): Promise<void> {
+  if (!change) return;
+
+  const arrow = change.direction === "promoted"
+    ? "→"
+    : change.direction === "demoted"
+      ? "↓"
+      : "↺";
+  const verb = change.direction === "promoted"
+    ? "promoted"
+    : change.direction === "demoted"
+      ? "demoted"
+      : "reset";
+
+  const line =
+    `- autonomy ${verb}: ${change.signalType}/${change.signalValue} ` +
+    `${change.from} ${arrow} ${change.to} ` +
+    `(action=${change.learnedAction}, conf=${change.confidence.toFixed(2)}, n=${change.decisions})`;
+
+  try {
+    deps.memory.appendDailyLog(line);
+  } catch (err) {
+    log.error("Failed to append autonomy daily-log entry", { error: String(err) });
+  }
+
+  const arrowIcon = change.direction === "promoted"
+    ? "⬆️"
+    : change.direction === "demoted"
+      ? "⬇️"
+      : "🔄";
+  const message =
+    `${arrowIcon} <b>Autonomy ${verb}</b>\n` +
+    `<code>${escapeHtml(change.signalType)}/${escapeHtml(change.signalValue)}</code>\n` +
+    `<b>${change.from}</b> ${arrow} <b>${change.to}</b>\n` +
+    `action: <code>${escapeHtml(change.learnedAction)}</code> · ` +
+    `confidence: ${change.confidence.toFixed(2)} · n=${change.decisions}`;
+
+  try {
+    if (deps.digestChatId) {
+      await ctx.api.sendMessage(deps.digestChatId, message, {
+        parse_mode: "HTML",
+        ...(deps.digestTopicId ? { message_thread_id: deps.digestTopicId } : {}),
+        link_preview_options: { is_disabled: true },
+      });
+    } else if (ctx.chat?.id) {
+      // Fallback: DM the user who pressed the button
+      await ctx.api.sendMessage(ctx.chat.id, message, {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      });
+    }
+  } catch (err) {
+    log.error("Failed to post autonomy-change notice", { error: String(err) });
+  }
 }
 
 export function createCallbackHandler(deps: CallbackDeps) {
@@ -478,12 +551,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
           addNoteplanTag(rrItem?.noteplan_path ?? null, "action/research");
           insertFeedbackLog({ item_id: id, user_action: "research", system_recommendation: "triage" });
           if (rrItem) {
-            updateAutonomyFromFeedback({
+            const change = updateAutonomyFromFeedback({
               signalType: "compound",
               signalValue: compoundSignalKey(rrItem),
               systemRecommendation: "triage",
               userAction: "research",
             });
+            await surfaceAutonomyChange(change, deps, ctx);
           }
           break;
         }
@@ -516,12 +590,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
           addNoteplanTag(rwItem?.noteplan_path ?? null, "action/watch");
           insertFeedbackLog({ item_id: id, user_action: "watch", system_recommendation: "triage" });
           if (rwItem) {
-            updateAutonomyFromFeedback({
+            const change = updateAutonomyFromFeedback({
               signalType: "compound",
               signalValue: compoundSignalKey(rwItem),
               systemRecommendation: "triage",
               userAction: "watch",
             });
+            await surfaceAutonomyChange(change, deps, ctx);
           }
           break;
         }
@@ -548,12 +623,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
             addNoteplanTag(rxItem?.noteplan_path ?? null, "action/archive");
             insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
             if (rxItem) {
-              updateAutonomyFromFeedback({
+              const change = updateAutonomyFromFeedback({
                 signalType: "compound",
                 signalValue: compoundSignalKey(rxItem),
                 systemRecommendation: "triage",
                 userAction: "archive",
               });
+              await surfaceAutonomyChange(change, deps, ctx);
             }
           }
           break;
@@ -574,12 +650,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
             system_recommendation: "triage",
           });
           if (rxrItem) {
-            updateAutonomyFromFeedback({
+            const change = updateAutonomyFromFeedback({
               signalType: "compound",
               signalValue: compoundSignalKey(rxrItem),
               systemRecommendation: "triage",
               userAction: `archive:${reason}`,
             });
+            await surfaceAutonomyChange(change, deps, ctx);
           }
           break;
         }
@@ -606,12 +683,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
             addNoteplanTag(rdItem?.noteplan_path ?? null, "action/drop");
             insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
             if (rdItem) {
-              updateAutonomyFromFeedback({
+              const change = updateAutonomyFromFeedback({
                 signalType: "compound",
                 signalValue: compoundSignalKey(rdItem),
                 systemRecommendation: "triage",
                 userAction: "drop",
               });
+              await surfaceAutonomyChange(change, deps, ctx);
             }
           }
           break;
@@ -632,12 +710,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
             system_recommendation: "triage",
           });
           if (rdrItem) {
-            updateAutonomyFromFeedback({
+            const change = updateAutonomyFromFeedback({
               signalType: "compound",
               signalValue: compoundSignalKey(rdrItem),
               systemRecommendation: "triage",
               userAction: `drop:${reason}`,
             });
+            await surfaceAutonomyChange(change, deps, ctx);
           }
           break;
         }

@@ -7,6 +7,7 @@ import { getGlmMcpServers } from "../agent/glm-mcp.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { PendingItem } from "../shared/types.ts";
 import { linkToExistingResearch } from "./knowledge-linker.ts";
+import { syncAtlasForResearchNote } from "../atlas/sync.ts";
 
 const log = createLogger("research");
 const NOTEPLAN_BASE = join(
@@ -508,6 +509,16 @@ export function createResearchNote(
 
       // Update the pending item with the noteplan path
       updatePendingItem(item.id, { noteplan_path: filePath });
+
+      syncAtlasForResearchNote({
+        sourceId: String(item.id),
+        title,
+        summary: research.summary,
+        keyFindings: research.keyFindings.join("\n"),
+        notePath: filePath,
+        url: item.url,
+        depth: "deep",
+      });
 
       return filePath;
     } catch (err) {

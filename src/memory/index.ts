@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { upsertMemoryEntry, searchMemory, deleteMemoryEntry } from "../db/queries.ts";
+import { syncAtlasForDailyLog } from "../atlas/sync.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("memory");
@@ -105,8 +106,14 @@ export class MemorySystem {
     const date = new Date().toISOString().split("T")[0];
     const logPath = join(memoryDir, `${date}.md`);
     const existing = existsSync(logPath) ? readFileSync(logPath, "utf-8") : `# Daily Log - ${date}\n\n`;
-    writeFileSync(logPath, `${existing.trimEnd()}\n\n${content}\n`);
+    const updated = `${existing.trimEnd()}\n\n${content}\n`;
+    writeFileSync(logPath, updated);
     this.indexFile(`memory/${date}.md`);
+    syncAtlasForDailyLog({
+      filePath: `memory/${date}.md`,
+      content: updated,
+      capturedAt: new Date().toISOString(),
+    });
     log.info("Appended daily log", { date });
   }
 

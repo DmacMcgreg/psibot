@@ -49,13 +49,232 @@ function loadGeminiApiKey(): string {
   throw new Error("No Gemini API key found. Set GEMINI_API_KEY env var or configure ~/.openclaw/openclaw.json");
 }
 
-let cachedApiKey: string | null = null;
+let cachedGeminiKey: string | null = null;
+let cachedOpenaiKey: string | null = null;
 
 function getGeminiApiKey(): string {
-  if (!cachedApiKey) {
-    cachedApiKey = loadGeminiApiKey();
+  if (!cachedGeminiKey) {
+    cachedGeminiKey = loadGeminiApiKey();
   }
-  return cachedApiKey;
+  return cachedGeminiKey;
+}
+
+function getOpenaiApiKey(): string {
+  if (!cachedOpenaiKey) {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error("No OpenAI API key found. Set OPENAI_API_KEY env var.");
+    cachedOpenaiKey = key;
+  }
+  return cachedOpenaiKey;
+}
+
+// gpt-image-2 accepts any size if all constraints are met:
+// - max edge ≤ 3840, both edges multiples of 16, long:short ≤ 3:1,
+// - 655,360 ≤ total pixels ≤ 8,294,400.
+// These picks target ~2K (3–4M pixels) and satisfy every constraint.
+const OPENAI_SIZE_BY_RATIO: Record<string, string> = {
+  "1:1": "2048x2048",
+  // Portrait
+  "4:5": "1600x2000",
+  "3:4": "1536x2048",
+  "2:3": "1536x2304",
+  "5:8": "1440x2304",
+  "9:16": "1440x2560",
+  "9:21": "1152x2688",
+  // Landscape
+  "5:4": "2000x1600",
+  "4:3": "2048x1536",
+  "3:2": "2304x1536",
+  "8:5": "2304x1440",
+  "16:9": "2560x1440",
+  "21:9": "2688x1152",
+};
+
+function aspectRatioToOpenaiSize(aspectRatio: string | undefined): string {
+  if (!aspectRatio) return "auto";
+  const ratio = aspectRatio.trim();
+  return OPENAI_SIZE_BY_RATIO[ratio] ?? "auto";
+}
+
+type ImageQuality = "low" | "medium" | "high" | "auto";
+
+type ImageGenArgs = {
+  prompt: string;
+  image_paths?: string[];
+  aspect_ratio?: string;
+  quality?: ImageQuality;
+};
+
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+};
+
+async function generateWithOpenAI(args: ImageGenArgs, outputPath: string): Promise<ToolResult> {
+  const apiKey = getOpenaiApiKey();
+  const size = aspectRatioToOpenaiSize(args.aspect_ratio);
+  const quality: ImageQuality = args.quality ?? "auto";
+  const hasInputImages = args.image_paths && args.image_paths.length > 0;
+
+  log.info("Generating image via OpenAI", {
+    prompt: args.prompt.slice(0, 100),
+    inputImages: args.image_paths?.length ?? 0,
+    size,
+    quality,
+    endpoint: hasInputImages ? "edits" : "generations",
+  });
+
+  let response: Response;
+
+  if (hasInputImages) {
+    const form = new FormData();
+    form.append("model", "gpt-image-2");
+    form.append("prompt", args.prompt);
+    if (size !== "auto") form.append("size", size);
+    if (quality !== "auto") form.append("quality", quality);
+
+    for (const imagePath of args.image_paths!) {
+      if (!existsSync(imagePath)) {
+        return {
+          content: [{ type: "text" as const, text: `Input image not found: ${imagePath}` }],
+          isError: true,
+        };
+      }
+      const bytes = readFileSync(imagePath);
+      const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+      const mimeType = MIME_TYPES[ext] ?? "image/png";
+      const filename = imagePath.split("/").pop() ?? `image.${ext}`;
+      form.append("image[]", new Blob([new Uint8Array(bytes)], { type: mimeType }), filename);
+    }
+
+    response = await fetch("https://api.openai.com/v1/images/edits", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    });
+  } else {
+    response = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-image-2",
+        prompt: args.prompt,
+        n: 1,
+        size,
+        ...(quality !== "auto" ? { quality } : {}),
+      }),
+    });
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    log.error("OpenAI image API error", { status: response.status, error: errorText.slice(0, 500) });
+    return {
+      content: [{ type: "text" as const, text: `Image generation failed: ${response.status} - ${errorText.slice(0, 300)}` }],
+      isError: true,
+    };
+  }
+
+  const data = (await response.json()) as { data?: Array<{ b64_json?: string }> };
+  const b64 = data.data?.[0]?.b64_json;
+  if (!b64) {
+    return {
+      content: [{ type: "text" as const, text: "OpenAI image generation returned no image data." }],
+      isError: true,
+    };
+  }
+
+  const imageBuffer = Buffer.from(b64, "base64");
+  await Bun.write(outputPath, imageBuffer);
+
+  log.info("Image generated (openai)", { outputPath, sizeBytes: imageBuffer.length });
+  return {
+    content: [{ type: "text" as const, text: `Image saved to: ${outputPath}` }],
+  };
+}
+
+async function generateWithGemini(args: ImageGenArgs, outputPath: string): Promise<ToolResult> {
+  const apiKey = getGeminiApiKey();
+
+  log.info("Generating image via Gemini", {
+    prompt: args.prompt.slice(0, 100),
+    inputImages: args.image_paths?.length ?? 0,
+  });
+
+  const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [
+    { text: args.prompt },
+  ];
+
+  if (args.image_paths) {
+    for (const imagePath of args.image_paths) {
+      if (!existsSync(imagePath)) {
+        return {
+          content: [{ type: "text" as const, text: `Input image not found: ${imagePath}` }],
+          isError: true,
+        };
+      }
+      const imageBytes = readFileSync(imagePath);
+      const base64Data = Buffer.from(imageBytes).toString("base64");
+      const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+      const mimeType = MIME_TYPES[ext] ?? "image/png";
+      parts.push({ inline_data: { mime_type: mimeType, data: base64Data } });
+    }
+  }
+
+  const imageConfig: Record<string, string> = {};
+  if (args.aspect_ratio) imageConfig.aspectRatio = args.aspect_ratio;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          responseModalities: ["TEXT", "IMAGE"],
+          ...(Object.keys(imageConfig).length > 0 ? { imageConfig } : {}),
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    log.error("Gemini API error", { status: response.status, error: errorText.slice(0, 500) });
+    return {
+      content: [{ type: "text" as const, text: `Image generation failed: ${response.status} - ${errorText.slice(0, 200)}` }],
+      isError: true,
+    };
+  }
+
+  const data = (await response.json()) as {
+    candidates?: Array<{
+      content?: { parts?: Array<{ inlineData?: { mimeType: string; data: string } }> };
+    }>;
+  };
+
+  const part = data.candidates?.[0]?.content?.parts?.find(
+    (p) => p.inlineData?.mimeType?.startsWith("image/")
+  );
+
+  if (!part?.inlineData?.data) {
+    return {
+      content: [{ type: "text" as const, text: "Image generation returned no image data." }],
+      isError: true,
+    };
+  }
+
+  const imageBuffer = Buffer.from(part.inlineData.data, "base64");
+  await Bun.write(outputPath, imageBuffer);
+
+  log.info("Image generated (gemini)", { outputPath, sizeBytes: imageBuffer.length });
+  return {
+    content: [{ type: "text" as const, text: `Image saved to: ${outputPath}` }],
+  };
 }
 
 export function createMediaTools() {
@@ -65,111 +284,48 @@ export function createMediaTools() {
     tools: [
       tool(
         "image_generate",
-        "Generate or edit images using the Gemini API. Returns the file path to the saved PNG image. To edit or use existing images as reference/inspiration, provide their file paths via image_paths.",
+        "Generate or edit images. Defaults to OpenAI gpt-image-2. Set provider='gemini' to use Gemini 3 Pro (gemini-3-pro-image-preview) — only switch when the user explicitly asks for Gemini or gemini-3-pro. Returns the file path to the saved PNG image. To edit or use existing images as reference/inspiration, provide their file paths via image_paths.",
         {
           prompt: z.string().describe("Text prompt describing the image to generate or the edit to apply"),
-          image_paths: z.array(z.string()).optional().describe("Absolute paths to input images for editing or inspiration. The images will be sent to Gemini alongside the prompt."),
-          aspect_ratio: z.string().optional().describe("Aspect ratio. Supported: 1:1 (default), 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9"),
+          image_paths: z.array(z.string()).optional().describe("Absolute paths to input images for editing or inspiration. Sent alongside the prompt."),
+          aspect_ratio: z
+            .enum([
+              "1:1",
+              "4:5",
+              "3:4",
+              "2:3",
+              "5:8",
+              "9:16",
+              "9:21",
+              "5:4",
+              "4:3",
+              "3:2",
+              "8:5",
+              "16:9",
+              "21:9",
+            ])
+            .optional()
+            .describe(
+              "Aspect ratio. OpenAI gpt-image-2 renders each ratio at ~2K (e.g. 16:9 → 2560x1440, 9:16 → 1440x2560, 21:9 → 2688x1152, 1:1 → 2048x2048). Gemini supports the same set natively."
+            ),
+          quality: z
+            .enum(["low", "medium", "high", "auto"])
+            .optional()
+            .describe(
+              "Rendering quality. 'low' is fastest/cheapest, 'high' is slowest/best, 'auto' lets the model choose. Default: 'auto'. Applies to OpenAI; ignored by Gemini."
+            ),
+          provider: z.enum(["openai", "gemini"]).optional().describe("Image model provider. Defaults to 'openai' (gpt-image-2). Use 'gemini' only when the user explicitly requests gemini-3-pro."),
         },
         async (args) => {
           ensureDir(IMAGES_DIR);
-
-          const apiKey = getGeminiApiKey();
+          const provider = args.provider ?? "openai";
           const timestamp = Date.now();
           const outputPath = join(IMAGES_DIR, `${timestamp}.png`);
 
-          log.info("Generating image", {
-            prompt: args.prompt.slice(0, 100),
-            inputImages: args.image_paths?.length ?? 0,
-          });
-
-          // Build parts: text prompt + any input images
-          const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [
-            { text: args.prompt },
-          ];
-
-          if (args.image_paths) {
-            for (const imagePath of args.image_paths) {
-              if (!existsSync(imagePath)) {
-                return {
-                  content: [{ type: "text" as const, text: `Input image not found: ${imagePath}` }],
-                  isError: true,
-                };
-              }
-
-              const imageBytes = readFileSync(imagePath);
-              const base64Data = Buffer.from(imageBytes).toString("base64");
-              const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
-              const mimeType = MIME_TYPES[ext] ?? "image/png";
-
-              parts.push({
-                inline_data: {
-                  mime_type: mimeType,
-                  data: base64Data,
-                },
-              });
-            }
+          if (provider === "gemini") {
+            return generateWithGemini(args, outputPath);
           }
-
-          const imageConfig: Record<string, string> = {};
-          if (args.aspect_ratio) {
-            imageConfig.aspectRatio = args.aspect_ratio;
-          }
-
-          const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${apiKey}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents: [
-                  {
-                    parts,
-                  },
-                ],
-                generationConfig: {
-                  responseModalities: ["TEXT", "IMAGE"],
-                  ...(Object.keys(imageConfig).length > 0 ? { imageConfig } : {}),
-                },
-              }),
-            }
-          );
-
-          if (!response.ok) {
-            const errorText = await response.text();
-            log.error("Gemini API error", { status: response.status, error: errorText.slice(0, 500) });
-            return {
-              content: [{ type: "text" as const, text: `Image generation failed: ${response.status} - ${errorText.slice(0, 200)}` }],
-              isError: true,
-            };
-          }
-
-          const data = (await response.json()) as {
-            candidates?: Array<{
-              content?: {
-                parts?: Array<{ inlineData?: { mimeType: string; data: string } }>;
-              };
-            }>;
-          };
-
-          const part = data.candidates?.[0]?.content?.parts?.find(
-            (p) => p.inlineData?.mimeType?.startsWith("image/")
-          );
-
-          if (!part?.inlineData?.data) {
-            return {
-              content: [{ type: "text" as const, text: "Image generation returned no image data." }],
-              isError: true,
-            };
-          }
-
-          const imageBuffer = Buffer.from(part.inlineData.data, "base64");
-          await Bun.write(outputPath, imageBuffer);
-
-          log.info("Image generated", { outputPath, sizeBytes: imageBuffer.length });
-          return {
-            content: [{ type: "text" as const, text: `Image saved to: ${outputPath}` }],
-          };
+          return generateWithOpenAI(args, outputPath);
         }
       ),
 

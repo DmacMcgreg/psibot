@@ -43,9 +43,14 @@ export function createTelegramBot(deps: TelegramDeps) {
     agent: deps.agent,
     scheduler: deps.scheduler,
     state,
+    memory: deps.memory,
     runAgent: commands.runAgent,
     runQuickResearch: commands.runQuickResearchById,
     runDeepResearch: commands.runDeepResearchById,
+    digestChatId: config.TELEGRAM_GROUP_CHAT_IDS.length > 0
+      ? String(config.TELEGRAM_GROUP_CHAT_IDS[0])
+      : undefined,
+    digestTopicId: 49, // News topic — mirrors heartbeat digest
   });
   bot.on("callback_query:data", callbackHandler);
 
