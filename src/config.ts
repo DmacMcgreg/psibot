@@ -102,6 +102,36 @@ const envSchema = z.object({
   GLM_HAIKU_MODEL: z.string().default("glm-4.7"),
   GLM_SONNET_MODEL: z.string().default("glm-5-turbo"),
   GLM_OPUS_MODEL: z.string().default("glm-5"),
+  // Trading agents dashboard — endpoint that receives agent-run envelopes
+  // from completed scheduled jobs. Empty string disables publishing.
+  TRADING_BOT_URL: z.string().default("http://localhost:8000"),
+  // Skill curator — periodic consolidation pass over agent-created skills.
+  // See docs/plans/2026-05-04-hermes-port.md.
+  CURATOR_ENABLED: z
+    .string()
+    .default("true")
+    .transform((s) => s === "true"),
+  CURATOR_INTERVAL_HOURS: z
+    .string()
+    .default("168")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  CURATOR_MIN_IDLE_HOURS: z
+    .string()
+    .default("2")
+    .transform(Number)
+    .pipe(z.number().nonnegative()),
+  CURATOR_STALE_AFTER_DAYS: z
+    .string()
+    .default("30")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  CURATOR_ARCHIVE_AFTER_DAYS: z
+    .string()
+    .default("90")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  CURATOR_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
 });
 
 export type Config = z.infer<typeof envSchema>;

@@ -150,6 +150,19 @@ export interface AgentRunOptions {
   onText?: (text: string) => void;
   onToolUse?: (toolName: string, input?: Record<string, unknown>, subagent?: boolean) => void;
   onComplete?: (result: AgentRunResult) => void;
+  /**
+   * Internal flag — set when a run is itself a background self-improvement
+   * review fork. Suppresses turn-counter increments and the post-run review
+   * trigger so the fork can never recursively spawn another fork.
+   * Not exposed to callers; AgentService sets this on its own internal forks.
+   */
+  _isBackgroundReview?: boolean;
+  /**
+   * Internal flag — request the lightweight job-style system prompt instead
+   * of the full memory+identity+playbook stack. Used by the curator and
+   * other internal forks that don't need the user-facing context.
+   */
+  _lightweightSystemPrompt?: boolean;
 }
 
 // --- Portfolio ---
@@ -360,6 +373,13 @@ export interface AgentRunResult {
   promptTokens: number;
   numTurns: number;
   stopReason: StopReason;
+  /**
+   * True if the agent invoked a `telegram_send_*` tool during the run.
+   * The executor uses this to suppress the redundant wrapper notification
+   * ("Job 'X' completed\n\n{result}") since the user has already received
+   * the actual message via the tool.
+   */
+  deliveredViaTool: boolean;
 }
 
 export type TradingSignalDirection = "long" | "short" | "neutral";
