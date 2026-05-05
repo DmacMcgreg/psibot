@@ -14,7 +14,10 @@ import {
   insertToolUse,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
-import type { AgentRunOptions, AgentRunResult, StopReason } from "../shared/types.ts";
+import type { AgentRunOptions, AgentRunResult, StopReason, MessageSource } from "../shared/types.ts";
+import { pickReviewPrompt, type ReviewKind } from "./review-prompts.ts";
+import { withWriteOriginAsync, BACKGROUND_REVIEW } from "../skills/provenance.ts";
+import { StreamingContextScrubber } from "../shared/context-scrubber.ts";
 
 const log = createLogger("agent");
 
@@ -45,6 +48,25 @@ export class AgentService {
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
   private _keepAlive: (() => void) | null = null;
   private _pendingRestart = false;
+
+  /**
+   * Per-session counters for the background self-improvement review.
+   * Hermes increments `_turns_since_memory` on every user turn and fires
+   * the memory review at 10. The skill review fires when a SINGLE turn
+   * uses many tool iterations (numTurns from the SDK ≈ tool round-trips).
+   * Counters live in-process — losing them on restart just delays the
+   * next review by up to 10 turns, which is fine.
+   */
+  private reviewState = new Map<string, { turnsSinceMemory: number }>();
+  private static readonly MEMORY_REVIEW_INTERVAL = 10;
+  private static readonly SKILL_REVIEW_TURN_THRESHOLD = 10;
+
+  /** User-facing sources eligible for the background review. Heartbeat / job runs are excluded. */
+  private static readonly REVIEW_ELIGIBLE_SOURCES: ReadonlySet<MessageSource> = new Set<MessageSource>([
+    "telegram",
+    "web",
+    "mini-app",
+  ]);
 
   get pendingRestart(): boolean {
     return this._pendingRestart;
@@ -166,6 +188,10 @@ export class AgentService {
           // Annotate the result so downstream (Telegram, logs) knows this came from a fallback path.
           result.result = `[fallback: ${tier.backend}/${tier.model}, tier ${tierIdx + 1}/${tiers.length}]\n\n${result.result}`;
         }
+        // Background self-improvement review — fire-and-forget after a
+        // successful user-facing turn. Skipped when the run was itself a
+        // review fork (recursion guard) or was interrupted.
+        this.maybeFireBackgroundReview(options, result);
         return result;
       }
 
@@ -187,6 +213,161 @@ export class AgentService {
     throw new Error("buildFallbackTiers returned no tiers");
   }
 
+  /**
+   * Decide whether the just-completed turn should fire a background review,
+   * pick which kind (memory / skill / combined), and dispatch.
+   *
+   * Trigger logic (from Hermes run_agent.py:10583,13918):
+   *   - Memory review: every N user turns (default 10).
+   *   - Skill review: when a single turn used >= N tool iterations (default 10).
+   *   - Both together → combined review, single fork.
+   *
+   * Suppressed when:
+   *   - The run was itself a review fork (`_isBackgroundReview`).
+   *   - The source isn't user-facing (jobs, heartbeat — those have their own
+   *     learning loops via the heartbeat orchestrator).
+   *   - The run was interrupted or hit budget/turn limits (no useful signal).
+   *   - There's no sessionId to resume against (can't inherit context).
+   */
+  private maybeFireBackgroundReview(options: AgentRunOptions, result: AgentRunResult): void {
+    if (options._isBackgroundReview) return;
+    if (!AgentService.REVIEW_ELIGIBLE_SOURCES.has(options.source)) return;
+    if (result.stopReason !== "end_turn") return;
+    if (!result.sessionId) return;
+
+    // Increment the per-session memory counter on every user turn.
+    const sid = result.sessionId;
+    const state = this.reviewState.get(sid) ?? { turnsSinceMemory: 0 };
+    state.turnsSinceMemory += 1;
+
+    const memoryDue = state.turnsSinceMemory >= AgentService.MEMORY_REVIEW_INTERVAL;
+    const skillDue = result.numTurns >= AgentService.SKILL_REVIEW_TURN_THRESHOLD;
+
+    if (memoryDue) state.turnsSinceMemory = 0;
+    this.reviewState.set(sid, state);
+
+    if (!memoryDue && !skillDue) return;
+
+    const kind: ReviewKind = memoryDue && skillDue ? "combined" : memoryDue ? "memory" : "skill";
+    log.info("Firing background self-improvement review", {
+      sessionId: sid,
+      kind,
+      memoryDue,
+      skillDue,
+      numTurns: result.numTurns,
+    });
+
+    // Fire-and-forget. Failures log but never block the user-facing return.
+    void this.spawnBackgroundReview({
+      sessionId: sid,
+      kind,
+      source: options.source,
+      sourceId: options.sourceId,
+      chatContext: options.chatContext,
+    }).catch((err) => {
+      log.warn("Background review failed", {
+        sessionId: sid,
+        kind,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  /**
+   * Run the review fork. Resumes the same session so the SDK inherits the
+   * conversation history; the review prompt arrives as the next user turn.
+   *
+   * Wrapped in `withWriteOriginAsync(BACKGROUND_REVIEW)` so any
+   * `skill_manage create` calls inside the fork are marked agent-created.
+   * That's the curator-eligibility gate.
+   *
+   * Uses Sonnet (cheaper than Opus, capable enough for the review judgment).
+   * `maxTurns: 16` matches Hermes' bound — review forks should not turn into
+   * multi-hour wanderings.
+   *
+   * Surfaces a one-line summary to the originating chat when a tool call
+   * actually changed state. "Nothing to save." paths stay silent.
+   */
+  private async spawnBackgroundReview(args: {
+    sessionId: string;
+    kind: ReviewKind;
+    source: MessageSource;
+    sourceId?: string;
+    chatContext?: AgentRunOptions["chatContext"];
+  }): Promise<void> {
+    const prompt = pickReviewPrompt(args.kind);
+    const reviewSource: MessageSource = args.source; // resume same session source
+    const captured: string[] = [];
+
+    await withWriteOriginAsync(BACKGROUND_REVIEW, async () => {
+      const result = await this.runOnce({
+        prompt,
+        source: reviewSource,
+        sourceId: args.sourceId,
+        sessionId: args.sessionId,
+        chatContext: args.chatContext,
+        maxTurns: 16,
+        // Default to a Sonnet tier; the review wants real judgment but not Opus cost.
+        model: "claude-sonnet-4-5-20250929",
+        backend: "claude",
+        _isBackgroundReview: true,
+        onToolUse: (toolName, _input, _subagent) => {
+          // Capture skill/memory mutations for the surfaced summary.
+          if (
+            toolName.includes("skill_manage") ||
+            toolName.includes("memory_write_section") ||
+            toolName.includes("memory_append")
+          ) {
+            captured.push(toolName);
+          }
+        },
+      });
+      log.info("Background review completed", {
+        sessionId: args.sessionId,
+        kind: args.kind,
+        stopReason: result.stopReason,
+        costUsd: result.costUsd,
+        toolMutations: captured.length,
+      });
+
+      // Surface the result to the user only when something actually changed.
+      if (captured.length > 0) {
+        const summary = this.summarizeReviewActions(captured, args.kind);
+        await this.notifyReviewResult(summary, args.chatContext);
+      }
+    });
+  }
+
+  private summarizeReviewActions(toolNames: string[], kind: ReviewKind): string {
+    const counts = new Map<string, number>();
+    for (const name of toolNames) {
+      const short = name.replace(/^mcp__[^_]+__/, "");
+      counts.set(short, (counts.get(short) ?? 0) + 1);
+    }
+    const parts: string[] = [];
+    for (const [name, n] of counts) {
+      parts.push(n > 1 ? `${name} ×${n}` : name);
+    }
+    const label = kind === "combined" ? "memory + skills" : kind;
+    return `💾 Self-improvement review (${label}): ${parts.join(" · ")}`;
+  }
+
+  private async notifyReviewResult(summary: string, chatContext?: AgentRunOptions["chatContext"]): Promise<void> {
+    const bot = this.deps.getBot();
+    if (!bot) return;
+    try {
+      const targetChatId = chatContext?.chatId ?? this.deps.defaultChatIds[0]?.toString();
+      if (!targetChatId) return;
+      await bot.api.sendMessage(targetChatId, summary, {
+        ...(chatContext?.topicId ? { message_thread_id: chatContext.topicId } : {}),
+      });
+    } catch (err) {
+      log.debug("Failed to send review summary to Telegram", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private async runOnce(options: AgentRunOptions): Promise<AgentRunResult> {
     const config = getConfig();
     const maxBudget = options.maxBudgetUsd ?? config.DEFAULT_MAX_BUDGET_USD;
@@ -204,7 +385,9 @@ export class AgentService {
       maxBudget,
     });
 
-    const useLight = options.source === "job" && options.allowedTools?.length;
+    const useLight =
+      options._lightweightSystemPrompt ||
+      (options.source === "job" && options.allowedTools?.length);
     const systemPrompt = useLight
       ? buildJobPrompt()
       : buildSystemPrompt(this.memory, options.chatContext);
@@ -293,6 +476,7 @@ export class AgentService {
     let promptTokens = 0;
     let numTurns = 0;
     let stopReason: StopReason = "unknown";
+    let deliveredViaTool = false;
     const toolCache = new Map<string, { name: string; input?: Record<string, unknown>; emitted: boolean }>();
     let lastMessageAt = Date.now();
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -318,6 +502,11 @@ export class AgentService {
         }
       }, timeout);
     };
+
+    // Per-run scrubber: catches any `<memory-context>...</memory-context>`
+    // span the model echoes from injected recall context (defensive; nothing
+    // currently injects fences, but Phase 7 session-search recall will).
+    const scrubber = new StreamingContextScrubber();
 
     this._keepAlive = resetStaleTimer;
     try {
@@ -382,11 +571,13 @@ export class AgentService {
             if (Array.isArray(content)) {
               for (const block of content) {
                 if (block.type === "text") {
-                  options.onText?.(block.text);
+                  const visible = scrubber.feed(block.text);
+                  if (visible) options.onText?.(visible);
                 } else if (block.type === "tool_use") {
                   hasToolUse = true;
                   const input = block.input as Record<string, unknown> | undefined;
                   toolCache.set(block.id, { name: block.name, input, emitted: true });
+                  if (/telegram_send_/.test(block.name)) deliveredViaTool = true;
                   options.onToolUse?.(block.name, input, false);
                   if (sessionId) {
                     try {
@@ -414,6 +605,7 @@ export class AgentService {
             const id = message.tool_use_id;
             if (!toolCache.has(id)) {
               toolCache.set(id, { name: message.tool_name, emitted: true });
+              if (/telegram_send_/.test(message.tool_name)) deliveredViaTool = true;
               options.onToolUse?.(message.tool_name, undefined, true);
               if (sessionId) {
                 try {
@@ -470,6 +662,25 @@ export class AgentService {
         }
       }
 
+      // Flush any held-back partial-tag tail. If the stream ended mid-span,
+      // the buffer is dropped (safer than leaking partial recall context).
+      const trailing = scrubber.flush();
+      if (trailing) options.onText?.(trailing);
+
+      // The result message's `result` field is the model's final assembled
+      // response — sanitize once in case the model echoed a complete fence
+      // within a single text block (the streaming scrubber catches splits;
+      // this catches non-split echoes that sit inside a single delta).
+      if (resultText) {
+        const cleaned = resultText
+          .replace(/<memory-context>[\s\S]*?<\/memory-context>/gi, "")
+          .replace(/<\/?memory-context>/gi, "");
+        if (cleaned !== resultText) {
+          log.warn("Stripped memory-context fence from result text", { runId });
+          resultText = cleaned;
+        }
+      }
+
       // Generate fallback text if the agent didn't produce a response
       if (!resultText.trim() && stopReason !== "end_turn") {
         const reasons: Record<StopReason, string> = {
@@ -519,6 +730,7 @@ export class AgentService {
         promptTokens,
         numTurns,
         stopReason,
+        deliveredViaTool,
       };
 
       options.onComplete?.(result);
@@ -562,6 +774,7 @@ export class AgentService {
           promptTokens,
           numTurns,
           stopReason,
+          deliveredViaTool,
         };
 
         options.onComplete?.(result);

@@ -54,6 +54,25 @@ import { pollShadowC2Zulu } from "../capture/shadow-c2zulu.ts";
 import { pollShadowAfterHourAndFallbacks } from "../capture/shadow-afterhour.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { Bot, InputFile as GrammyInputFile } from "grammy";
+import { hybridSearch } from "../atlas/search.ts";
+import { getItem as atlasGetItem, counts as atlasCounts } from "../atlas/index.ts";
+import {
+  synthesizeDailyNarrative,
+  synthesizeWeeklyThemes,
+  synthesizeMonthly,
+} from "../atlas/synthesize.ts";
+import { listSkills, readSkill, validateSkillName, ensureSkillsDir } from "../skills/index.ts";
+import { bumpView, bumpUse, getRecord as getSkillUsage } from "../skills/usage.ts";
+import {
+  createSkill,
+  editSkill,
+  patchSkill,
+  writeSupportFile,
+  removeSupportFile,
+  deleteSkill,
+  setPinnedFlag,
+} from "../skills/manage.ts";
+import { searchSessions } from "../sessions/search.ts";
 
 const log = createLogger("tools");
 
@@ -253,6 +272,313 @@ export function createAgentTools(deps: ToolDeps) {
         }
       ),
 
+      // --- Skill library (procedural how-to knowledge) ---
+      // Skills live at <PSIBOT_DIR>/skills/<name>/SKILL.md with optional
+      // references/, templates/, scripts/ subdirs. Distinct from `agents_list`
+      // (subagent personas) and from `knowledge/` (static project context).
+      // The skill library is for "how to do X class of task" — patched and
+      // grown over time by the background self-improvement review.
+      tool(
+        "skills_list",
+        "List all installed skills (procedural how-to packets the agent has accumulated). Returns name + description + tags only — call skill_view to load a skill's full body. Use this at the start of any non-trivial task to find a relevant skill before reaching for raw tools.",
+        {},
+        async () => {
+          ensureSkillsDir();
+          const skills = listSkills();
+          if (skills.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: "No skills installed yet. The skill library grows as the background self-improvement review captures procedural knowledge from past sessions.",
+                },
+              ],
+            };
+          }
+          const text = skills
+            .map((s) => {
+              const tagPart = s.tags.length > 0 ? `  [${s.tags.join(", ")}]` : "";
+              return `- **${s.name}** — ${s.description}${tagPart}`;
+            })
+            .join("\n");
+          return { content: [{ type: "text" as const, text }] };
+        }
+      ),
+
+      tool(
+        "skill_view",
+        "Read the full body of a skill (SKILL.md plus a manifest of references/, templates/, scripts/ files). Use this when skills_list surfaced a relevant skill and you want to follow it. Bumps the skill's view counter so the curator knows it was consulted.",
+        {
+          name: z.string().describe("Skill name (slug from skills_list)"),
+          load: z
+            .boolean()
+            .optional()
+            .describe(
+              "Set true if you're about to actually follow this skill's procedure (bumps use_count, not just view_count). Default: false."
+            ),
+        },
+        async (args) => {
+          const err = validateSkillName(args.name);
+          if (err) {
+            return { content: [{ type: "text" as const, text: err }], isError: true };
+          }
+          const skill = readSkill(args.name);
+          if (!skill) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `Skill '${args.name}' not found. Use skills_list to see what's available.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          bumpView(args.name);
+          if (args.load) bumpUse(args.name);
+          const supportLines: string[] = [];
+          if (skill.references.length > 0) {
+            supportLines.push(`### references/\n${skill.references.map((f) => `- references/${f}`).join("\n")}`);
+          }
+          if (skill.templates.length > 0) {
+            supportLines.push(`### templates/\n${skill.templates.map((f) => `- templates/${f}`).join("\n")}`);
+          }
+          if (skill.scripts.length > 0) {
+            supportLines.push(`### scripts/\n${skill.scripts.map((f) => `- scripts/${f}`).join("\n")}`);
+          }
+          const support = supportLines.length > 0
+            ? `\n\n---\n\n## Support files\n\n${supportLines.join("\n\n")}`
+            : "";
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `${skill.body.trim()}${support}`,
+              },
+            ],
+          };
+        }
+      ),
+
+      tool(
+        "skill_manage",
+        "Create, edit, or archive a skill in the skill library. Actions: create (new SKILL.md), edit (full rewrite), patch (append a section), write_file / remove_file (manage references/, templates/, scripts/), delete (archive — recoverable, NEVER hard-deleted). Skills created inside the background self-improvement review fork are marked agent-created and become eligible for autonomous curator management; skills you create from foreground turns belong to the user and the curator never touches them.",
+        {
+          action: z
+            .enum(["create", "edit", "patch", "write_file", "remove_file", "delete", "pin", "unpin"])
+            .describe("Mutation to perform."),
+          name: z.string().describe("Skill name (slug, lowercase-with-hyphens)."),
+          content: z
+            .string()
+            .optional()
+            .describe(
+              "For create/edit: full SKILL.md body. May include YAML frontmatter; if omitted, frontmatter will be synthesized from `description`."
+            ),
+          description: z
+            .string()
+            .optional()
+            .describe(
+              "For create when content has no frontmatter: one-sentence description of what this skill is for."
+            ),
+          version: z.string().optional().describe("For create: version string (default 1.0.0)."),
+          tags: z.array(z.string()).optional().describe("For create: tag list."),
+          section_heading: z
+            .string()
+            .optional()
+            .describe('For patch: section heading to append (e.g. "## Pitfalls" or "Pitfalls").'),
+          section_body: z.string().optional().describe("For patch: section body to append."),
+          file_path: z
+            .string()
+            .optional()
+            .describe(
+              "For write_file/remove_file: relative path under the skill (e.g. 'references/postgres-quirks.md', 'scripts/verify.sh', 'templates/job.yaml'). Must start with references/, templates/, or scripts/."
+            ),
+          file_content: z
+            .string()
+            .optional()
+            .describe("For write_file: file content."),
+          absorbed_into: z
+            .string()
+            .optional()
+            .describe(
+              'For delete: REQUIRED. Pass an umbrella skill name when this skill is being merged into another, or empty string "" for true pruning. Drives downstream cron-job skill-reference migration.'
+            ),
+        },
+        async (args) => {
+          const action = args.action;
+          let result: { success: boolean; message: string; target?: string; path?: string };
+          try {
+            if (action === "create") {
+              if (!args.content) {
+                return {
+                  content: [{ type: "text" as const, text: "create requires `content`" }],
+                  isError: true,
+                };
+              }
+              result = createSkill({
+                name: args.name,
+                content: args.content,
+                frontmatter: {
+                  description: args.description ?? "",
+                  version: args.version,
+                  tags: args.tags,
+                },
+              });
+            } else if (action === "edit") {
+              if (!args.content) {
+                return {
+                  content: [{ type: "text" as const, text: "edit requires `content`" }],
+                  isError: true,
+                };
+              }
+              result = editSkill({ name: args.name, content: args.content });
+            } else if (action === "patch") {
+              if (!args.section_heading || !args.section_body) {
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: "patch requires `section_heading` and `section_body`",
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+              result = patchSkill({
+                name: args.name,
+                section_heading: args.section_heading,
+                section_body: args.section_body,
+              });
+            } else if (action === "write_file") {
+              if (!args.file_path || args.file_content === undefined) {
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: "write_file requires `file_path` and `file_content`",
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+              result = writeSupportFile({
+                name: args.name,
+                file_path: args.file_path,
+                file_content: args.file_content,
+              });
+            } else if (action === "remove_file") {
+              if (!args.file_path) {
+                return {
+                  content: [{ type: "text" as const, text: "remove_file requires `file_path`" }],
+                  isError: true,
+                };
+              }
+              result = removeSupportFile({ name: args.name, file_path: args.file_path });
+            } else if (action === "delete") {
+              if (args.absorbed_into === undefined) {
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: 'delete requires `absorbed_into` (pass empty string "" for true pruning)',
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+              result = deleteSkill({ name: args.name, absorbed_into: args.absorbed_into });
+            } else if (action === "pin") {
+              result = setPinnedFlag({ name: args.name, pinned: true });
+            } else if (action === "unpin") {
+              result = setPinnedFlag({ name: args.name, pinned: false });
+            } else {
+              return {
+                content: [{ type: "text" as const, text: `unknown action: ${action}` }],
+                isError: true,
+              };
+            }
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `skill_manage ${action} failed: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          return {
+            content: [{ type: "text" as const, text: result.message }],
+            isError: !result.success,
+          };
+        }
+      ),
+
+      tool(
+        "session_search",
+        "Search across past conversation sessions (chat_messages) for a query. Returns the top N sessions with windowed transcript excerpts (100K-char window centered on the match, 25% before / 75% after). Use this for cross-session recall — 'when did we last talk about X', 'what did we figure out last time', 'remind me what we decided'. Distinct from atlas_search (knowledge items) and memory_search (knowledge files): this searches the actual conversation history.",
+        {
+          query: z.string().describe("Search phrase. Plain language; tokens are extracted automatically."),
+          max_sessions: z
+            .number()
+            .int()
+            .min(1)
+            .max(10)
+            .optional()
+            .describe("How many top-hit sessions to return. Default 3."),
+        },
+        async (args) => {
+          const hits = searchSessions(args.query, { maxSessions: args.max_sessions });
+          if (hits.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `No prior sessions matched "${args.query}". The chat history may not yet cover this topic.`,
+                },
+              ],
+            };
+          }
+          const blocks = hits.map((h) => {
+            const header = `## Session ${h.sessionId}\n- source: ${h.source}\n- started: ${h.startedAt}\n- ${h.hitCount} hit${h.hitCount === 1 ? "" : "s"} across ${h.totalMessages} messages\n`;
+            return `${header}\n${h.excerpt}`;
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: blocks.join("\n\n---\n\n"),
+              },
+            ],
+          };
+        }
+      ),
+
+      tool(
+        "skill_status",
+        "Inspect the usage telemetry for a skill — counters, last-used timestamp, state (active/stale/archived), pinned flag, agent-created marker. Helpful when deciding whether to patch an existing skill vs create a new one.",
+        {
+          name: z.string().describe("Skill name"),
+        },
+        async (args) => {
+          const err = validateSkillName(args.name);
+          if (err) return { content: [{ type: "text" as const, text: err }], isError: true };
+          const rec = getSkillUsage(args.name);
+          const lines = [
+            `**${args.name}**`,
+            `- created_by: ${rec.created_by ?? "(user)"}`,
+            `- state: ${rec.state}${rec.pinned ? " (pinned)" : ""}`,
+            `- created_at: ${rec.created_at}`,
+            `- view_count: ${rec.view_count} (last: ${rec.last_viewed_at ?? "never"})`,
+            `- use_count: ${rec.use_count} (last: ${rec.last_used_at ?? "never"})`,
+            `- patch_count: ${rec.patch_count} (last: ${rec.last_patched_at ?? "never"})`,
+          ];
+          if (rec.archived_at) lines.push(`- archived_at: ${rec.archived_at}`);
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        }
+      ),
+
       tool(
         "memory_search",
         "Search across all knowledge files for a query. Returns matching snippets with file paths.",
@@ -351,6 +677,169 @@ export function createAgentTools(deps: ToolDeps) {
             ],
           };
         }
+      ),
+
+      // --- Atlas (unified knowledge index) ---
+      tool(
+        "atlas_search",
+        "Primary recall tool. Hybrid FTS + vector-KNN search across the unified Atlas index (pending items, YouTube summaries, trading signals, research notes, scan archive, daily logs). Use this before answering any 'what did I save about X', 'remember when', or recall-style question. Prefer this over memory_search for anything beyond the hand-maintained knowledge/ markdown files.",
+        {
+          query: z.string().describe("Natural-language or keyword query — e.g. 'claude agent sdk', 'AAPL insider buys', 'obsidian plugin'. FTS operators (AND, OR, NEAR, \"phrase\") are allowed; unsafe tokens are auto-quoted."),
+          kind: z
+            .enum(["inbox", "youtube", "signal", "research", "scan", "daily_log"])
+            .optional()
+            .describe("Restrict to one source kind. Omit for all kinds."),
+          since: z
+            .string()
+            .optional()
+            .describe("ISO 8601 lower bound on captured_at — e.g. '2026-03-01' or '2026-04-20T00:00:00Z'. Use when the user asked about recent or time-bounded recall."),
+          entity: z
+            .string()
+            .optional()
+            .describe("Optional entity name to boost (ticker / person / topic). Phase 3+ feature — currently a soft boost only when entity tables exist."),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(50)
+            .optional()
+            .describe("Max results (default 10)."),
+        },
+        async (args) => {
+          try {
+            const results = await hybridSearch(args.query, {
+              kind: args.kind,
+              since: args.since,
+              entity: args.entity ?? null,
+              limit: args.limit ?? 10,
+            });
+            if (results.length === 0) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `No atlas results for "${args.query}".`,
+                  },
+                ],
+              };
+            }
+            const lines = results.map((r) => {
+              const bodySnippet = (r.body ?? "").slice(0, 240).replace(/\s+/g, " ").trim();
+              const url = r.url ? ` ${r.url}` : "";
+              return [
+                `[${r.kind}#${r.id}] ${r.title}${url}`,
+                `  captured ${r.captured_at}  score=${r.score.toFixed(3)}${r.ftsRank !== null ? ` fts=${(-r.ftsRank).toFixed(2)}` : ""}${r.vecDistance !== null ? ` vec=${r.vecDistance.toFixed(3)}` : ""}`,
+                bodySnippet ? `  ${bodySnippet}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n");
+            });
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: lines.join("\n\n"),
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `Atlas search failed: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        },
+      ),
+
+      tool(
+        "atlas_get",
+        "Fetch a single atlas item by id (from atlas_search results). Returns full body, url, metadata, kind, captured_at.",
+        {
+          id: z.number().int().describe("atlas_items.id"),
+        },
+        async (args) => {
+          const item = atlasGetItem(args.id);
+          if (!item) {
+            return {
+              content: [{ type: "text" as const, text: `No atlas item id=${args.id}` }],
+              isError: true,
+            };
+          }
+          const text = [
+            `# ${item.title}`,
+            `kind: ${item.kind}   captured: ${item.captured_at}${item.url ? `   url: ${item.url}` : ""}`,
+            `source: ${item.source_table}:${item.source_id}`,
+            "",
+            item.body || "(no body)",
+            "",
+            `metadata: ${item.metadata_json}`,
+          ].join("\n");
+          return { content: [{ type: "text" as const, text }] };
+        },
+      ),
+
+      tool(
+        "atlas_stats",
+        "Counts of items in the Atlas index, grouped by kind, plus how many are awaiting embedding / entity extraction. Use to verify coverage before answering 'do I have anything about X' when search is empty.",
+        {},
+        async () => {
+          const c = atlasCounts();
+          const lines = [
+            `total: ${c.total}`,
+            ...Object.entries(c.byKind).map(([k, n]) => `  ${k}: ${n}`),
+            `awaiting embedding: ${c.awaitingEmbedding}`,
+            `awaiting entities: ${c.awaitingEntities}`,
+          ];
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        },
+      ),
+
+      tool(
+        "atlas_synthesize",
+        "Run Atlas synthesis manually. 'daily' builds today's narrative from the last 24h of atlas items and appends to the daily log. 'weekly' produces a themes report for the current ISO week at knowledge/weekly/YYYY-Www.md. 'monthly' runs the scan map-reduce (Sonnet map, Opus reduce) and appends to knowledge/trading/{PLAYBOOK,LESSONS,MODELS,RESEARCH}.md. Notifications go to the News / Trading topics when configured.",
+        {
+          scope: z.enum(["daily", "weekly", "monthly"]).describe("Which synthesis pass to run."),
+        },
+        async (args) => {
+          if (args.scope === "daily") {
+            const r = await synthesizeDailyNarrative(memory);
+            const preview = r.text.split(/\n+/).find((l) => l.trim().length > 0) ?? "";
+            return {
+              content: [{
+                type: "text" as const,
+                text: r.written
+                  ? `Daily narrative written for ${r.date} (${r.itemCount} items).\n\n${preview}`
+                  : `No daily narrative written (${r.itemCount} items) — thin day.`,
+              }],
+            };
+          }
+          if (args.scope === "weekly") {
+            const r = await synthesizeWeeklyThemes();
+            return {
+              content: [{
+                type: "text" as const,
+                text: r.written && r.path
+                  ? `Weekly themes written for ${r.week} → ${r.path.replace(process.cwd() + "/", "")}`
+                  : `No weekly themes written (${r.week}) — not enough daily logs/mentions this week.`,
+              }],
+            };
+          }
+          const r = await synthesizeMonthly();
+          const appended = r.appendedTo.map((p) => p.replace(process.cwd() + "/", "")).join(", ") || "(none)";
+          return {
+            content: [{
+              type: "text" as const,
+              text: r.reduced
+                ? `Monthly synthesis complete: mapped ${r.mapped} scan(s); appended to ${appended}.`
+                : `Monthly synthesis complete: mapped ${r.mapped} scan(s); no append candidates.`,
+            }],
+          };
+        },
       ),
 
       // --- Job tools ---
