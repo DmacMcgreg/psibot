@@ -414,11 +414,16 @@ export function tmaJobDetailFragment(job: Job, runs: JobRun[], allJobs?: Job[]):
     </div>
 
     <div style="display:flex; gap:6px; margin-top:12px; flex-wrap:wrap;">
-      <button class="tma-btn tma-btn-sm" hx-post="/tma/api/jobs/${job.id}/trigger" hx-target="#job-${job.id}" hx-swap="outerHTML">Run Now</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-get="/tma/api/jobs/${job.id}/edit" hx-target="#job-${job.id}" hx-swap="outerHTML">Edit</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/toggle" hx-target="#job-${job.id}" hx-swap="outerHTML">${toggleLabel}</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/pause" hx-target="#job-${job.id}" hx-swap="outerHTML">${paused ? "Unpause" : "Pause 24h"}</button>
-      <button class="tma-btn tma-btn-sm tma-btn-danger" hx-post="/tma/api/jobs/${job.id}/delete" hx-target="#job-list" hx-swap="innerHTML" hx-confirm="Delete this job?">Delete</button>
+      <button class="tma-btn tma-btn-sm" hx-post="/tma/api/jobs/${job.id}/trigger" hx-target="#job-${job.id}" hx-swap="outerHTML"
+              hx-disabled-elt="this" hx-on::after-request="showToast('Job triggered')">Run Now</button>
+      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-get="/tma/api/jobs/${job.id}/edit" hx-target="#job-${job.id}" hx-swap="outerHTML"
+              hx-disabled-elt="this">Edit</button>
+      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/toggle" hx-target="#job-${job.id}" hx-swap="outerHTML"
+              hx-disabled-elt="this" hx-on::after-request="showToast('${toggleLabel === 'Disable' ? 'Disabled' : 'Enabled'}')">${toggleLabel}</button>
+      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/pause" hx-target="#job-${job.id}" hx-swap="outerHTML"
+              hx-disabled-elt="this" hx-on::after-request="showToast('${paused ? 'Unpaused' : 'Paused 24h'}')">${paused ? "Unpause" : "Pause 24h"}</button>
+      <button class="tma-btn tma-btn-sm tma-btn-danger" hx-post="/tma/api/jobs/${job.id}/delete" hx-target="#job-list" hx-swap="innerHTML" hx-confirm="Delete this job?"
+              hx-disabled-elt="this">Delete</button>
     </div>
   </div>`;
 }

@@ -1,8 +1,10 @@
 export function miniAppLayout(activePage: string, body: string): string {
   const tabs = [
     { id: "chat", label: "Chat", href: "/tma/chat" },
+    { id: "library", label: "Library", href: "/tma/library" },
     { id: "jobs", label: "Jobs", href: "/tma/jobs" },
     { id: "agents", label: "Agents", href: "/tma/agents" },
+    { id: "skills", label: "Skills", href: "/tma/skills" },
     { id: "youtube", label: "YouTube", href: "/tma/youtube" },
     { id: "memory", label: "Memory", href: "/tma/memory" },
     { id: "logs", label: "Logs", href: "/tma/logs" },
@@ -79,6 +81,16 @@ export function miniAppLayout(activePage: string, body: string): string {
       raw.style.display = isRaw ? 'none' : 'block';
       rendered.style.display = isRaw ? 'block' : 'none';
       btn.textContent = isRaw ? 'Raw' : 'Rendered';
+    };
+    // Toast notifications
+    window.showToast = function(msg) {
+      var existing = document.querySelector('.tma-toast');
+      if (existing) existing.remove();
+      var el = document.createElement('div');
+      el.className = 'tma-toast';
+      el.textContent = '✓ ' + msg;
+      document.body.appendChild(el);
+      setTimeout(function() { if (el.parentNode) el.remove(); }, 2000);
     };
   </script>
 </body>
