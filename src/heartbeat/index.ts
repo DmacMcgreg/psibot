@@ -26,9 +26,20 @@ import { briefingActionKeyboard } from "../telegram/keyboards.ts";
 import type { Bot } from "grammy";
 import type { PendingItem } from "../shared/types.ts";
 import { checkAutonomyRule } from "./autonomy.ts";
+import type { MemorySystem } from "../memory/index.ts";
+import { embedBatch } from "../shared/embeddings.ts";
+import { getDb } from "../db/index.ts";
+import { indexItemEntities } from "../atlas/entities.ts";
+import type { AtlasItem } from "../atlas/index.ts";
+import type { AgentService } from "../agent/index.ts";
+import { maybeRunCurator } from "../curator/index.ts";
 
 const log = createLogger("heartbeat");
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
+
+function hhmm(d = new Date()): string {
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 interface OrchestratorState {
   lastRunAt: string | null;
@@ -48,6 +59,13 @@ interface OrchestratorDeps {
   digestChatId?: string;
   digestTopicId?: number;
   config: OrchestratorConfig;
+  memory: MemorySystem;
+  /**
+   * Optional agent reference. When provided, the heartbeat will call
+   * `maybeRunCurator` once per tick. Without it, the autonomous skill
+   * curator is silently disabled (the rest of the heartbeat keeps working).
+   */
+  agent?: AgentService;
 }
 
 interface TickResult {
@@ -56,6 +74,15 @@ interface TickResult {
   droppedCount: number;
   topItems: PendingItem[];
   autoResearchItems: PendingItem[];
+}
+
+interface ResearchCompletionRecord {
+  itemId: number;
+  title: string;
+  label: "Quick" | "Deep";
+  notePath: string | null;
+  summary: string;
+  url: string | null;
 }
 
 export class HeartbeatRunner {
@@ -67,6 +94,15 @@ export class HeartbeatRunner {
   private config: OrchestratorConfig;
   private running = false;
   private statePath: string;
+  private memory: MemorySystem;
+  private agent?: AgentService;
+  /**
+   * Timestamp of the last observed agent activity. The curator's idle gate
+   * is `now - lastAgentActiveAt`. We bump this forward whenever the agent
+   * has any active run, leaving it alone when idle — so it tracks the
+   * "last not-idle" moment.
+   */
+  private lastAgentActiveAt: number = Date.now();
 
   constructor(deps: OrchestratorDeps) {
     this.getBot = deps.getBot;
@@ -74,6 +110,8 @@ export class HeartbeatRunner {
     this.digestChatId = deps.digestChatId;
     this.digestTopicId = deps.digestTopicId;
     this.config = deps.config;
+    this.memory = deps.memory;
+    this.agent = deps.agent;
     this.statePath = join(KNOWLEDGE_DIR, "orchestrator-state.json");
   }
 
@@ -158,6 +196,26 @@ export class HeartbeatRunner {
         log.error("Theme clustering failed", { error: String(err) });
       }
 
+      // --- Phase 3c: Atlas embedding queue ---
+      try {
+        const embedded = await this.phaseEmbedding();
+        if (embedded > 0) {
+          log.info("Atlas embedding queue processed", { embedded });
+        }
+      } catch (err) {
+        log.error("Atlas embedding queue failed", { error: String(err) });
+      }
+
+      // --- Phase 3d: Atlas entity extraction queue ---
+      try {
+        const extracted = await this.phaseEntityExtraction();
+        if (extracted > 0) {
+          log.info("Atlas entity extraction processed", { items: extracted });
+        }
+      } catch (err) {
+        log.error("Atlas entity extraction failed", { error: String(err) });
+      }
+
       // --- Phase 2b: Auto-research strong signals ---
       if (result.autoResearchItems.length > 0) {
         log.info("Auto-researching strong signal items", {
@@ -180,8 +238,8 @@ export class HeartbeatRunner {
       // Also surface previously triaged but never-surfaced items
       await this.surfaceBacklog();
 
-      // --- Phase 5: Execute queued research ---
-      await this.executeQueuedResearch();
+      // --- Phase 5: Execute queued research (silent — saves to NotePlan only) ---
+      const researchCompletions = await this.executeQueuedResearch();
 
       // Update state
       const newState: OrchestratorState = {
@@ -197,6 +255,8 @@ export class HeartbeatRunner {
         dropped: result.droppedCount,
         runCount: newState.runCount,
       });
+
+      this.writeTickDailyLog(result, researchCompletions);
     } catch (err) {
       log.error("Heartbeat orchestrator error", { error: String(err) });
     }
@@ -206,6 +266,24 @@ export class HeartbeatRunner {
       await this.checkDueReminders();
     } catch (err) {
       log.error("Due reminders check failed", { error: String(err) });
+    }
+
+    // --- Phase 6: Skill curator ---
+    // Best-effort. `shouldRunNow()` gates on enabled + interval; the
+    // min-idle-hours gate is applied here using `lastAgentActiveAt`. The
+    // curator itself is a long-running LLM pass — fire-and-forget so the
+    // heartbeat tick stays bounded. The curator's own state file prevents
+    // a second concurrent run on the next tick.
+    if (this.agent) {
+      // Refresh "last active" if anything is currently running.
+      if (this.agent.activeRunCount > 0) {
+        this.lastAgentActiveAt = Date.now();
+      }
+      const idleForSeconds = (Date.now() - this.lastAgentActiveAt) / 1000;
+      void maybeRunCurator(this.agent, {
+        idleForSeconds,
+        onSummary: (s) => log.info(s),
+      }).catch((err) => log.warn("Curator tick failed", { error: String(err) }));
     }
 
     this.running = false;
@@ -431,23 +509,17 @@ export class HeartbeatRunner {
   }
 
   // --- Phase 5: Execute queued research (triggered by Telegram buttons or NotePlan tags) ---
-  private async executeQueuedResearch(): Promise<void> {
+  private async executeQueuedResearch(): Promise<ResearchCompletionRecord[]> {
     const queued = getQueuedResearchItems(3);
-    if (queued.length === 0) return;
+    if (queued.length === 0) return [];
 
-    const bot = this.getBot();
     log.info("Executing queued research", { count: queued.length });
 
-    const targetChatIds: (string | number)[] = this.digestChatId
-      ? [this.digestChatId]
-      : this.defaultChatIds;
-    const topicOpts = this.digestChatId && this.digestTopicId
-      ? { message_thread_id: this.digestTopicId }
-      : {};
+    const completions: ResearchCompletionRecord[] = [];
 
     for (const item of queued) {
       const isDeep = item.auto_decision === "deep_research_queued";
-      const label = isDeep ? "Deep" : "Quick";
+      const label: "Quick" | "Deep" = isDeep ? "Deep" : "Quick";
 
       try {
         updatePendingItem(item.id, { auto_decision: isDeep ? "deep_research_running" : "quick_research_running" });
@@ -457,10 +529,8 @@ export class HeartbeatRunner {
           ? await deepResearch(item)
           : await preliminaryResearch(item);
 
-        // Both quick and deep research create NotePlan notes with theme linking
         const notePath = createResearchNote(item, result);
 
-        // Only update noteplan_path if note was created — don't overwrite existing path with null
         const updates: Record<string, string | null> = {
           status: "archived",
           auto_decision: isDeep ? "deep_research_done" : "quick_research_done",
@@ -479,12 +549,124 @@ export class HeartbeatRunner {
 
         log.info(`${label} research complete`, { itemId: item.id, title: result.title, noteSaved: !!notePath });
 
-        // Research saved silently to NotePlan — no Telegram notification
+        completions.push({
+          itemId: item.id,
+          title: result.title,
+          label,
+          notePath,
+          summary: result.summary,
+          url: item.url ?? null,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`${label} research failed`, { itemId: item.id, error: message });
         updatePendingItem(item.id, { auto_decision: isDeep ? "deep_research_failed" : "quick_research_failed" });
       }
+    }
+
+    return completions;
+  }
+
+  // --- Phase 3c: Embed unembedded atlas_items via Gemini + sqlite-vec ---
+  private async phaseEmbedding(): Promise<number> {
+    const db = getDb();
+    const BATCH = 20;
+    const BODY_CAP = 2000;
+    const rows = db
+      .prepare<{ id: number; title: string; body: string }, [number]>(
+        `SELECT id, title, body
+         FROM atlas_items
+         WHERE embedded_at IS NULL
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(BATCH);
+
+    if (rows.length === 0) return 0;
+
+    const texts = rows.map((r) => {
+      const title = (r.title ?? "").trim();
+      const body = (r.body ?? "").slice(0, BODY_CAP).trim();
+      return title && body ? `${title}\n\n${body}` : title || body || " ";
+    });
+
+    const vectors = await embedBatch(texts);
+
+    const insert = db.prepare(
+      "INSERT OR REPLACE INTO atlas_items_vec (rowid, embedding) VALUES (?, ?)",
+    );
+    const markEmbedded = db.prepare(
+      "UPDATE atlas_items SET embedded_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
+    );
+
+    let count = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const vec = vectors[i];
+      try {
+        insert.run(row.id, vec);
+        markEmbedded.run(row.id);
+        count++;
+      } catch (err) {
+        log.error("Failed to insert atlas vector", {
+          id: row.id,
+          error: String(err),
+        });
+      }
+    }
+    return count;
+  }
+
+  // --- Phase 3d: Extract entities from unprocessed atlas items ---
+  private async phaseEntityExtraction(): Promise<number> {
+    const db = getDb();
+    const BATCH = 30;
+    const rows = db
+      .prepare<AtlasItem, [number]>(
+        `SELECT *
+         FROM atlas_items
+         WHERE entity_extracted_at IS NULL
+           AND length(body) + length(title) >= 50
+         ORDER BY captured_at DESC
+         LIMIT ?`,
+      )
+      .all(BATCH);
+
+    if (rows.length === 0) return 0;
+
+    let processed = 0;
+    for (const item of rows) {
+      try {
+        const n = await indexItemEntities(item);
+        processed++;
+        log.info("Extracted entities", { itemId: item.id, kind: item.kind, count: n });
+      } catch (err) {
+        log.error("Per-item entity extraction failed", {
+          itemId: item.id,
+          error: String(err),
+        });
+        db.prepare(
+          "UPDATE atlas_items SET entity_extracted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
+        ).run(item.id);
+      }
+    }
+    return processed;
+  }
+
+  private writeTickDailyLog(result: TickResult, completions: ResearchCompletionRecord[]): void {
+    const parts = [
+      `intake=${result.pendingProcessed}`,
+      `triaged=${result.triagedCount}`,
+      `dropped=${result.droppedCount}`,
+      `top=${result.topItems.length}`,
+      `auto-research=${result.autoResearchItems.length}`,
+      `researched-complete=${completions.length}`,
+    ];
+    const line = `- ${hhmm()} heartbeat: ${parts.join(", ")}`;
+    try {
+      this.memory.appendDailyLog(line);
+    } catch (err) {
+      log.error("Failed to append heartbeat daily log", { error: String(err) });
     }
   }
 

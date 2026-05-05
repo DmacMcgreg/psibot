@@ -17,16 +17,28 @@ const THRESHOLDS: Record<AutonomyLevel, { minDecisions: number; minAgreement: nu
 
 const LEVEL_ORDER: AutonomyLevel[] = ["manual", "suggest", "auto_report", "silent"];
 
+export interface AutonomyLevelChange {
+  signalType: string;
+  signalValue: string;
+  from: AutonomyLevel;
+  to: AutonomyLevel;
+  learnedAction: string;
+  confidence: number;
+  decisions: number;
+  direction: "promoted" | "demoted" | "reset";
+}
+
 /**
  * After a user action, recalculate confidence for the relevant signal.
  * Updates autonomy_rules table and progresses/regresses level.
+ * Returns change metadata when the level actually moved, otherwise null.
  */
 export function updateAutonomyFromFeedback(params: {
   signalType: string;
   signalValue: string;
   systemRecommendation: string;
   userAction: string;
-}): void {
+}): AutonomyLevelChange | null {
   const { signalType, signalValue, systemRecommendation, userAction } = params;
   const isAgreement = systemRecommendation === userAction;
 
@@ -51,7 +63,16 @@ export function updateAutonomyFromFeedback(params: {
       signalValue,
       was: currentLevel,
     });
-    return;
+    return {
+      signalType,
+      signalValue,
+      from: currentLevel,
+      to: "manual",
+      learnedAction: userAction,
+      confidence: 0,
+      decisions: 0,
+      direction: "reset",
+    };
   }
 
   // Calculate new confidence from recent feedback history
@@ -72,10 +93,11 @@ export function updateAutonomyFromFeedback(params: {
     }
   }
 
+  const learnedAction = isAgreement ? systemRecommendation : userAction;
   upsertAutonomyRule({
     signal_type: signalType,
     signal_value: signalValue,
-    learned_action: isAgreement ? systemRecommendation : userAction,
+    learned_action: learnedAction,
     confidence,
     decision_count: newCount,
     level: newLevel,
@@ -90,7 +112,21 @@ export function updateAutonomyFromFeedback(params: {
       confidence: confidence.toFixed(2),
       decisions: newCount,
     });
+    const fromIdx = LEVEL_ORDER.indexOf(currentLevel);
+    const toIdx = LEVEL_ORDER.indexOf(newLevel);
+    return {
+      signalType,
+      signalValue,
+      from: currentLevel,
+      to: newLevel,
+      learnedAction,
+      confidence,
+      decisions: newCount,
+      direction: toIdx > fromIdx ? "promoted" : "demoted",
+    };
   }
+
+  return null;
 }
 
 /**

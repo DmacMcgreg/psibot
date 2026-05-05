@@ -6,6 +6,7 @@ import { seedBuiltinAgents } from "./agent/subagents.ts";
 import { JobExecutor } from "./scheduler/executor.ts";
 import { Scheduler } from "./scheduler/index.ts";
 import { HeartbeatRunner } from "./heartbeat/index.ts";
+import { SynthesisRunner } from "./atlas/runner.ts";
 import { createWebApp } from "./web/index.ts";
 import { createTelegramBot } from "./telegram/index.ts";
 import { startWebhookServer, stopWebhookServer } from "./telegram/webhook.ts";
@@ -101,6 +102,8 @@ async function main() {
         ? String(config.TELEGRAM_GROUP_CHAT_IDS[0])
         : undefined,
       digestTopicId: 49, // News topic
+      memory,
+      agent,
       config: {
         intervalMinutes: config.HEARTBEAT_INTERVAL_MINUTES,
         quietStart: config.HEARTBEAT_QUIET_START,
@@ -114,10 +117,27 @@ async function main() {
     });
   }
 
+  // Start Atlas synthesis runner (daily / weekly / monthly)
+  const groupChatId = config.TELEGRAM_GROUP_CHAT_IDS.length > 0
+    ? String(config.TELEGRAM_GROUP_CHAT_IDS[0])
+    : undefined;
+  const synthesis = new SynthesisRunner({
+    getBot: () => bot ?? null,
+    defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
+    memory,
+    newsChatId: groupChatId,
+    newsTopicId: 49,
+    tradingChatId: groupChatId,
+    tradingTopicId: 103,
+  });
+  synthesis.start();
+  log.info("Atlas synthesis runner started");
+
   // Graceful shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
 
+    synthesis.stop();
     heartbeat?.stop();
     scheduler.stop();
     if (webhookServer) {
