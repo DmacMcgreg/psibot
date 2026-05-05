@@ -1,7 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { createLogger } from "../shared/logger.ts";
-import { embedText } from "../youtube/embeddings.ts";
+import { embedText } from "../shared/embeddings.ts";
 import {
   getVideo,
   listVideos,
@@ -19,7 +19,14 @@ import {
   getRelatedVideos,
   getSharedTopics,
   rebuildTopicGraph,
+  getCandidateTopicsForText,
+  TOPIC_MATCH_THRESHOLD,
 } from "../youtube/graph.ts";
+import {
+  getCandidateTagsForText,
+  TAG_MATCH_THRESHOLD,
+  countCanonicalTags,
+} from "../youtube/tags-canonical.ts";
 import { getConfig } from "../config.ts";
 import { splitMessage, escapeMarkdownV2 } from "../telegram/format.ts";
 import type { ParsedTranscript } from "../youtube/analyzer.ts";
@@ -582,12 +589,97 @@ EXPLORATION STRATEGIES:
       ),
 
       tool(
+        "youtube_suggest_topic",
+        "Given a free-form text (video title, theme description, or proposed topic name), return the top-k nearest existing canonical topics from the taxonomy. Use this before creating a new topic to avoid near-duplicates. A topic within the match threshold should be reused rather than creating a new one.",
+        {
+          text: z.string().describe("Free-form text to compare against the topic taxonomy (e.g., a proposed theme name + summary)"),
+          limit: z.number().optional().describe("How many nearest topics to return (default 10)"),
+        },
+        async (args) => {
+          try {
+            const candidates = await getCandidateTopicsForText(args.text, args.limit ?? 10);
+            if (candidates.length === 0) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `No topics found in taxonomy. Either the topic vec table is empty (run backfill-topic-embeddings) or no topics have been indexed yet.`,
+                }],
+              };
+            }
+            const lines = candidates.map((c) => {
+              const verdict = c.distance <= TOPIC_MATCH_THRESHOLD ? " [REUSE]" : "";
+              return `- ${c.display_name}${verdict} — distance ${c.distance.toFixed(4)} — ${c.video_count} videos [id:${c.id}]\n  ${c.description}`;
+            });
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Top ${candidates.length} nearest topics (match threshold: ${TOPIC_MATCH_THRESHOLD}):\n\n${lines.join("\n\n")}`,
+              }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              content: [{ type: "text" as const, text: `Topic suggestion failed: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_suggest_tag",
+        "Given a free-form text (video title, proposed tag, or topic description), return the top-k nearest canonical tags from the vocabulary. Use this before emitting a new tag to avoid regrowing duplicates. A tag within the match threshold should be reused; invent a new tag only when no existing tag clearly applies.",
+        {
+          text: z.string().describe("Free-form text to compare against the tag vocabulary"),
+          limit: z.number().optional().describe("How many nearest tags to return (default 15)"),
+        },
+        async (args) => {
+          try {
+            const total = countCanonicalTags();
+            if (total === 0) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `Tag vocabulary is empty. Run scripts/backfill-canonical-tags.ts to seed it from existing videos.`,
+                }],
+              };
+            }
+            const candidates = await getCandidateTagsForText(args.text, args.limit ?? 15);
+            if (candidates.length === 0) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `No tag candidates returned (vocab size ${total}).`,
+                }],
+              };
+            }
+            const lines = candidates.map((c) => {
+              const verdict = c.distance <= TAG_MATCH_THRESHOLD ? " [REUSE]" : "";
+              return `- ${c.name}${verdict} — distance ${c.distance.toFixed(4)} — used ${c.usage_count}× [id:${c.id}]`;
+            });
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Top ${candidates.length} nearest tags (vocab: ${total}, match threshold: ${TAG_MATCH_THRESHOLD}):\n\n${lines.join("\n")}`,
+              }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              content: [{ type: "text" as const, text: `Tag suggestion failed: ${message}` }],
+              isError: true,
+            };
+          }
+        }
+      ),
+
+      tool(
         "youtube_rebuild_graph",
         "Rebuild the YouTube topic knowledge graph from all stored videos. Use this if the graph seems stale or after bulk-importing videos. Clears all existing topic data and re-extracts from every video's analysis_json.",
         {},
         async () => {
           try {
-            const counts = rebuildTopicGraph();
+            const counts = await rebuildTopicGraph();
             return {
               content: [{
                 type: "text" as const,

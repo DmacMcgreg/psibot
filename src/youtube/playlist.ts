@@ -47,7 +47,7 @@ export async function processPlaylist(
   const sourcePlaylistId = options.sourcePlaylistId || config.YOUTUBE_SOURCE_PLAYLIST_ID;
   const destinationPlaylistId = options.destinationPlaylistId || config.YOUTUBE_DESTINATION_PLAYLIST_ID;
   const limit = options.limit ?? 50;
-  const retryFailed = options.retryFailed ?? false;
+  const retryFailed = options.retryFailed ?? true;
 
   if (!sourcePlaylistId) {
     throw new Error("No source playlist ID configured. Set YOUTUBE_SOURCE_PLAYLIST_ID or pass source_playlist_id.");
@@ -72,9 +72,31 @@ export async function processPlaylist(
     if (failedMoves.length > 0) {
       log.info("Retrying failed playlist moves", { count: failedMoves.length });
 
+      // Build a map of videoId -> fresh playlistItemId from the source playlist
+      // so we can use valid IDs instead of stale stored ones
+      let sourceItems: Awaited<ReturnType<typeof listPlaylistItems>> = [];
+      try {
+        sourceItems = await listPlaylistItems(sourcePlaylistId);
+      } catch (err) {
+        log.warn("Failed to fetch source playlist for retry phase", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const sourceMap = new Map(sourceItems.map((item) => [item.snippet.resourceId.videoId, item.id]));
+
       for (const video of failedMoves) {
+        const freshPlaylistItemId = sourceMap.get(video.video_id);
+
+        if (!freshPlaylistItemId) {
+          // Video is no longer in the source playlist — just mark as processed
+          log.info("Video no longer in source playlist, marking processed", { videoId: video.video_id });
+          updateVideoProcessingStatus(video.video_id, "marked_processed");
+          result.retrySuccesses++;
+          continue;
+        }
+
         try {
-          await moveVideo(video.video_id, video.playlist_item_id, destinationPlaylistId);
+          await moveVideo(video.video_id, freshPlaylistItemId, destinationPlaylistId);
           updateVideoProcessingStatus(video.video_id, "marked_processed");
           result.retrySuccesses++;
           log.info("Retry move succeeded", { videoId: video.video_id });

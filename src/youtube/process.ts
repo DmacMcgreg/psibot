@@ -9,7 +9,8 @@ import {
   getVideo,
   type VideoProcessingStatus,
 } from "./db.ts";
-import { indexVideoTopics } from "./graph.ts";
+import { indexVideoTopics, getCandidateTopicsForText } from "./graph.ts";
+import { canonicalizeTags, getCandidateTagsForText } from "./tags-canonical.ts";
 import { insertPendingItem } from "../db/queries.ts";
 import type { ParsedTranscript } from "./analyzer.ts";
 
@@ -99,9 +100,56 @@ export async function processAndStoreVideo(
     throw new Error(`No transcript available for: "${meta.title}" (captions and audio fallback both failed — check logs for details)`);
   }
 
+  // Prime the analyzer with canonical topic + tag hints so it reuses existing
+  // vocabulary names where appropriate.
+  let candidateTopics: Array<{ name: string; description: string }> = [];
+  let candidateTags: string[] = [];
+  try {
+    const [topicNeighbors, tagNeighbors] = await Promise.all([
+      getCandidateTopicsForText(meta.title, 20),
+      getCandidateTagsForText(meta.title, 30),
+    ]);
+    candidateTopics = topicNeighbors.map((n) => ({
+      name: n.display_name,
+      description: n.description,
+    }));
+    candidateTags = tagNeighbors.map((t) => t.name);
+  } catch (err) {
+    log.warn("Failed to fetch candidate topics/tags (non-fatal)", {
+      videoId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Analyze with Claude
-  log.info("Analyzing transcript", { videoId });
-  const analysis = await analyzeTranscript(transcript, meta.title, { model: options?.model });
+  log.info("Analyzing transcript", {
+    videoId,
+    candidateTopics: candidateTopics.length,
+    candidateTags: candidateTags.length,
+  });
+  const analysis = await analyzeTranscript(transcript, meta.title, {
+    model: options?.model,
+    candidateTopics,
+    candidateTags,
+  });
+
+  // Canonicalize tags: match against existing vocabulary by embedding, create
+  // new canonicals only when genuinely distinct. Mutates analysis.tags in place
+  // so downstream storage + embeddings use the canonical forms.
+  try {
+    const canonical = await canonicalizeTags(analysis.tags);
+    log.info("Canonicalized tags", {
+      videoId,
+      input: analysis.tags,
+      output: canonical,
+    });
+    analysis.tags = canonical;
+  } catch (err) {
+    log.warn("Failed to canonicalize tags (non-fatal)", {
+      videoId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // Store in database
   deleteVideoChunks(videoId);
@@ -133,8 +181,8 @@ export async function processAndStoreVideo(
     });
   }
 
-  // Index topics into knowledge graph
-  const topicCount = indexVideoTopics(videoId, analysis);
+  // Index topics into knowledge graph (async: embeds themes + matches against taxonomy)
+  const topicCount = await indexVideoTopics(videoId, analysis);
   log.info("Indexed topics", { videoId, topicCount });
 
   // Queue for triage/research pipeline

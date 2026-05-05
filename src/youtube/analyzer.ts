@@ -48,24 +48,46 @@ function formatTimestamp(seconds: number): string {
 
 /**
  * Parse a transcript with Claude Agent SDK into structured analysis.
+ * `candidateTopics` is a soft hint: nearest existing canonical topics the
+ * analyzer should prefer when naming themes, to keep the taxonomy clean.
+ * `candidateTags` works the same way for the flat tag vocabulary.
  */
 export async function analyzeTranscript(
   transcript: Transcript,
   videoTitle: string,
-  options?: { model?: string }
+  options?: {
+    model?: string;
+    candidateTopics?: Array<{ name: string; description: string }>;
+    candidateTags?: string[];
+  }
 ): Promise<ParsedTranscript> {
   try {
-    log.info("Analyzing transcript", { videoTitle, segments: transcript.segments.length });
+    log.info("Analyzing transcript", {
+      videoTitle,
+      segments: transcript.segments.length,
+      candidateTopics: options?.candidateTopics?.length ?? 0,
+      candidateTags: options?.candidateTags?.length ?? 0,
+    });
 
     const transcriptData = transcript.segments.map((seg) => ({
       timestamp: formatTimestamp(seg.start),
       text: seg.text,
     }));
 
+    const candidateTopicsSection = options?.candidateTopics && options.candidateTopics.length > 0
+      ? `\n\nCanonical topic taxonomy (prefer these names when a theme clearly matches one of them; otherwise invent a new theme name):\n${options.candidateTopics
+          .map((t) => `- ${t.name}: ${t.description}`)
+          .join("\n")}\n`
+      : "";
+
+    const candidateTagsSection = options?.candidateTags && options.candidateTags.length > 0
+      ? `\n\nCanonical tag vocabulary (prefer these exact strings for the "tags" field when one clearly applies; only invent a new tag when no existing tag fits). Format: lowercase-hyphenated.\n${options.candidateTags.map((t) => `- ${t}`).join("\n")}\n`
+      : "";
+
     const prompt = `Analyze this YouTube video transcript and create a structured summary.
 
 Title: ${videoTitle}
-
+${candidateTopicsSection}${candidateTagsSection}
 Transcript:
 ${JSON.stringify(transcriptData, null, 2)}
 

@@ -7,7 +7,7 @@ initDb();
 
 console.log("Rebuilding YouTube topic graph from all existing videos...\n");
 
-const result = rebuildTopicGraph();
+const result = await rebuildTopicGraph();
 
 console.log("Done!");
 console.log("  Topics: " + result.topicCount);

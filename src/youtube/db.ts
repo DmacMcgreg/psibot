@@ -1,5 +1,6 @@
 import { getDb } from "../db/index.ts";
 import { createLogger } from "../shared/logger.ts";
+import { syncAtlasForYoutubeVideo } from "../atlas/sync.ts";
 import type { ParsedTranscript } from "./analyzer.ts";
 
 const log = createLogger("youtube:db");
@@ -54,7 +55,7 @@ export function insertVideo(params: {
   playlistItemId?: string;
 }): StoredVideo {
   const db = getDb();
-  return db
+  const row = db
     .prepare<StoredVideo, [string, string, string, string, string, string, string, string, string, string | null]>(
       `INSERT INTO youtube_videos (video_id, title, channel_title, url, tags, markdown_summary, analysis_json, transcript_text, processing_status, playlist_item_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -82,6 +83,10 @@ export function insertVideo(params: {
       params.processingStatus ?? "complete",
       params.playlistItemId ?? null
     )!;
+  if (row.markdown_summary && row.markdown_summary.trim().length > 0) {
+    syncAtlasForYoutubeVideo(row);
+  }
+  return row;
 }
 
 /**
@@ -290,13 +295,32 @@ export function updateVideoProcessingStatus(
       `UPDATE youtube_videos SET processing_status = ? WHERE video_id = ?`
     ).run(status, videoId);
   }
+
+  // Atlas sync: any status carrying a full summary is worth indexing.
+  // `complete` is synced on initial save (saveVideo); every later transition
+  // that preserves the summary (analyzed/marked_processed/failed_to_mark)
+  // must (re)sync so late state flips don't drop the row from the library.
+  if (
+    status === "analyzed" ||
+    status === "marked_processed" ||
+    status === "failed_to_mark"
+  ) {
+    const row = db
+      .prepare<StoredVideo, [string]>(
+        `SELECT * FROM youtube_videos WHERE video_id = ?`,
+      )
+      .get(videoId);
+    if (row && row.markdown_summary && row.markdown_summary.trim().length > 0) {
+      syncAtlasForYoutubeVideo(row);
+    }
+  }
 }
 
 export function getVideosNeedingPlaylistUpdate(): StoredVideo[] {
   const db = getDb();
   return db
     .prepare<StoredVideo, []>(
-      `SELECT * FROM youtube_videos WHERE processing_status IN ('analyzed', 'failed_to_mark') AND marking_attempts < 1 ORDER BY marking_attempts ASC, processed_at ASC`
+      `SELECT * FROM youtube_videos WHERE processing_status IN ('analyzed', 'failed_to_mark') ORDER BY marking_attempts ASC, processed_at ASC`
     )
     .all();
 }

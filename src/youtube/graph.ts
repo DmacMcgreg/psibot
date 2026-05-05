@@ -1,8 +1,18 @@
 import { getDb } from "../db/index.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { ParsedTranscript } from "./analyzer.ts";
+import { embedText, embedBatch } from "./embeddings.ts";
 
 const log = createLogger("youtube:graph");
+
+/**
+ * Maximum L2 distance between 768-dim Gemini embeddings for two topics
+ * to be considered the same canonical topic. Tuned empirically against the
+ * consolidated taxonomy (Apr 2026). Lower = stricter (fewer merges).
+ * 0.45 keeps strong matches (e.g. "AI safety and alignment" → "AI Safety &
+ * Alignment" at 0.42) while rejecting semantic adjacents at 0.49+.
+ */
+export const TOPIC_MATCH_THRESHOLD = 0.45;
 
 // --- Types ---
 
@@ -117,17 +127,129 @@ export function addTopicRelation(topicAId: number, topicBId: number): void {
   ).run(a, b);
 }
 
+// --- Topic embeddings + semantic matching ---
+
+export interface SimilarTopic extends TopicNode {
+  distance: number;
+}
+
+function embeddingTextForTopic(name: string, summary: string): string {
+  return `${name}: ${summary}`.slice(0, 2000);
+}
+
+/**
+ * Store (or replace) the embedding for a topic. rowid is the topic id so the
+ * vec row can be joined back to youtube_topics directly.
+ */
+export function upsertTopicEmbedding(topicId: number, embedding: Float32Array): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM youtube_topic_vec WHERE rowid = ?`).run(BigInt(topicId));
+  db.prepare(`INSERT INTO youtube_topic_vec (rowid, embedding) VALUES (?, ?)`)
+    .run(BigInt(topicId), embedding);
+}
+
+/**
+ * Find the k nearest topics to a query embedding using sqlite-vec.
+ * Returns topic metadata plus L2 distance.
+ */
+export function findSimilarTopics(queryEmbedding: Float32Array, k: number): SimilarTopic[] {
+  const db = getDb();
+  const rows = db
+    .prepare<{ rowid: number; distance: number }, [Float32Array, number]>(
+      `SELECT rowid, distance FROM youtube_topic_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?`
+    )
+    .all(queryEmbedding, k);
+
+  if (rows.length === 0) return [];
+
+  const results: SimilarTopic[] = [];
+  for (const row of rows) {
+    const topic = db
+      .prepare<TopicNode, [number]>(`SELECT * FROM youtube_topics WHERE id = ?`)
+      .get(row.rowid);
+    if (topic) {
+      results.push({ ...topic, distance: row.distance });
+    }
+  }
+  return results;
+}
+
+/**
+ * Given a pre-computed embedding for a theme, reuse the nearest existing topic
+ * if within TOPIC_MATCH_THRESHOLD, otherwise create a new topic and store the
+ * embedding. Sync — for use from batched callers that already embedded texts.
+ */
+export function matchOrCreateTopicFromEmbedding(
+  themeName: string,
+  themeSummary: string,
+  embedding: Float32Array
+): { topic: TopicNode; reused: boolean; distance: number | null } {
+  const neighbors = findSimilarTopics(embedding, 1);
+
+  if (neighbors.length > 0 && neighbors[0].distance <= TOPIC_MATCH_THRESHOLD) {
+    const match = neighbors[0];
+    const { distance, ...topic } = match;
+    log.info("Matched topic by embedding", {
+      themeName,
+      matchedTo: match.display_name,
+      distance: distance.toFixed(4),
+    });
+    return { topic, reused: true, distance };
+  }
+
+  const topic = getOrCreateTopic(themeName, themeSummary);
+  upsertTopicEmbedding(topic.id, embedding);
+  log.info("Created topic", {
+    themeName,
+    topicId: topic.id,
+    nearestDistance: neighbors[0]?.distance.toFixed(4) ?? "none",
+  });
+  return { topic, reused: false, distance: neighbors[0]?.distance ?? null };
+}
+
+/**
+ * Embed `themeName: themeSummary` and match-or-create. Use this from callers
+ * that handle a single theme; prefer the batched path in indexVideoTopics when
+ * processing many themes from the same video.
+ */
+export async function matchOrCreateTopic(
+  themeName: string,
+  themeSummary: string
+): Promise<{ topic: TopicNode; reused: boolean; distance: number | null }> {
+  const embedding = await embedText(embeddingTextForTopic(themeName, themeSummary));
+  return matchOrCreateTopicFromEmbedding(themeName, themeSummary, embedding);
+}
+
+/**
+ * Return the top-k nearest existing topics for a free-form text (e.g., a video
+ * title or description). Used to prime the analyzer with canonical topic hints
+ * so it prefers existing names over inventing near-duplicates.
+ */
+export async function getCandidateTopicsForText(text: string, k: number): Promise<SimilarTopic[]> {
+  const embedding = await embedText(text.slice(0, 2000));
+  return findSimilarTopics(embedding, k);
+}
+
 // --- Extract topics from a video's analysis ---
 
 /**
  * Extract themes from a video's analysis and update the topic graph.
  * Creates topics, links video to topics, and updates co-occurrence relations.
+ * Uses embedding similarity against the existing taxonomy to avoid creating
+ * near-duplicate topics.
  */
-export function indexVideoTopics(videoId: string, analysis: ParsedTranscript): number {
+export async function indexVideoTopics(videoId: string, analysis: ParsedTranscript): Promise<number> {
+  if (analysis.themes.length === 0) return 0;
+
+  const embeddings = await embedBatch(
+    analysis.themes.map((t) => embeddingTextForTopic(t.name, t.summary))
+  );
+
   const topicIds: number[] = [];
 
-  for (const theme of analysis.themes) {
-    const topic = getOrCreateTopic(theme.name, theme.summary);
+  for (let i = 0; i < analysis.themes.length; i++) {
+    const theme = analysis.themes[i];
+    const { topic } = matchOrCreateTopicFromEmbedding(theme.name, theme.summary, embeddings[i]);
     const isNew = linkVideoToTopic(topic.id, videoId, theme.summary);
     if (isNew) {
       topicIds.push(topic.id);
@@ -454,7 +576,7 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
  * Rebuild the entire topic graph from all existing videos.
  * Clears existing graph data and rebuilds from analysis_json.
  */
-export function rebuildTopicGraph(): { topicCount: number; linkCount: number; relationCount: number } {
+export async function rebuildTopicGraph(): Promise<{ topicCount: number; linkCount: number; relationCount: number }> {
   const db = getDb();
 
   log.info("Rebuilding topic graph from all videos...");
@@ -463,6 +585,14 @@ export function rebuildTopicGraph(): { topicCount: number; linkCount: number; re
   db.prepare(`DELETE FROM youtube_topic_relations`).run();
   db.prepare(`DELETE FROM youtube_topic_links`).run();
   db.prepare(`DELETE FROM youtube_topics`).run();
+
+  // Clear topic embeddings (vec0 tables require per-rowid deletes)
+  const existingVecRowids = db
+    .prepare<{ rowid: number }, []>(`SELECT rowid FROM youtube_topic_vec`)
+    .all();
+  for (const r of existingVecRowids) {
+    db.prepare(`DELETE FROM youtube_topic_vec WHERE rowid = ?`).run(BigInt(r.rowid));
+  }
 
   // Process all videos
   const videos = db
@@ -474,7 +604,7 @@ export function rebuildTopicGraph(): { topicCount: number; linkCount: number; re
   let totalLinks = 0;
   for (const video of videos) {
     const analysis: ParsedTranscript = JSON.parse(video.analysis_json);
-    totalLinks += indexVideoTopics(video.video_id, analysis);
+    totalLinks += await indexVideoTopics(video.video_id, analysis);
   }
 
   const topicCount = db.prepare<{ c: number }, []>(`SELECT COUNT(*) as c FROM youtube_topics`).get()!.c;
