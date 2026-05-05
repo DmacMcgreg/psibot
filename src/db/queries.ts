@@ -1,4 +1,8 @@
 import { getDb } from "./index.ts";
+import {
+  syncAtlasForPendingItem,
+  syncAtlasForTradingSignal,
+} from "../atlas/sync.ts";
 import type {
   ChatMessage,
   AgentSession,
@@ -41,7 +45,7 @@ export function insertChatMessage(params: {
   duration_ms?: number | null;
 }): ChatMessage {
   const db = getDb();
-  return db
+  const row = db
     .prepare<ChatMessage, [string, string, string, string, string | null, number | null, number | null]>(
       `INSERT INTO chat_messages (session_id, role, content, source, source_id, cost_usd, duration_ms)
        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -56,6 +60,15 @@ export function insertChatMessage(params: {
       params.cost_usd ?? null,
       params.duration_ms ?? null
     )!;
+
+  // Sync into chat_messages_fts (contentless FTS5 — rowid = chat_messages.id).
+  // Best-effort: a sync error must not block the message insert. The lazy
+  // backfill in src/sessions/search.ts will catch any drift on first search.
+  try {
+    db.prepare(`INSERT INTO chat_messages_fts(rowid, content) VALUES (?, ?)`).run(row.id, params.content);
+  } catch { /* non-critical */ }
+
+  return row;
 }
 
 export function getMessagesBySession(sessionId: string): ChatMessage[] {
@@ -862,7 +875,7 @@ export function insertPendingItem(params: {
   captured_at?: string | null;
 }): PendingItem | null {
   const db = getDb();
-  return db
+  const row = db
     .prepare<PendingItem, [string, string | null, string | null, string, string | null, string | null, string | null]>(
       `INSERT INTO pending_items (url, title, description, source, platform, profile, captured_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -880,6 +893,8 @@ export function insertPendingItem(params: {
       params.profile ?? null,
       params.captured_at ?? new Date().toISOString()
     );
+  syncAtlasForPendingItem(row);
+  return row;
 }
 
 export function getPendingItems(status?: PendingItemStatus, limit: number = 50): PendingItem[] {
@@ -934,6 +949,9 @@ export function updatePendingItem(
 
   values.push(id);
   db.prepare(`UPDATE pending_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+
+  // Keep the Atlas index in sync with every status/triage/surface update.
+  syncAtlasForPendingItem(getPendingItemById(id));
 }
 
 export function getPendingItemCount(status?: PendingItemStatus): number {
@@ -1357,7 +1375,7 @@ export function insertTradingSignal(params: {
   source_url?: string | null;
 }): TradingSignal {
   const db = getDb();
-  return db
+  const row = db
     .prepare<TradingSignal, [string, string, string, number, string | null, string | null, string | null]>(
       `INSERT INTO trading_signals (source, ticker, direction, strength, reason, payload_json, source_url)
        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1372,6 +1390,8 @@ export function insertTradingSignal(params: {
       params.payload_json ?? null,
       params.source_url ?? null
     )!;
+  syncAtlasForTradingSignal(row);
+  return row;
 }
 
 export function getTradingSignalByUrl(sourceUrl: string): TradingSignal | null {

@@ -46,6 +46,7 @@ export function initDb(): Database {
   }
 
   expandSourceCheckConstraints(_db);
+  upgradeAtlasFts(_db);
   seedDefaultJobs(_db);
 
   log.info("Database initialized", { path: config.DB_PATH });
@@ -113,6 +114,42 @@ function expandSourceCheckConstraints(db: Database): void {
     for (const idx of indexes) {
       db.exec(idx);
     }
+  }
+}
+
+/**
+ * Migrate atlas_items_fts from plain contentless FTS5 to contentless_delete=1.
+ * The old form rejects single-row DELETE, so syncFts() silently fails whenever
+ * an atlas_items row's body changes in place (live re-triage, research reruns,
+ * heartbeat summary updates). Safe to rebuild — FTS is derived from atlas_items.
+ */
+function upgradeAtlasFts(db: Database): void {
+  const row = db
+    .prepare<{ sql: string }, []>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='atlas_items_fts'",
+    )
+    .get();
+  if (!row) return; // fresh DB — schema.ts already created the new form
+  if (row.sql.includes("contentless_delete=1")) return; // already migrated
+
+  log.info("Upgrading atlas_items_fts to contentless_delete=1");
+  db.exec("BEGIN");
+  try {
+    db.exec("DROP TABLE atlas_items_fts");
+    db.exec(
+      "CREATE VIRTUAL TABLE atlas_items_fts USING fts5(title, body, content='', contentless_delete=1)",
+    );
+    db.exec(
+      "INSERT INTO atlas_items_fts (rowid, title, body) SELECT id, title, body FROM atlas_items",
+    );
+    db.exec("COMMIT");
+    const count = (db
+      .prepare<{ n: number }, []>("SELECT COUNT(*) AS n FROM atlas_items_fts")
+      .get() ?? { n: 0 }).n;
+    log.info("Rebuilt atlas_items_fts", { rows: count });
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
   }
 }
 

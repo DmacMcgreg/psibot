@@ -444,4 +444,144 @@ export const MIGRATIONS = [
   // Phase 6: per-agent backend selection (claude vs glm). NULL = fall back to
   // the job's backend, which in turn defaults to the global DEFAULT_BACKEND.
   `ALTER TABLE agents ADD COLUMN backend TEXT CHECK(backend IN ('claude','glm'))`,
+
+  // Topic embeddings for semantic matching during ingestion (hybrid C).
+  // rowid = youtube_topics.id so lookups join cleanly.
+  `CREATE VIRTUAL TABLE IF NOT EXISTS youtube_topic_vec USING vec0(
+    embedding float[768]
+  )`,
+
+  // --- Atlas unified knowledge index (Phase 1) ---
+  // Physical projection of every captured item across all source tables.
+  // Not a view: FTS5 and vec0 are virtual tables and require concrete rowids.
+  // source_id is TEXT to accommodate file paths (scans, memory) as well as
+  // the unique keys from pending_items / youtube_videos / trading_signals.
+  // metadata_json carries per-kind extras (priority, platform, ticker, etc.).
+  `CREATE TABLE IF NOT EXISTS atlas_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    url TEXT,
+    captured_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    entity_extracted_at TEXT,
+    embedded_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(source_table, source_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_items_kind_captured ON atlas_items(kind, captured_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_items_captured ON atlas_items(captured_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_items_needs_entities ON atlas_items(id) WHERE entity_extracted_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_items_needs_embedding ON atlas_items(id) WHERE embedded_at IS NULL`,
+
+  // Contentless FTS5 with contentless_delete=1 (SQLite 3.43+).
+  // Tokens only — no data duplication — but single-row DELETE by rowid works,
+  // so syncFts() can update a row's tokens when its body changes.
+  // Rebuilds still replay rows from atlas_items via rebuildFtsAll().
+  `CREATE VIRTUAL TABLE IF NOT EXISTS atlas_items_fts USING fts5(title, body, content='', contentless_delete=1)`,
+
+  // Vector store — rowid matches atlas_items.id (managed explicitly in code).
+  `CREATE VIRTUAL TABLE IF NOT EXISTS atlas_items_vec USING vec0(embedding float[768])`,
+
+  // --- Atlas entities (Phase 3) ---
+  // Canonical entity table. kind is 'ticker' | 'name' | 'topic'; start narrow, expand only when data demands.
+  // name_norm is the deterministic normalized key (tickers uppercase stripped of $, names/topics lowercase).
+  `CREATE TABLE IF NOT EXISTS atlas_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    name_norm TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    mention_count INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    last_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(kind, name_norm)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entities_last_seen ON atlas_entities(last_seen DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entities_mention_count ON atlas_entities(mention_count DESC)`,
+
+  // Aliases for entity merging. Populated from a seed YAML + weekly Haiku merge proposals.
+  `CREATE TABLE IF NOT EXISTS atlas_entity_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES atlas_entities(id) ON DELETE CASCADE,
+    alias_norm TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'seed',
+    UNIQUE(entity_id, alias_norm)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entity_aliases_norm ON atlas_entity_aliases(alias_norm)`,
+
+  // Item -> entity mentions with per-mention confidence + surrounding context.
+  `CREATE TABLE IF NOT EXISTS atlas_entity_mentions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL REFERENCES atlas_items(id) ON DELETE CASCADE,
+    entity_id INTEGER NOT NULL REFERENCES atlas_entities(id) ON DELETE CASCADE,
+    confidence REAL NOT NULL DEFAULT 0.8,
+    context TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(item_id, entity_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entity_mentions_item ON atlas_entity_mentions(item_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entity_mentions_entity ON atlas_entity_mentions(entity_id)`,
+
+  // Entity co-occurrence edges. entity_a < entity_b invariant (sorted-pair insert, template from youtube/graph.ts).
+  `CREATE TABLE IF NOT EXISTS atlas_entity_cooccur (
+    entity_a INTEGER NOT NULL REFERENCES atlas_entities(id) ON DELETE CASCADE,
+    entity_b INTEGER NOT NULL REFERENCES atlas_entities(id) ON DELETE CASCADE,
+    weight INTEGER NOT NULL DEFAULT 1,
+    last_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (entity_a, entity_b),
+    CHECK (entity_a < entity_b)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entity_cooccur_a ON atlas_entity_cooccur(entity_a, weight DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_entity_cooccur_b ON atlas_entity_cooccur(entity_b, weight DESC)`,
+
+  // Alias proposal queue — weekly Haiku review, awaiting user approval.
+  `CREATE TABLE IF NOT EXISTS atlas_alias_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL REFERENCES atlas_entities(id) ON DELETE CASCADE,
+    alias_norm TEXT NOT NULL,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    decided_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_atlas_alias_proposals_pending ON atlas_alias_proposals(status) WHERE status='pending'`,
+
+  // --- Atlas synthesis — scan extractions (Phase 4 map-reduce) ---
+  `CREATE TABLE IF NOT EXISTS atlas_scan_extractions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_path TEXT NOT NULL UNIQUE,
+    setups_json TEXT NOT NULL DEFAULT '[]',
+    indicators_json TEXT NOT NULL DEFAULT '[]',
+    regime TEXT,
+    hypotheses_json TEXT NOT NULL DEFAULT '[]',
+    extracted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+
+  // --- YouTube tag canonical vocabulary (regrowth prevention) ---
+  // Mirrors youtube_topics: canonical tag names + embeddings, matched against
+  // incoming tags at ingestion time to prevent vocabulary drift.
+  `CREATE TABLE IF NOT EXISTS youtube_tag_canonicals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_youtube_tag_canonicals_name ON youtube_tag_canonicals(name)`,
+
+  // rowid = youtube_tag_canonicals.id
+  `CREATE VIRTUAL TABLE IF NOT EXISTS youtube_tag_vec USING vec0(
+    embedding float[768]
+  )`,
+
+  // --- Chat-message FTS for cross-session recall (Hermes port — Phase 7) ---
+  // Contentless FTS5 keyed by chat_messages.id. Synced from insertChatMessage
+  // (see src/db/queries.ts). Backfilled lazily on first search if empty.
+  `CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
+    content,
+    content='',
+    contentless_delete=1
+  )`,
 ];
