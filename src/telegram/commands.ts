@@ -5,7 +5,7 @@ import { AgentService } from "../agent/index.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { Scheduler } from "../scheduler/index.ts";
 import type { ChatState } from "./state.ts";
-import type { ChatContext } from "../shared/types.ts";
+import type { AgentBackend, ChatContext } from "../shared/types.ts";
 import {
   agentResponseKeyboard,
   modelPickerKeyboard,
@@ -49,6 +49,14 @@ import { PLIST_LABEL } from "../cli/paths.ts";
 import type { TaskQueue } from "../shared/task-queue.ts";
 
 const log = createLogger("telegram:commands");
+
+/**
+ * Map of Telegram topic IDs to forced AI backends.
+ * Messages in these topics will ONLY use the specified backend (no cross-backend fallback).
+ */
+const TOPIC_BACKEND_MAP: Record<number, AgentBackend> = {
+  5: "glm",  // GLM topic — routes to z.ai GLM models only
+};
 
 /** Execute a deferred daemon restart via launchctl kickstart -k. */
 function executeDeferredRestart(): void {
@@ -130,6 +138,60 @@ export function registerCommands(deps: CommandDeps) {
   const { agent, memory, scheduler, state, taskQueue } = deps;
   const { resetChats, bootedChats, resumeOverrides, modelOverrides } = state;
 
+  // --- Inbound message coalescing ---
+  // Telegram delivers a long paste as several message:text updates and a photo
+  // album as several message:photo updates (shared media_group_id). Each would
+  // otherwise fire a separate agent run. We buffer per session key and flush a
+  // single combined run after a short idle window.
+  const COALESCE_WINDOW_MS = 800;
+  interface PendingBatch {
+    ctx: Context;
+    texts: string[];
+    photos: string[];   // local file paths
+    captions: string[];
+    timer?: ReturnType<typeof setTimeout>;
+  }
+  const batches = new Map<string, PendingBatch>();
+
+  function getBatch(ctx: Context): PendingBatch {
+    const sKey = sessionKey(ctx);
+    let b = batches.get(sKey);
+    if (!b) {
+      b = { ctx, texts: [], photos: [], captions: [] };
+      batches.set(sKey, b);
+    }
+    b.ctx = ctx; // keep latest ctx for the reply target
+    return b;
+  }
+
+  function scheduleFlush(sKey: string, b: PendingBatch): void {
+    if (b.timer) clearTimeout(b.timer);
+    b.timer = setTimeout(() => {
+      batches.delete(sKey);
+      void flushBatch(b);
+    }, COALESCE_WINDOW_MS);
+  }
+
+  async function flushBatch(b: PendingBatch): Promise<void> {
+    const parts: string[] = [];
+    if (b.photos.length > 0) {
+      if (b.photos.length === 1) {
+        parts.push(`The user sent a photo. The image file is saved at: ${b.photos[0]}`);
+      } else {
+        const list = b.photos.map((p, i) => `  ${i + 1}. ${p}`).join("\n");
+        parts.push(`The user sent ${b.photos.length} photos. The image files are saved at:\n${list}`);
+      }
+      const caption = b.captions.filter(Boolean).join("\n");
+      if (caption) parts.push(`The user included this caption: ${caption}`);
+    }
+    const text = b.texts.join("\n\n").trim();
+    if (text) parts.push(text);
+
+    const prompt = parts.join("\n\n");
+    if (!prompt) return;
+    await runAgent(b.ctx, prompt);
+  }
+
   async function handleStart(ctx: Context): Promise<void> {
     await replyMd2(ctx,
       "Agent ready. Send me any message or use commands:\n\n" +
@@ -164,7 +226,8 @@ export function registerCommands(deps: CommandDeps) {
     const prompt = ctx.message?.text?.trim();
     if (!prompt) return;
 
-    // Check if replying to a research message — inject context
+    // Check if replying to a research message — inject context (single message,
+    // bypasses coalescing).
     const replyMsg = ctx.message?.reply_to_message;
     if (replyMsg && "text" in replyMsg && replyMsg.text) {
       const match = replyMsg.text.match(/^Research: .+\nID: (\d+)/);
@@ -192,7 +255,11 @@ export function registerCommands(deps: CommandDeps) {
       }
     }
 
-    await runAgent(ctx, prompt);
+    // Buffer the text and flush after the idle window so a long paste split by
+    // Telegram into several messages is sent to the agent as one prompt.
+    const b = getBatch(ctx);
+    b.texts.push(prompt);
+    scheduleFlush(sessionKey(ctx), b);
   }
 
   async function runAgent(ctx: Context, prompt: string): Promise<void> {
@@ -229,6 +296,9 @@ export function registerCommands(deps: CommandDeps) {
     const model = modelOverrides.get(sKey);
     const ctxChat = chatContext(ctx);
 
+    // Topic-based backend routing (e.g., GLM topic -> glm backend)
+    const topicBackend = TOPIC_BACKEND_MAP[ctx.message?.message_thread_id ?? 0];
+
     // Fire-and-forget: enqueue the agent run and return immediately
     const taskId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     taskQueue.enqueue({
@@ -247,6 +317,7 @@ export function registerCommands(deps: CommandDeps) {
             chatContext: ctxChat,
             useBrowser: true,
             ...(model ? { model } : {}),
+            ...(topicBackend ? { backend: topicBackend, backendOnly: true } : {}),
             onToolUse: (toolName, input, subagent) => {
               if (!config.VERBOSE_FEEDBACK) return;
               toolLines.push(formatToolLine(toolName, input, subagent));
@@ -439,10 +510,11 @@ export function registerCommands(deps: CommandDeps) {
     await replyMd2(ctx, "Session cleared. Next message starts a fresh conversation.");
   }
 
+  const glmDefault = getConfig().DEFAULT_BACKEND === "glm";
   const MODEL_ALIASES: Record<string, string> = {
-    opus: "claude-opus-4-6",
-    sonnet: "claude-sonnet-4-5-20250929",
-    haiku: "claude-haiku-4-5-20251001",
+    opus: glmDefault ? getConfig().GLM_OPUS_MODEL : "claude-opus-4-6",
+    sonnet: glmDefault ? getConfig().GLM_SONNET_MODEL : "claude-sonnet-4-5-20250929",
+    haiku: glmDefault ? getConfig().GLM_HAIKU_MODEL : "claude-haiku-4-5-20251001",
   };
 
   async function handleModel(ctx: Context): Promise<void> {
@@ -657,16 +729,16 @@ export function registerCommands(deps: CommandDeps) {
   const INBOUND_MEDIA_DIR = resolve(process.cwd(), "data", "media", "inbound");
 
   async function handlePhoto(ctx: Context): Promise<void> {
-    const config = getConfig();
     const photos = ctx.message?.photo;
     if (!photos || photos.length === 0) return;
 
-    const thinkingMsg = await replyMd2(ctx, "Thinking...");
     const sKey = sessionKey(ctx);
     const caption = ctx.message?.caption ?? "";
 
-    const toolLines: string[] = [];
-    let lastEditAt = 0;
+    // Hold any pending flush while we download this album item, so a multi-photo
+    // album (separate updates sharing media_group_id) isn't split mid-download.
+    const existing = batches.get(sKey);
+    if (existing?.timer) clearTimeout(existing.timer);
 
     try {
       mkdirSync(INBOUND_MEDIA_DIR, { recursive: true });
@@ -682,65 +754,21 @@ export function registerCommands(deps: CommandDeps) {
       }
 
       const ext = file.file_path?.split(".").pop() ?? "jpg";
-      const localPath = join(INBOUND_MEDIA_DIR, `${Date.now()}.${ext}`);
+      const localPath = join(INBOUND_MEDIA_DIR, `${Date.now()}-${photo.file_unique_id}.${ext}`);
       const buffer = await response.arrayBuffer();
       await Bun.write(localPath, buffer);
 
       log.info("Photo saved", { localPath, size: buffer.byteLength });
 
-      const sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
-      const captionPart = caption ? `\n\nThe user included this caption: ${caption}` : "";
-      const prompt = `The user sent a photo. The image file is saved at: ${localPath}${captionPart}\n\nAcknowledge receipt and respond to any caption or context.`;
-
-      const result = await agent.run({
-        prompt,
-        source: "telegram",
-        sourceId: sKey,
-        sessionId,
-        chatContext: chatContext(ctx),
-        useBrowser: true,
-        onToolUse: (toolName, input, subagent) => {
-          if (!config.VERBOSE_FEEDBACK) return;
-          toolLines.push(formatToolLine(toolName, input, subagent));
-          const now = Date.now();
-          if (now - lastEditAt >= 3000) {
-            lastEditAt = now;
-            editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
-              `Thinking...\n${formatToolsSummary(toolLines)}`
-            ).catch(() => {});
-          }
-        },
-      });
-
-      const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
-      const toolsBlock = config.VERBOSE_FEEDBACK && toolLines.length > 0
-        ? `${formatToolsSummary(toolLines)}\n\n`
-        : "";
-      const responseText = `${toolsBlock}${result.result}\n\n${meta}`;
-      const chunks = splitMessage(responseText);
-
-      if (chunks.length === 1) {
-        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0],
-          { reply_markup: agentResponseKeyboard(result.sessionId) }
-        );
-      } else {
-        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          const opts = i === chunks.length - 1
-            ? { reply_markup: agentResponseKeyboard(result.sessionId) }
-            : {};
-          await replyAgentMd2(ctx, chunks[i], opts);
-        }
-      }
-
-      if (agent.consumeRestart()) {
-        executeDeferredRestart();
-      }
+      // Buffer the image (and any caption) and flush after the idle window so an
+      // album of several photos is sent to the agent as one prompt.
+      const b = getBatch(ctx);
+      b.photos.push(localPath);
+      if (caption) b.captions.push(caption);
+      scheduleFlush(sKey, b);
     } catch (err) {
       log.error("Photo message error", { error: String(err) });
-      await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
-        `Photo error: ${err instanceof Error ? err.message : String(err)}`
-      );
+      await replyMd2(ctx, `Photo error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -773,6 +801,7 @@ export function registerCommands(deps: CommandDeps) {
       const sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
       const prompt = `The user sent a voice message. The audio file is at: ${localPath}\n\nPlease transcribe it using the audio_transcribe tool, then respond to whatever they said.`;
 
+      const voiceTopicBackend = TOPIC_BACKEND_MAP[ctx.message?.message_thread_id ?? 0];
       const result = await agent.run({
         prompt,
         source: "telegram",
@@ -780,6 +809,7 @@ export function registerCommands(deps: CommandDeps) {
         sessionId,
         chatContext: chatContext(ctx),
         useBrowser: false,
+        ...(voiceTopicBackend ? { backend: voiceTopicBackend, backendOnly: true } : {}),
       });
 
       const meta = formatRunMeta(result, config.VERBOSE_FEEDBACK);
