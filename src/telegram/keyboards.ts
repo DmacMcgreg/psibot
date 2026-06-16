@@ -1,4 +1,5 @@
 import { InlineKeyboard, type Context } from "grammy";
+import { getConfig } from "../config.ts";
 import type { AgentService } from "../agent/index.ts";
 import type { Scheduler } from "../scheduler/index.ts";
 import type { ChatState } from "./state.ts";
@@ -181,11 +182,15 @@ export function parseCallback(data: string): CallbackAction {
 
 // --- Callback Handler ---
 
-const MODEL_ALIASES: Record<string, string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-5-20250929",
-  haiku: "claude-haiku-4-5-20251001",
-};
+function getModelAliases(): Record<string, string> {
+  const cfg = getConfig();
+  const glm = cfg.DEFAULT_BACKEND === "glm";
+  return {
+    opus: glm ? cfg.GLM_OPUS_MODEL : "claude-opus-4-6",
+    sonnet: glm ? cfg.GLM_SONNET_MODEL : "claude-sonnet-4-5-20250929",
+    haiku: glm ? cfg.GLM_HAIKU_MODEL : "claude-haiku-4-5-20251001",
+  };
+}
 
 interface CallbackDeps {
   agent: AgentService;
@@ -324,7 +329,7 @@ export function createCallbackHandler(deps: CallbackDeps) {
 
         case "md": {
           // Set model
-          const resolved = MODEL_ALIASES[payload];
+          const resolved = getModelAliases()[payload];
           if (!resolved) {
             await ctx.answerCallbackQuery({ text: "Unknown model" });
             return;

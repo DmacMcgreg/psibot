@@ -6,7 +6,11 @@ import type { AtlasItem } from "./index.ts";
 
 const log = createLogger("atlas:entities");
 
-const MODEL = "claude-haiku-4-5-20251001";
+import { getConfig, getBackendEnv } from "../config.ts";
+function getModel(): string {
+  const cfg = getConfig();
+  return cfg.DEFAULT_BACKEND === "glm" ? cfg.GLM_HAIKU_MODEL : "claude-haiku-4-5-20251001";
+}
 const MAX_ENTITIES_DEFAULT = 12;
 const MAX_ENTITIES_LONGFORM = 25;
 const MIN_BODY_CHARS = 50;
@@ -171,10 +175,11 @@ Respond now with JSON only: {"entities":[...]}`;
     for await (const msg of query({
       prompt: userPrompt,
       options: {
-        model: MODEL,
+        model: getModel(),
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTurns: 1,
         permissionMode: "bypassPermissions",
+        ...(getBackendEnv() ? { env: getBackendEnv() } : {}),
       },
     })) {
       if (msg.type === "assistant") {

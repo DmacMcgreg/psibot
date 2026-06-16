@@ -2,15 +2,28 @@ import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import Database from "bun:sqlite";
 import { getDb } from "../db/index.ts";
 import { createLogger } from "../shared/logger.ts";
 import { MemorySystem } from "../memory/index.ts";
 
 const log = createLogger("atlas:synth");
 
-const SONNET = "claude-sonnet-4-5-20250929";
-const OPUS = "claude-opus-4-7";
-const HAIKU = "claude-haiku-4-5-20251001";
+import { getConfig, getBackendEnv } from "../config.ts";
+
+const SONNET = () => {
+  const cfg = getConfig();
+  return cfg.DEFAULT_BACKEND === "glm" ? cfg.GLM_SONNET_MODEL : "claude-sonnet-4-5-20250929";
+};
+const OPUS = () => {
+  const cfg = getConfig();
+  return cfg.DEFAULT_BACKEND === "glm" ? cfg.GLM_OPUS_MODEL : "claude-opus-4-7";
+};
+const HAIKU = () => {
+  const cfg = getConfig();
+  return cfg.DEFAULT_BACKEND === "glm" ? cfg.GLM_HAIKU_MODEL : "claude-haiku-4-5-20251001";
+};
 
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
 const WEEKLY_DIR = join(KNOWLEDGE_DIR, "weekly");
@@ -23,12 +36,29 @@ interface DailyBucket {
   items: Array<{ id: number; title: string; snippet: string; url: string | null }>;
 }
 
+interface ClaudeMemSession {
+  project: string;
+  request: string;
+  learned: string;
+  completed: string;
+  created_at: string;
+}
+
+interface ClaudeMemObservation {
+  project: string;
+  type: string;
+  title: string;
+  narrative: string;
+}
+
 interface DailyContext {
   date: string;
   buckets: DailyBucket[];
   autonomyChanges: Array<{ rule: string; direction: string; at: string }>;
   researchDone: Array<{ title: string; summary: string; url: string | null; at: string }>;
   signalCount: number;
+  claudeMemSessions: ClaudeMemSession[];
+  claudeMemObservations: ClaudeMemObservation[];
 }
 
 function isoDateOnly(d = new Date()): string {
@@ -37,6 +67,71 @@ function isoDateOnly(d = new Date()): string {
 
 function hhmm(d = new Date()): string {
   return d.toISOString().slice(11, 16);
+}
+
+const CLAUDE_MEM_DB_PATH = join(homedir(), ".claude-mem", "claude-mem.db");
+
+/** Pull session summaries and observations from the claude-mem plugin DB.
+ *  @param sinceEpochMs — millisecond epoch (claude-mem uses ms epochs). */
+function gatherClaudeMemContext(sinceEpochMs: number): {
+  sessions: ClaudeMemSession[];
+  observations: ClaudeMemObservation[];
+} {
+  const empty = { sessions: [] as ClaudeMemSession[], observations: [] as ClaudeMemObservation[] };
+  if (!existsSync(CLAUDE_MEM_DB_PATH)) {
+    log.debug("claude-mem DB not found, skipping", { path: CLAUDE_MEM_DB_PATH });
+    return empty;
+  }
+
+  try {
+    const cmDb = new Database(CLAUDE_MEM_DB_PATH, { readonly: true });
+
+    const sessions = cmDb
+      .prepare<
+        { project: string; request: string | null; learned: string | null; completed: string | null; created_at: string },
+        [number]
+      >(
+        `SELECT project, request, learned, completed, created_at
+         FROM session_summaries
+         WHERE created_at_epoch >= ?
+         ORDER BY created_at_epoch DESC
+         LIMIT 20`,
+      )
+      .all(sinceEpochMs)
+      .map((r) => ({
+        project: r.project,
+        request: (r.request ?? "").slice(0, 300),
+        learned: (r.learned ?? "").slice(0, 300),
+        completed: (r.completed ?? "").slice(0, 300),
+        created_at: r.created_at,
+      }));
+
+    const observations = cmDb
+      .prepare<
+        { project: string; type: string; title: string | null; narrative: string | null },
+        [number]
+      >(
+        `SELECT project, type, title, narrative
+         FROM observations
+         WHERE created_at_epoch >= ?
+           AND type IN ('decision', 'discovery', 'bugfix')
+         ORDER BY created_at_epoch DESC
+         LIMIT 15`,
+      )
+      .all(sinceEpochMs)
+      .map((r) => ({
+        project: r.project,
+        type: r.type,
+        title: (r.title ?? "").slice(0, 120),
+        narrative: (r.narrative ?? "").slice(0, 200),
+      }));
+
+    cmDb.close();
+    return { sessions, observations };
+  } catch (err) {
+    log.warn("Failed to read claude-mem DB", { error: String(err) });
+    return empty;
+  }
 }
 
 /** Pull a 24h slice of atlas items grouped by kind, with light snippets. */
@@ -111,12 +206,19 @@ export function gatherDailyContext(windowHours = 24): DailyContext {
     )
     .get(since) ?? { n: 0 }).n;
 
+  // Pull from claude-mem plugin (sessions + observations from all projects)
+  // claude-mem uses millisecond epochs
+  const sinceEpochMs = Date.now() - windowHours * 3600_000;
+  const claudeMem = gatherClaudeMemContext(sinceEpochMs);
+
   return {
     date: isoDateOnly(),
     buckets: Array.from(byKind.values()),
     autonomyChanges: autonomy,
     researchDone: research,
     signalCount,
+    claudeMemSessions: claudeMem.sessions,
+    claudeMemObservations: claudeMem.observations,
   };
 }
 
@@ -160,6 +262,25 @@ function buildDailyPrompt(ctx: DailyContext): string {
     lines.push("");
   }
 
+  if (ctx.claudeMemSessions.length > 0) {
+    lines.push(`### claude-mem sessions (${ctx.claudeMemSessions.length})`);
+    for (const s of ctx.claudeMemSessions) {
+      lines.push(`- [${s.project}] ${s.request}`);
+      if (s.learned) lines.push(`    Learned: ${s.learned}`);
+      if (s.completed) lines.push(`    Completed: ${s.completed}`);
+    }
+    lines.push("");
+  }
+
+  if (ctx.claudeMemObservations.length > 0) {
+    lines.push(`### claude-mem observations (${ctx.claudeMemObservations.length})`);
+    for (const o of ctx.claudeMemObservations) {
+      lines.push(`- [${o.project}/${o.type}] ${o.title}`);
+      if (o.narrative) lines.push(`    ${o.narrative}`);
+    }
+    lines.push("");
+  }
+
   lines.push(`Signal volume today: ${ctx.signalCount} trading signals captured.`);
   lines.push("");
   lines.push("Now write the narrative.");
@@ -176,6 +297,7 @@ async function generateText(prompt: string, model: string): Promise<string> {
         model,
         maxTurns: 1,
         permissionMode: "bypassPermissions",
+        ...(getBackendEnv() ? { env: getBackendEnv() } : {}),
       },
     })) {
       if (msg.type === "assistant" && msg.message) {
@@ -210,12 +332,14 @@ export interface DailyNarrativeResult {
 export async function synthesizeDailyNarrative(memory: MemorySystem): Promise<DailyNarrativeResult> {
   const ctx = gatherDailyContext(24);
   const itemCount = ctx.buckets.reduce((n, b) => n + b.items.length, 0);
-  if (itemCount === 0 && ctx.researchDone.length === 0 && ctx.autonomyChanges.length === 0) {
+  const totalSources = itemCount + ctx.researchDone.length + ctx.autonomyChanges.length
+    + ctx.claudeMemSessions.length + ctx.claudeMemObservations.length;
+  if (totalSources === 0) {
     return { date: ctx.date, text: "", written: false, itemCount: 0 };
   }
 
   const prompt = buildDailyPrompt(ctx);
-  const text = await generateText(prompt, SONNET);
+  const text = await generateText(prompt, SONNET());
   if (!text) return { date: ctx.date, text: "", written: false, itemCount };
 
   const header = `## ${hhmm()} — Daily narrative`;
@@ -357,7 +481,7 @@ export async function synthesizeWeeklyThemes(): Promise<WeeklyThemesResult> {
   }
 
   const prompt = buildWeeklyPrompt(ctx);
-  const text = await generateText(prompt, SONNET);
+  const text = await generateText(prompt, SONNET());
   if (!text) return { week: ctx.week, text: "", path: null, written: false };
 
   if (!existsSync(WEEKLY_DIR)) mkdirSync(WEEKLY_DIR, { recursive: true });
@@ -424,9 +548,10 @@ Call record_scan_extraction now.`;
     for await (const msg of query({
       prompt,
       options: {
-        model: SONNET,
+        model: SONNET(),
         maxTurns: 3,
         permissionMode: "bypassPermissions",
+        ...(getBackendEnv() ? { env: getBackendEnv() } : {}),
         mcpServers: { scan: scanServer },
         allowedTools: ["mcp__scan__record_scan_extraction"],
       },
@@ -599,9 +724,10 @@ Call record_monthly_synthesis now.`;
     for await (const msg of query({
       prompt,
       options: {
-        model: OPUS,
+        model: OPUS(),
         maxTurns: 3,
         permissionMode: "bypassPermissions",
+        ...(getBackendEnv() ? { env: getBackendEnv() } : {}),
         mcpServers: { reduce: reduceServer },
         allowedTools: ["mcp__reduce__record_monthly_synthesis"],
       },
