@@ -5,7 +5,6 @@ import type { Scheduler } from "../scheduler/index.ts";
 import type { ChatState } from "./state.ts";
 import {
   resolveSessionByPrefix,
-  getLastUserMessage,
   getAllJobs,
   getJob,
   updateJob,
@@ -79,12 +78,9 @@ function sessionKey(ctx: Context): string {
 
 // --- Keyboard Builders ---
 
-export function agentResponseKeyboard(sessionId: string): InlineKeyboard {
-  const sid = sessionId.slice(0, 8);
-  return new InlineKeyboard()
-    .text("Regenerate", `rg:${sid}`)
-    .text("Continue", `ct:${sid}`)
-    .text("Switch Model", "sm");
+/** Keyboard shown on the "Thinking..." message while a run is in progress. */
+export function cancelKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text("Cancel", "cn");
 }
 
 export function modelPickerKeyboard(): InlineKeyboard {
@@ -273,7 +269,7 @@ async function surfaceAutonomyChange(
 }
 
 export function createCallbackHandler(deps: CallbackDeps) {
-  const { scheduler, state, runAgent } = deps;
+  const { agent, scheduler, state, runAgent } = deps;
 
   return async (ctx: Context) => {
     const data = ctx.callbackQuery?.data;
@@ -284,46 +280,18 @@ export function createCallbackHandler(deps: CallbackDeps) {
 
     try {
       switch (action) {
-        case "rg": {
-          // Regenerate: resolve session, get last user message, run fresh
-          const session = resolveSessionByPrefix(payload);
-          if (!session) {
-            await ctx.answerCallbackQuery({ text: "Session not found" });
+        case "cn": {
+          // Cancel: interrupt the in-progress run for this chat/topic
+          const runId = state.activeRuns.get(sKey);
+          if (!runId) {
+            await ctx.answerCallbackQuery({ text: "Nothing to cancel" });
+            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
             return;
           }
-          const lastMsg = getLastUserMessage(session.session_id);
-          if (!lastMsg) {
-            await ctx.answerCallbackQuery({ text: "No message to regenerate" });
-            return;
-          }
-          await ctx.answerCallbackQuery();
-          // Start fresh session for regeneration
-          state.resetChats.add(sKey);
-          state.bootedChats.delete(sKey);
-          state.resumeOverrides.delete(sKey);
-          await runAgent(ctx, lastMsg);
-          break;
-        }
-
-        case "ct": {
-          // Continue: resume session, send "continue"
-          const session = resolveSessionByPrefix(payload);
-          if (!session) {
-            await ctx.answerCallbackQuery({ text: "Session not found" });
-            return;
-          }
-          await ctx.answerCallbackQuery();
-          state.resumeOverrides.set(sKey, session.session_id);
-          state.bootedChats.add(sKey);
-          state.resetChats.delete(sKey);
-          await runAgent(ctx, "continue");
-          break;
-        }
-
-        case "sm": {
-          // Show model picker
-          await ctx.answerCallbackQuery();
-          await ctx.editMessageReplyMarkup({ reply_markup: modelPickerKeyboard() });
+          await agent.interrupt(runId);
+          state.activeRuns.delete(sKey);
+          await ctx.answerCallbackQuery({ text: "Cancelling..." });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
         }
 

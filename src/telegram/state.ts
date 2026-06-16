@@ -7,4 +7,6 @@ export class ChatState {
   readonly resumeOverrides = new Map<string, string>();
   /** Per-chat model override - cleared by /model with no args */
   readonly modelOverrides = new Map<string, string>();
+  /** Session key -> active agent runId, for the in-progress Cancel button */
+  readonly activeRuns = new Map<string, string>();
 }

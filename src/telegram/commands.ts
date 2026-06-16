@@ -7,7 +7,7 @@ import { Scheduler } from "../scheduler/index.ts";
 import type { ChatState } from "./state.ts";
 import type { AgentBackend, ChatContext } from "../shared/types.ts";
 import {
-  agentResponseKeyboard,
+  cancelKeyboard,
   modelPickerKeyboard,
   sessionListKeyboard,
   jobListKeyboard,
@@ -136,14 +136,14 @@ interface CommandDeps {
 
 export function registerCommands(deps: CommandDeps) {
   const { agent, memory, scheduler, state, taskQueue } = deps;
-  const { resetChats, bootedChats, resumeOverrides, modelOverrides } = state;
+  const { resetChats, bootedChats, resumeOverrides, modelOverrides, activeRuns } = state;
 
   // --- Inbound message coalescing ---
   // Telegram delivers a long paste as several message:text updates and a photo
   // album as several message:photo updates (shared media_group_id). Each would
   // otherwise fire a separate agent run. We buffer per session key and flush a
   // single combined run after a short idle window.
-  const COALESCE_WINDOW_MS = 800;
+  const COALESCE_WINDOW_MS = 500;
   interface PendingBatch {
     ctx: Context;
     texts: string[];
@@ -276,7 +276,7 @@ export function registerCommands(deps: CommandDeps) {
       await replyMd2(ctx, `Queued (position ${taskQueue.pendingCount + 1}, ${taskQueue.activeCount} running)`);
     }
 
-    const thinkingMsg = await replyMd2(ctx, "Thinking...");
+    const thinkingMsg = await replyMd2(ctx, "Thinking...", { reply_markup: cancelKeyboard() });
     const sKey = sessionKey(ctx);
     const chatId = ctx.chat!.id;
 
@@ -318,6 +318,7 @@ export function registerCommands(deps: CommandDeps) {
             useBrowser: true,
             ...(model ? { model } : {}),
             ...(topicBackend ? { backend: topicBackend, backendOnly: true } : {}),
+            onRunStart: (runId) => activeRuns.set(sKey, runId),
             onToolUse: (toolName, input, subagent) => {
               if (!config.VERBOSE_FEEDBACK) return;
               toolLines.push(formatToolLine(toolName, input, subagent));
@@ -325,7 +326,8 @@ export function registerCommands(deps: CommandDeps) {
               if (now - lastEditAt >= 3000) {
                 lastEditAt = now;
                 editMd2(ctx, chatId, thinkingMsg.message_id,
-                  `Thinking...\n${formatToolsSummary(toolLines)}`
+                  `Thinking...\n${formatToolsSummary(toolLines)}`,
+                  { reply_markup: cancelKeyboard() }
                 ).catch(() => {});
               }
             },
@@ -339,18 +341,10 @@ export function registerCommands(deps: CommandDeps) {
           const response = `${toolsBlock}${modelTag}${result.result}\n\n${meta}`;
           const chunks = splitMessage(response);
 
-          if (chunks.length === 1) {
-            await editAgentMd2(ctx, chatId, thinkingMsg.message_id, chunks[0],
-              { reply_markup: agentResponseKeyboard(result.sessionId) }
-            );
-          } else {
-            await editAgentMd2(ctx, chatId, thinkingMsg.message_id, chunks[0]);
-            for (let i = 1; i < chunks.length; i++) {
-              const opts = i === chunks.length - 1
-                ? { reply_markup: agentResponseKeyboard(result.sessionId) }
-                : {};
-              await replyAgentMd2(ctx, chunks[i], opts);
-            }
+          // Final edit omits reply_markup, which removes the Cancel button.
+          await editAgentMd2(ctx, chatId, thinkingMsg.message_id, chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            await replyAgentMd2(ctx, chunks[i]);
           }
           if (agent.consumeRestart()) {
             executeDeferredRestart();
@@ -360,6 +354,8 @@ export function registerCommands(deps: CommandDeps) {
           await editMd2(ctx, chatId, thinkingMsg.message_id,
             `Error: ${err instanceof Error ? err.message : String(err)}`
           );
+        } finally {
+          activeRuns.delete(sKey);
         }
       },
     });
@@ -777,7 +773,7 @@ export function registerCommands(deps: CommandDeps) {
     const voice = ctx.message?.voice ?? ctx.message?.audio;
     if (!voice) return;
 
-    const thinkingMsg = await replyMd2(ctx, "Transcribing voice message...");
+    const thinkingMsg = await replyMd2(ctx, "Transcribing voice message...", { reply_markup: cancelKeyboard() });
     const sKey = sessionKey(ctx);
 
     try {
@@ -809,6 +805,7 @@ export function registerCommands(deps: CommandDeps) {
         sessionId,
         chatContext: chatContext(ctx),
         useBrowser: false,
+        onRunStart: (runId) => activeRuns.set(sKey, runId),
         ...(voiceTopicBackend ? { backend: voiceTopicBackend, backendOnly: true } : {}),
       });
 
@@ -816,18 +813,10 @@ export function registerCommands(deps: CommandDeps) {
       const responseText = `${result.result}\n\n${meta}`;
       const chunks = splitMessage(responseText);
 
-      if (chunks.length === 1) {
-        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0],
-          { reply_markup: agentResponseKeyboard(result.sessionId) }
-        );
-      } else {
-        await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          const opts = i === chunks.length - 1
-            ? { reply_markup: agentResponseKeyboard(result.sessionId) }
-            : {};
-          await replyAgentMd2(ctx, chunks[i], opts);
-        }
+      // Final edit omits reply_markup, which removes the Cancel button.
+      await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await replyAgentMd2(ctx, chunks[i]);
       }
 
       if (agent.consumeRestart()) {
@@ -838,6 +827,8 @@ export function registerCommands(deps: CommandDeps) {
       await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
         `Voice message error: ${err instanceof Error ? err.message : String(err)}`
       );
+    } finally {
+      activeRuns.delete(sKey);
     }
   }
 

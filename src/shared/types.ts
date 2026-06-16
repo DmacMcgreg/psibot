@@ -144,12 +144,16 @@ export interface AgentRunOptions {
   model?: string;
   /** Which AI backend to use. "claude" = Claude Max plan (default), "glm" = GLM models via api.z.ai */
   backend?: AgentBackend;
+  /** When true, do NOT fall back to the other backend on failure — stay on the specified backend only. */
+  backendOnly?: boolean;
   agentName?: string;
   agentPrompt?: string;
   subagentNames?: string[];
   onText?: (text: string) => void;
   onToolUse?: (toolName: string, input?: Record<string, unknown>, subagent?: boolean) => void;
   onComplete?: (result: AgentRunResult) => void;
+  /** Called with the internal runId once the underlying query is live, so callers can interrupt it. May fire multiple times across fallback tiers. */
+  onRunStart?: (runId: string) => void;
   /**
    * Internal flag — set when a run is itself a background self-improvement
    * review fork. Suppresses turn-counter increments and the post-run review
@@ -277,6 +281,7 @@ export interface Reminder {
   source_id: string | null;
   status: ReminderStatus;
   priority: number;
+  due_date: string | null;
   snooze_until: string | null;
   remind_count: number;
   max_reminds: number;

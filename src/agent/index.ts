@@ -82,9 +82,47 @@ export class AgentService {
     return pending;
   }
 
+  /** Sources that produce meaningful daily-log entries (not jobs/heartbeat). */
+  private static readonly DAILY_LOG_SOURCES: ReadonlySet<MessageSource> = new Set<MessageSource>([
+    "telegram",
+    "web",
+    "mini-app",
+  ]);
+
   constructor(deps: AgentServiceDeps) {
     this.memory = deps.memory;
     this.deps = deps;
+  }
+
+  /**
+   * Append a concise session summary line to the daily log after user-facing conversations.
+   * Gives the daily log meaningful content beyond heartbeat stats.
+   */
+  private appendSessionToDailyLog(options: AgentRunOptions, result: AgentRunResult): void {
+    if (!AgentService.DAILY_LOG_SOURCES.has(options.source)) return;
+
+    try {
+      // Build a concise summary: first line of user prompt + brief result preview
+      const userSnippet = (options.prompt ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 100);
+      if (!userSnippet) return;
+
+      const resultSnippet = result.result
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+
+      const hhmm = new Date().toISOString().slice(11, 16);
+      const costStr = result.costUsd > 0 ? ` ($${result.costUsd.toFixed(2)})` : "";
+      const turnsStr = result.numTurns > 1 ? `, ${result.numTurns} turns` : "";
+
+      const line = `- ${hhmm} session (${options.source}${turnsStr}${costStr}): "${userSnippet}${userSnippet.length >= 100 ? "..." : ""}" → ${resultSnippet}${resultSnippet.length >= 120 ? "..." : ""}`;
+      this.memory.appendDailyLog(line);
+    } catch (err) {
+      log.error("Failed to append session to daily log", { error: String(err) });
+    }
   }
 
   /** Create fresh MCP servers for each run to avoid transport conflicts. */
@@ -118,14 +156,14 @@ export class AgentService {
     options: AgentRunOptions,
   ): Array<{ backend: "claude" | "glm"; model: string; attempt: number }> {
     const config = getConfig();
-    const primaryBackend = options.backend ?? "claude";
+    const primaryBackend = options.backend ?? (config.DEFAULT_BACKEND as "claude" | "glm");
     const primaryModel = options.model ?? config.DEFAULT_MODEL;
 
     // Resolve the "family" (primary tier) and its fallback model per backend.
     // Uses short aliases so GLM env-overrides map them to the right concrete IDs.
-    const isOpus = /opus/i.test(primaryModel);
-    const isSonnet = /sonnet/i.test(primaryModel);
-    const isHaiku = /haiku/i.test(primaryModel);
+    const isOpus = /opus/i.test(primaryModel) || primaryModel === config.GLM_OPUS_MODEL;
+    const isSonnet = /sonnet/i.test(primaryModel) || primaryModel === config.GLM_SONNET_MODEL;
+    const isHaiku = /haiku/i.test(primaryModel) || primaryModel === config.GLM_HAIKU_MODEL;
 
     // For the primary backend, preserve exactly what the caller asked for as tier 1,
     // then step down one rung for tier 2.
@@ -138,11 +176,18 @@ export class AgentService {
 
     const secondaryBackend: "claude" | "glm" = primaryBackend === "claude" ? "glm" : "claude";
 
-    return [
+    const primaryTiers = [
       { backend: primaryBackend, model: primaryTopModel, attempt: 1 },
       { backend: primaryBackend, model: primaryTopModel, attempt: 2 },
       { backend: primaryBackend, model: primaryFallbackModel, attempt: 1 },
       { backend: primaryBackend, model: primaryFallbackModel, attempt: 2 },
+    ];
+
+    // When backendOnly is set, don't fall back to the other provider
+    if (options.backendOnly) return primaryTiers;
+
+    return [
+      ...primaryTiers,
       { backend: secondaryBackend, model: secondaryTopModel, attempt: 1 },
       { backend: secondaryBackend, model: secondaryTopModel, attempt: 2 },
       { backend: secondaryBackend, model: secondaryFallbackModel, attempt: 1 },
@@ -308,8 +353,8 @@ export class AgentService {
         chatContext: args.chatContext,
         maxTurns: 16,
         // Default to a Sonnet tier; the review wants real judgment but not Opus cost.
-        model: "claude-sonnet-4-5-20250929",
-        backend: "claude",
+        model: getConfig().DEFAULT_BACKEND === "glm" ? getConfig().GLM_SONNET_MODEL : "claude-sonnet-4-5-20250929",
+        backend: getConfig().DEFAULT_BACKEND as "claude" | "glm",
         _isBackgroundReview: true,
         onToolUse: (toolName, _input, _subagent) => {
           // Capture skill/memory mutations for the surfaced summary.
@@ -394,7 +439,7 @@ export class AgentService {
     log.info("System prompt built", { runId, length: systemPrompt.length });
 
     const model = options.model ?? config.DEFAULT_MODEL;
-    const backend = options.backend ?? "claude";
+    const backend = options.backend ?? (config.DEFAULT_BACKEND as "claude" | "glm");
 
     // Build env overrides for GLM backend
     const envOverride = backend === "glm" && config.GLM_AUTH_TOKEN
@@ -458,6 +503,7 @@ export class AgentService {
     log.info("query() returned iterator", { runId });
 
     this.activeQueries.set(runId, agentQuery);
+    options.onRunStart?.(runId);
 
     let sessionId = options.sessionId ?? "";
     let resultText = "";
@@ -733,6 +779,9 @@ export class AgentService {
         deliveredViaTool,
       };
 
+      // Append a session summary to the daily log for user-facing conversations
+      this.appendSessionToDailyLog(options, result);
+
       options.onComplete?.(result);
       return result;
     } catch (err) {
@@ -776,6 +825,8 @@ export class AgentService {
           stopReason,
           deliveredViaTool,
         };
+
+        this.appendSessionToDailyLog(options, result);
 
         options.onComplete?.(result);
         return result;
