@@ -10,13 +10,14 @@ import {
   getQueuedResearchItems,
   getDueReminders,
   updateReminder,
-  dismissReminder,
+  dismissOverCapReminders,
   completeReminder,
   snoozeReminder,
   updatePendingItem,
   getPendingItemById,
   isTopicMuted,
 } from "../db/queries.ts";
+import { getUrgencySnoozeMs } from "../shared/reminder-snooze.ts";
 import { triageAllPending } from "../triage/index.ts";
 import { preliminaryResearch, deepResearch, createResearchNote } from "../research/index.ts";
 import { scoreSignals } from "./signals.ts";
@@ -738,6 +739,15 @@ export class HeartbeatRunner {
 
   // --- Reminders ---
   private async checkDueReminders(): Promise<void> {
+    // getDueReminders() filters out rows that have already reached
+    // max_reminds (correct — they should never be sent again), which means
+    // this loop can never see an over-cap row itself. Sweep those separately
+    // so they actually get dismissed instead of sitting inert forever.
+    const dismissedCount = dismissOverCapReminders();
+    if (dismissedCount > 0) {
+      log.info("Auto-dismissed reminders at max reminds", { count: dismissedCount });
+    }
+
     const bot = this.getBot();
     if (!bot || this.defaultChatIds.length === 0) return;
 
@@ -747,12 +757,6 @@ export class HeartbeatRunner {
     log.info("Processing due reminders", { count: dueReminders.length });
 
     for (const reminder of dueReminders) {
-      if (reminder.remind_count >= reminder.max_reminds) {
-        dismissReminder(reminder.id);
-        log.info("Auto-dismissed reminder (max reminds reached)", { id: reminder.id, title: reminder.title });
-        continue;
-      }
-
       // Research reminders are silently completed — no Telegram notification
       if (reminder.type === "research") {
         completeReminder(reminder.id);
@@ -788,7 +792,7 @@ export class HeartbeatRunner {
 
       // Auto-snooze based on urgency tier (time until due_date)
       // 3+ days out: 4h, 1-2 days: 2h, due today/overdue: 1h, no due_date: 4h
-      const snoozeMs = this.getUrgencySnoozeMs(reminder.due_date, reminder.priority);
+      const snoozeMs = getUrgencySnoozeMs(reminder.due_date, reminder.priority);
       snoozeReminder(reminder.id, snoozeMs);
       log.info("Auto-snoozed reminder after send", {
         id: reminder.id,
@@ -799,40 +803,6 @@ export class HeartbeatRunner {
     }
   }
 
-  /** Calculate snooze duration based on how soon the reminder is due.
-   *  Priority 1 = hourly when due/overdue.
-   *  Priority 2 = every 4-12h depending on proximity.
-   *  Priority 3+ = daily or every 2 days — NOT hourly.
-   */
-  private getUrgencySnoozeMs(dueDate: string | null, priority: number): number {
-    const HOUR = 3600_000;
-
-    // Priority 1 = critical/urgent: hourly only for these
-    if (priority === 1) {
-      if (!dueDate) return 4 * HOUR;
-      const due = new Date(dueDate);
-      const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-      return daysUntilDue <= 1 ? 1 * HOUR : 4 * HOUR;
-    }
-
-    // Priority 2 = high but not critical
-    if (priority === 2) {
-      if (!dueDate) return 8 * HOUR;
-      const due = new Date(dueDate);
-      const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-      if (daysUntilDue <= 1) return 4 * HOUR;    // Due/tomorrow: every 4h
-      if (daysUntilDue <= 2) return 8 * HOUR;    // 2 days: every 8h
-      return 12 * HOUR;                           // 3+ days: every 12h
-    }
-
-    // Priority 3-5 = normal/low: daily or less frequent
-    if (!dueDate) return 48 * HOUR;               // No due date: every 2 days
-    const due = new Date(dueDate);
-    const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-    if (daysUntilDue <= 1) return 12 * HOUR;      // Due/tomorrow: every 12h
-    if (daysUntilDue <= 2) return 24 * HOUR;      // 2 days: daily
-    return 48 * HOUR;                              // 3+ days: every 2 days
-  }
 }
 
 function escapeHtml(text: string): string {

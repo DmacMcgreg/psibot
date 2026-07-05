@@ -76,39 +76,62 @@ export class Scheduler {
         });
       }
     } else if (job.type === "once" && job.run_at) {
-      // Ensure run_at is parsed as UTC (append Z if missing)
-      const runAtStr = job.run_at.endsWith("Z") ? job.run_at : job.run_at + "Z";
-      const runAt = new Date(runAtStr);
-      const delay = runAt.getTime() - Date.now();
+      try {
+        // Only bare timestamps (no timezone marker) need a Z appended to be
+        // parsed as UTC. Values that already carry an offset (+/-HH:MM) or a
+        // trailing Z must be left as-is, or appending 'Z' produces an invalid
+        // string like "...-04:00Z" that throws on toISOString().
+        const hasTzMarker = /(Z|[+-]\d{2}:\d{2})$/.test(job.run_at);
+        const runAtStr = hasTzMarker ? job.run_at : job.run_at + "Z";
+        const runAt = new Date(runAtStr);
 
-      if (delay <= 0) {
-        // Already past due, execute immediately
-        log.info("One-off job past due, executing now", { jobId: job.id });
-        this.executor.execute(job.id).catch((err) => {
-          log.error("One-off execution failed", {
+        if (Number.isNaN(runAt.getTime())) {
+          log.error("Invalid run_at for one-off job, marking failed", {
             jobId: job.id,
-            error: String(err),
+            runAt: job.run_at,
           });
-        });
-      } else {
-        const timer = setTimeout(() => {
-          this.timers.delete(job.id);
+          updateJob(job.id, { status: "failed" });
+          return;
+        }
+
+        const delay = runAt.getTime() - Date.now();
+
+        if (delay <= 0) {
+          // Already past due, execute immediately
+          log.info("One-off job past due, executing now", { jobId: job.id });
           this.executor.execute(job.id).catch((err) => {
             log.error("One-off execution failed", {
               jobId: job.id,
               error: String(err),
             });
           });
-        }, delay);
+        } else {
+          const timer = setTimeout(() => {
+            this.timers.delete(job.id);
+            this.executor.execute(job.id).catch((err) => {
+              log.error("One-off execution failed", {
+                jobId: job.id,
+                error: String(err),
+              });
+            });
+          }, delay);
 
-        this.timers.set(job.id, timer);
-        updateJob(job.id, { next_run_at: runAt.toISOString() });
-        log.info("Scheduled one-off job", {
+          this.timers.set(job.id, timer);
+          updateJob(job.id, { next_run_at: runAt.toISOString() });
+          log.info("Scheduled one-off job", {
+            jobId: job.id,
+            name: job.name,
+            runAt: runAt.toISOString(),
+            delayMs: delay,
+          });
+        }
+      } catch (err) {
+        log.error("Failed to schedule one-off job", {
           jobId: job.id,
-          name: job.name,
-          runAt: runAt.toISOString(),
-          delayMs: delay,
+          runAt: job.run_at,
+          error: String(err),
         });
+        updateJob(job.id, { status: "failed" });
       }
     }
   }
