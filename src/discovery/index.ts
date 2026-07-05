@@ -15,6 +15,9 @@ import {
   getCandidatesByStatus,
   setCandidateStatus,
   updateCandidate,
+  insertNewsItem,
+  expireStaleCandidates,
+  pruneExpiredCandidates,
   type DiscoveryCandidate,
 } from "./db.ts";
 import { buildInterestProfile, loadCentroid } from "./profile.ts";
@@ -227,6 +230,15 @@ export class DiscoveryRunner {
       try {
         const mined = await mineNews();
         news = mined.items;
+        // Persist so the weekly digest can pull this week's news highlights
+        // instead of losing them once the Telegram surface message scrolls by.
+        for (const item of news) {
+          try {
+            insertNewsItem(item);
+          } catch (err) {
+            log.warn("Failed to persist news item", { error: String(err) });
+          }
+        }
       } catch (err) {
         log.warn("News mining failed (non-fatal)", { error: String(err) });
       }
@@ -235,6 +247,17 @@ export class DiscoveryRunner {
       if (processed.length > 0 || news.length > 0) {
         const surfaced = await this.surfaceDigest(processed, news);
         stats.surfaced = surfaced;
+      }
+
+      // --- Step 9: prune stale/expired candidates (bounds unbounded growth) ---
+      try {
+        const expired = expireStaleCandidates();
+        const pruned = pruneExpiredCandidates();
+        if (expired > 0 || pruned > 0) {
+          log.info("Pruned discovery candidates", { expired, pruned });
+        }
+      } catch (err) {
+        log.warn("Candidate pruning failed (non-fatal)", { error: String(err) });
       }
 
       completeRun(runId, stats);
@@ -281,7 +304,11 @@ export class DiscoveryRunner {
     if (!bot) return 0;
 
     const { chatId, topicId } = await this.resolveTarget(bot);
-    if (!chatId) return 0;
+    // resolveTarget() returns a null chatId when the group isn't configured or
+    // createForumTopic failed (e.g. bot lacks "Manage Topics" rights). Don't
+    // dead-end here — fall through to send(), which already falls back to
+    // this.defaultChatIds (DM) exactly like this method should.
+    if (!chatId && this.defaultChatIds.length === 0) return 0;
 
     let surfaced = 0;
 
@@ -378,7 +405,7 @@ export class DiscoveryRunner {
 
   private async send(
     bot: Bot,
-    chatId: string | number,
+    chatId: string | number | null,
     topicId: number | undefined,
     text: string,
     kb?: InlineKeyboard,

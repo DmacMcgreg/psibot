@@ -84,7 +84,7 @@ export class DigestRunner {
         captured: digest.numbers.capturedTotal,
         topItems: digest.topItems.length,
         research: digest.research.length,
-        youtube: digest.youtube.length,
+        youtube: digest.youtube.totalCount,
         chunks: digest.telegramChunks.length,
       });
 

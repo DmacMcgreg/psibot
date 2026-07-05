@@ -319,6 +319,51 @@ export function getTopScoredCandidates(limit = 50): DiscoveryCandidate[] {
     .all(limit);
 }
 
+/**
+ * Mark stale, never-processed candidates as 'rejected' (tagged via `reason`)
+ * so they stop counting toward the ever-growing 'candidate' pool. There is no
+ * dedicated 'expired' status in the discovery_candidates CHECK constraint
+ * (src/db/schema.ts), so this reuses 'rejected' with a distinguishing
+ * `expired_stale:` reason prefix rather than widening the schema's enum.
+ * Cheap: a single indexed UPDATE by status + discovered_at.
+ */
+export function expireStaleCandidates(maxAgeDays = 30): number {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - maxAgeDays * 86400_000)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
+  const result = db
+    .prepare(
+      `UPDATE discovery_candidates
+          SET status = 'rejected', reason = ?
+        WHERE status = 'candidate' AND discovered_at < ?`,
+    )
+    .run(`expired_stale: never processed within ${maxAgeDays}d`, cutoff);
+  return result.changes;
+}
+
+/**
+ * Cap the total number of retained expired-stale rows, deleting the oldest
+ * ones beyond `keep`. Runs after expireStaleCandidates() so the table doesn't
+ * grow unbounded forever just because rows were relabeled instead of removed.
+ */
+export function pruneExpiredCandidates(keep = 2000): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `DELETE FROM discovery_candidates
+        WHERE reason LIKE 'expired_stale:%'
+          AND id NOT IN (
+            SELECT id FROM discovery_candidates
+             WHERE reason LIKE 'expired_stale:%'
+             ORDER BY discovered_at DESC
+             LIMIT ?
+          )`,
+    )
+    .run(keep);
+  return result.changes;
+}
+
 /** Has this video been seen as a candidate (any source) or already processed? */
 export function hasVideoBeenSeen(videoId: string): boolean {
   const db = getDb();
@@ -427,6 +472,84 @@ export function completeRun(
     stats.error ?? null,
     runId,
   );
+}
+
+// --- News items (persisted mineNews() output) ---
+//
+// mineNews() (src/discovery/news.ts) previously produced ephemeral output —
+// surfaced to Telegram once, then lost. This table persists it so the weekly
+// digest (src/digest/compose.ts) can pull the week's mined news highlights.
+// Created lazily here (not in src/db/schema.ts's central migrations list) to
+// keep the discovery subsystem's storage self-contained, matching this
+// module's existing pattern of owning its own tables end-to-end.
+
+let newsTableReady = false;
+
+function ensureNewsItemsTable(): void {
+  if (newsTableReady) return;
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS discovery_news_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      headline TEXT NOT NULL,
+      what TEXT NOT NULL DEFAULT '',
+      why_it_matters TEXT NOT NULL DEFAULT '',
+      source_video_ids TEXT NOT NULL DEFAULT '[]',
+      novelty REAL NOT NULL DEFAULT 0,
+      video_count INTEGER NOT NULL DEFAULT 1,
+      mined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    )
+  `);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_discovery_news_items_mined_at ON discovery_news_items(mined_at)`,
+  );
+  newsTableReady = true;
+}
+
+export interface PersistedNewsItem {
+  id: number;
+  headline: string;
+  what: string;
+  why_it_matters: string;
+  source_video_ids: string;
+  novelty: number;
+  video_count: number;
+  mined_at: string;
+}
+
+export function insertNewsItem(item: {
+  headline: string;
+  what: string;
+  whyItMatters: string;
+  sourceVideos: Array<{ videoId: string; title: string; channel: string }>;
+  novelty: number;
+  videoCount: number;
+}): void {
+  ensureNewsItemsTable();
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO discovery_news_items
+       (headline, what, why_it_matters, source_video_ids, novelty, video_count)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    item.headline,
+    item.what,
+    item.whyItMatters,
+    JSON.stringify(item.sourceVideos),
+    item.novelty,
+    item.videoCount,
+  );
+}
+
+/** Mined news items with mined_at >= windowStart, newest first. */
+export function getRecentNewsItems(windowStart: string, limit = 20): PersistedNewsItem[] {
+  ensureNewsItemsTable();
+  const db = getDb();
+  return db
+    .prepare<PersistedNewsItem, [string, number]>(
+      `SELECT * FROM discovery_news_items WHERE mined_at >= ? ORDER BY mined_at DESC LIMIT ?`,
+    )
+    .all(windowStart, limit);
 }
 
 export function getRecentRuns(limit = 10): Array<{

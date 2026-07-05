@@ -18,6 +18,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getDb } from "../db/index.ts";
 import { splitMessage } from "../telegram/format.ts";
+import { getConfig } from "../config.ts";
+import { getRecentNewsItems } from "../discovery/db.ts";
+import { createLogger } from "../shared/logger.ts";
+
+const log = createLogger("digest:compose");
 
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
 const WEEKLY_DIR = join(KNOWLEDGE_DIR, "weekly");
@@ -73,6 +78,26 @@ export interface ResearchItem {
 export interface YoutubeItem {
   title: string;
   channel: string;
+  relevanceScore: number;
+}
+
+export interface NewsHighlight {
+  headline: string;
+  what: string;
+  whyItMatters: string;
+  novelty: number;
+  videoCount: number;
+}
+
+export interface YoutubeSection {
+  /** Top videos this week, ranked by overlap with this week's rising entities. */
+  topVideos: YoutubeItem[];
+  /** Count of processed videos beyond the ranked top slice. */
+  remainingCount: number;
+  /** Total videos processed in the window (topVideos.length + remainingCount). */
+  totalCount: number;
+  /** This week's mined news items (src/discovery/news.ts), persisted via discovery/db.ts. */
+  newsHighlights: NewsHighlight[];
 }
 
 export interface RisingEntity {
@@ -90,7 +115,7 @@ export interface WeeklyDigest {
   numbers: WeekInNumbers;
   topItems: TopItem[];
   research: ResearchItem[];
-  youtube: YoutubeItem[];
+  youtube: YoutubeSection;
   risingEntities: RisingEntity[];
   themesExcerpt: string | null;
   themesWeek: string | null;
@@ -146,8 +171,9 @@ export function composeWeeklyDigest(now = new Date()): WeeklyDigest {
   const numbers = collectNumbers(db, windowStart);
   const topItems = collectTopItems(db, windowStart);
   const research = collectResearch(db, windowStart);
-  const youtube = collectYoutube(db, windowStart);
-  const risingEntities = collectRisingEntities(db, windowStart, now);
+  const risingEntitiesInternal = computeRisingEntities(db, windowStart, now);
+  const risingEntities = risingEntitiesInternal.map(({ id: _id, ...rest }) => rest);
+  const youtube = collectYoutube(db, windowStart, risingEntitiesInternal.map((e) => e.id));
   const { excerpt: themesExcerpt, week: themesWeek } = readWeeklyThemes(week);
 
   const digest: Omit<WeeklyDigest, "telegramChunks" | "markdown"> = {
@@ -280,9 +306,14 @@ function collectResearch(db: ReturnType<typeof getDb>, windowStart: string): Res
       },
       [string]
     >(
+      // auto_decision IN (...) — not a blanket noteplan_path check — because
+      // triage creates a NotePlan note for every triaged item, not just ones
+      // that actually went through deep/quick research. Matches the
+      // completion predicate used elsewhere (e.g. atlas/synthesize.ts).
       `SELECT id, title, url, noteplan_path, quick_scan_summary, triage_summary
          FROM pending_items
         WHERE captured_at >= ?
+          AND auto_decision IN ('deep_research_done', 'quick_research_done')
           AND noteplan_path IS NOT NULL AND noteplan_path <> ''
         ORDER BY COALESCE(priority, 5) ASC, COALESCE(signal_score, 0) DESC`,
     )
@@ -297,24 +328,99 @@ function collectResearch(db: ReturnType<typeof getDb>, windowStart: string): Res
   }));
 }
 
-function collectYoutube(db: ReturnType<typeof getDb>, windowStart: string): YoutubeItem[] {
+/** How many top-ranked videos to show in full in the digest. */
+const YOUTUBE_TOP_N = 3;
+
+function collectYoutube(
+  db: ReturnType<typeof getDb>,
+  windowStart: string,
+  risingEntityIds: number[],
+): YoutubeSection {
   const rows = db
-    .prepare<{ title: string; channel_title: string }, [string]>(
-      `SELECT title, channel_title
+    .prepare<{ video_id: string; title: string; channel_title: string }, [string]>(
+      `SELECT video_id, title, channel_title
          FROM youtube_videos
         WHERE processed_at >= ?
-        ORDER BY processed_at DESC
-        LIMIT 10`,
+        ORDER BY processed_at DESC`,
     )
     .all(windowStart);
-  return rows.map((r) => ({ title: r.title, channel: r.channel_title }));
+
+  if (rows.length === 0) {
+    return { topVideos: [], remainingCount: 0, totalCount: 0, newsHighlights: [] };
+  }
+
+  // Relevance = how many of this week's rising entities (already computed
+  // above from atlas_entity_mentions — the same pipeline the "Rising
+  // entities" section uses) a video mentions. youtube_videos are ingested
+  // into atlas_items (source_table='youtube_videos'), so this is a direct
+  // join, no re-embedding needed.
+  //
+  // A naive sum of discovery_interest_weights per linked topic was tried
+  // first but is dominated by a single high-volume catch-all topic bucket
+  // (many unrelated videos share it), which drowned out genuinely relevant
+  // videos — this rising-entity overlap avoids that failure mode entirely.
+  // Videos with no overlap score 0 and fall back to the recency ordering
+  // above via Array.sort's stability.
+  let scoreMap = new Map<string, number>();
+  if (risingEntityIds.length > 0) {
+    const placeholders = risingEntityIds.map(() => "?").join(", ");
+    const scoreRows = db
+      .prepare<{ video_id: string; score: number }, number[]>(
+        `SELECT ai.source_id AS video_id, COUNT(*) AS score
+           FROM atlas_items ai
+           JOIN atlas_entity_mentions m ON m.item_id = ai.id
+          WHERE ai.source_table = 'youtube_videos' AND m.entity_id IN (${placeholders})
+          GROUP BY ai.source_id`,
+      )
+      .all(...risingEntityIds);
+    scoreMap = new Map(scoreRows.map((r) => [r.video_id, r.score]));
+  }
+
+  const ranked = rows
+    .map((r) => ({
+      title: r.title,
+      channel: r.channel_title,
+      relevanceScore: scoreMap.get(r.video_id) ?? 0,
+    }))
+    .sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+  const newsHighlights = collectNewsHighlights(windowStart);
+
+  return {
+    topVideos: ranked.slice(0, YOUTUBE_TOP_N),
+    remainingCount: Math.max(0, ranked.length - YOUTUBE_TOP_N),
+    totalCount: ranked.length,
+    newsHighlights,
+  };
 }
 
-function collectRisingEntities(
+/** This week's mined news items (persisted by DiscoveryRunner's news-mining step). */
+function collectNewsHighlights(windowStart: string): NewsHighlight[] {
+  try {
+    return getRecentNewsItems(windowStart, 5).map((r) => ({
+      headline: r.headline,
+      what: r.what,
+      whyItMatters: r.why_it_matters,
+      novelty: r.novelty,
+      videoCount: r.video_count,
+    }));
+  } catch (err) {
+    log.warn("Failed to load discovery news highlights for digest", { error: String(err) });
+    return [];
+  }
+}
+
+/**
+ * Rising entities plus their atlas_entities.id — the id is only needed
+ * internally so collectYoutube() can score videos by overlap with this
+ * week's rising entities; the public RisingEntity type (used by rendering)
+ * omits it.
+ */
+function computeRisingEntities(
   db: ReturnType<typeof getDb>,
   windowStart: string,
   now: Date,
-): RisingEntity[] {
+): (RisingEntity & { id: number })[] {
   const priorStart = new Date(now.getTime() - 14 * 86400_000)
     .toISOString()
     .replace(/\.\d{3}Z$/, "Z");
@@ -352,6 +458,7 @@ function collectRisingEntities(
   return thisWeek.map((r) => {
     const prior = priorCounts.get(r.id) ?? 0;
     return {
+      id: r.id,
       name: r.name,
       kind: r.kind,
       count: r.count,
@@ -436,11 +543,24 @@ function renderMarkdown(d: Omit<WeeklyDigest, "telegramChunks" | "markdown">): s
   // YouTube
   lines.push("## YouTube");
   lines.push("");
-  if (d.youtube.length === 0) {
+  if (d.youtube.totalCount === 0) {
     lines.push("_No videos processed this week._");
   } else {
-    for (const v of d.youtube) {
+    lines.push("_Top videos, ranked by overlap with this week's rising entities:_");
+    for (const v of d.youtube.topVideos) {
       lines.push(`- ${v.title} — _${v.channel}_`);
+    }
+    if (d.youtube.remainingCount > 0) {
+      lines.push(`- _...and ${d.youtube.remainingCount} more video${d.youtube.remainingCount === 1 ? "" : "s"} processed this week_`);
+    }
+  }
+  if (d.youtube.newsHighlights.length > 0) {
+    lines.push("");
+    lines.push("**News highlights (mined from this week's videos):**");
+    for (const n of d.youtube.newsHighlights) {
+      const noveltyTag = n.novelty > 0.4 ? " 🆕" : n.videoCount > 2 ? " 📈" : "";
+      lines.push(`- **${n.headline}**${noveltyTag} — ${n.what}`);
+      if (n.whyItMatters) lines.push(`  - _Why it matters:_ ${n.whyItMatters}`);
     }
   }
   lines.push("");
@@ -477,6 +597,28 @@ function renderMarkdown(d: Omit<WeeklyDigest, "telegramChunks" | "markdown">): s
 // Rendering — Telegram HTML (b/i/a/code/pre subset), chunked.
 // ---------------------------------------------------------------------------
 
+/** How many top items to show inline in the short Telegram summary. */
+const TELEGRAM_TOP_ITEMS_N = 3;
+
+/**
+ * Build the `/tma/digest/:week` reader URL using the same host source as the
+ * bot's Mini App menu button (src/telegram/index.ts:109's
+ * `https://${config.TELEGRAM_WEBHOOK_HOST}/tma`). Returns null when the host
+ * isn't configured so callers can omit the link instead of producing a dead
+ * `https:///tma/digest/...` URL.
+ */
+function digestReaderUrl(week: string): string | null {
+  const host = getConfig().TELEGRAM_WEBHOOK_HOST;
+  if (!host) return null;
+  return `https://${host}/tma/digest/${week}`;
+}
+
+/**
+ * Short Telegram-HTML summary: week-in-numbers + top 2-3 items + a link to
+ * the full `/tma/digest/:week` reader. The full richness (research, YouTube
+ * ranking + news highlights, rising entities, weekly themes) lives only in
+ * the archived markdown / Mini App reader — see renderMarkdown().
+ */
 function renderTelegram(d: Omit<WeeklyDigest, "telegramChunks" | "markdown">): string[] {
   const parts: string[] = [];
 
@@ -486,59 +628,33 @@ function renderTelegram(d: Omit<WeeklyDigest, "telegramChunks" | "markdown">): s
   const n = d.numbers;
   const numLines = [
     `<b>Week in numbers</b>`,
-    `Captured: <b>${n.capturedTotal}</b>`,
+    `Captured: <b>${n.capturedTotal}</b> · Triaged: <b>${n.triagedCount}</b> · Researched: <b>${n.researchedCount}</b> · YouTube: <b>${n.youtubeCount}</b>`,
   ];
-  if (n.capturedBySource.length > 0) {
-    numLines.push(
-      `<i>${escapeTg(n.capturedBySource.map((s) => `${s.source} ${s.count}`).join(", "))}</i>`,
-    );
-  }
-  numLines.push(`Triaged: <b>${n.triagedCount}</b> · Researched: <b>${n.researchedCount}</b> · YouTube: <b>${n.youtubeCount}</b>`);
   parts.push(numLines.join("\n"));
 
-  // Top items
+  // Top 2-3 items only — the rest lives behind the full-digest link.
   if (d.topItems.length > 0) {
-    const items = d.topItems.map((item) => {
+    const items = d.topItems.slice(0, TELEGRAM_TOP_ITEMS_N).map((item) => {
       const p = item.priority != null ? `(P${item.priority}) ` : "";
       const title = escapeTg(item.title);
       const link = item.url ? `<a href="${escapeTg(item.url)}">${title}</a>` : title;
       const plat = item.platform ? ` — ${escapeTg(item.platform)}` : "";
-      const value = item.value ? `\n${escapeTg(item.value)}` : "";
-      return `${p}${link}${plat}${value}`;
+      return `${p}${link}${plat}`;
     });
-    parts.push([`<b>Top items</b>`, ...items].join("\n\n"));
+    const heading = d.topItems.length > TELEGRAM_TOP_ITEMS_N
+      ? `<b>Top items</b> (${TELEGRAM_TOP_ITEMS_N} of ${d.topItems.length})`
+      : `<b>Top items</b>`;
+    parts.push([heading, ...items].join("\n"));
   }
 
-  // Research completed
-  if (d.research.length > 0) {
-    const items = d.research.map((r) => {
-      const summary = r.summary ? ` — ${escapeTg(r.summary)}` : "";
-      return `🔬 <b>${escapeTg(r.title)}</b>${summary}\n<code>${escapeTg(r.notePath)}</code>`;
-    });
-    parts.push([`<b>Research completed</b>`, ...items].join("\n\n"));
+  // Full digest link — the plan's own spec: short Telegram summary + link.
+  const readerUrl = digestReaderUrl(d.week);
+  if (readerUrl) {
+    parts.push(`<a href="${escapeTg(readerUrl)}">Full digest →</a>`);
   }
 
-  // YouTube
-  if (d.youtube.length > 0) {
-    const items = d.youtube.map((v) => `▸ ${escapeTg(v.title)} — <i>${escapeTg(v.channel)}</i>`);
-    parts.push([`<b>YouTube</b>`, ...items].join("\n"));
-  }
-
-  // Rising entities
-  if (d.risingEntities.length > 0) {
-    const items = d.risingEntities.map((e) => {
-      const deltaStr = e.delta > 0 ? ` (+${e.delta})` : e.delta < 0 ? ` (${e.delta})` : "";
-      return `▸ <b>${escapeTg(e.name)}</b> ${escapeTg(e.count + " mentions" + deltaStr)}`;
-    });
-    parts.push([`<b>Rising entities</b>`, ...items].join("\n"));
-  }
-
-  // Weekly themes excerpt
-  if (d.themesExcerpt) {
-    parts.push(`<b>Weekly themes</b>\n${escapeTg(oneLine(d.themesExcerpt, 600))}`);
-  }
-
-  // Join sections with blank lines, then chunk to Telegram's message limit.
+  // Join sections with blank lines, then chunk to Telegram's message limit
+  // (chunking is defensive here — this summary should always fit in one).
   const full = parts.join("\n\n");
   return splitMessage(full);
 }
