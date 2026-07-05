@@ -267,6 +267,102 @@ export function setExported(name: string, exported: SkillExportRecord | null): v
   });
 }
 
+/**
+ * Export-candidate nudge sidecar — a separate small file (not part of the
+ * per-skill .usage.json records, so it doesn't need a SkillUsageRecord shape
+ * change) tracking which quality-bar-passing skills have already been
+ * Telegram-nudged for export approval, and which David explicitly skipped.
+ * Keyed by skill name; `id` is a short deterministic hash used as Telegram
+ * callback_data (skill names can exceed the 64-byte callback_data budget).
+ */
+export interface ExportNudgeRecord {
+  id: string;
+  nudged_at: string;
+  declined: boolean;
+}
+
+function exportNudgeFile(): string {
+  return join(skillsDir(), ".export-nudges.json");
+}
+
+/** Deterministic short id for a skill name (djb2 hash, base36). Stable across runs — used as Telegram callback_data instead of the (possibly long) name. */
+export function exportNudgeId(name: string): string {
+  let h = 5381;
+  for (let i = 0; i < name.length; i++) {
+    h = ((h << 5) + h + name.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
+export function loadExportNudges(): Record<string, ExportNudgeRecord> {
+  const path = exportNudgeFile();
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, ExportNudgeRecord>;
+  } catch (e) {
+    log.warn("Failed to read .export-nudges.json", { error: String(e) });
+    return {};
+  }
+}
+
+function saveExportNudges(data: Record<string, ExportNudgeRecord>): void {
+  ensureSkillsDir();
+  const path = exportNudgeFile();
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: "utf-8" });
+    renameSync(tmp, path);
+  } catch (e) {
+    log.warn("Failed to write .export-nudges.json", { error: String(e) });
+    try { unlinkSync(tmp); } catch { /* tmp may not exist */ }
+  }
+}
+
+/** Has this candidate already been Telegram-nudged for export approval? */
+export function wasExportNudged(name: string): boolean {
+  return name in loadExportNudges();
+}
+
+/** Did David press "Skip" on this candidate's export nudge? */
+export function isExportDeclined(name: string): boolean {
+  return !!loadExportNudges()[name]?.declined;
+}
+
+/** Record that a nudge was sent (idempotent — first call wins so re-nudge stays suppressed). */
+export function markExportNudged(name: string): void {
+  const data = loadExportNudges();
+  if (!data[name]) {
+    data[name] = { id: exportNudgeId(name), nudged_at: nowIso(), declined: false };
+    saveExportNudges(data);
+  }
+}
+
+/** Record that David pressed "Skip" — suppresses future nudges for this candidate. */
+export function markExportDeclined(name: string): void {
+  const data = loadExportNudges();
+  data[name] = { id: data[name]?.id ?? exportNudgeId(name), nudged_at: data[name]?.nudged_at ?? nowIso(), declined: true };
+  saveExportNudges(data);
+}
+
+/** Reverse-lookup a skill name from the short id used in callback_data. */
+export function resolveExportNudgeId(id: string): string | null {
+  for (const [name, rec] of Object.entries(loadExportNudges())) {
+    if (rec.id === id) return name;
+  }
+  return null;
+}
+
+/** Clear a nudge record (e.g. once approved — a re-nomination after revoke should re-nudge). */
+export function clearExportNudge(name: string): void {
+  const data = loadExportNudges();
+  if (name in data) {
+    delete data[name];
+    saveExportNudges(data);
+  }
+}
+
 export function markAgentCreated(name: string): void {
   mutate(name, (r) => {
     r.created_by = "agent";

@@ -79,7 +79,11 @@ export interface PruningEntry {
  */
 export async function maybeRunCurator(
   agent: AgentService,
-  opts: { idleForSeconds?: number; onSummary?: (s: string) => void } = {},
+  opts: {
+    idleForSeconds?: number;
+    onSummary?: (s: string) => void;
+    onExportCandidates?: (names: string[]) => void | Promise<void>;
+  } = {},
 ): Promise<CuratorRunResult | null> {
   try {
     if (!shouldRunNow()) return null;
@@ -94,7 +98,7 @@ export async function maybeRunCurator(
         return null;
       }
     }
-    return await runCuratorReview(agent, { onSummary: opts.onSummary });
+    return await runCuratorReview(agent, { onSummary: opts.onSummary, onExportCandidates: opts.onExportCandidates });
   } catch (e) {
     log.warn("maybeRunCurator failed", { error: String(e) });
     return null;
@@ -105,6 +109,14 @@ export interface CuratorRunOptions {
   /** Preview mode — skip auto-transitions, instruct LLM not to mutate. */
   dryRun?: boolean;
   onSummary?: (s: string) => void;
+  /**
+   * Called once per run with any NEW export candidates (quality-bar-passing,
+   * not yet nudged, not declined) so the caller — which owns bot/chat-id
+   * access — can send the Telegram approve/skip nudge. Never called with an
+   * empty array. Errors are swallowed; a failed nudge should not fail the
+   * curator pass.
+   */
+  onExportCandidates?: (names: string[]) => void | Promise<void>;
 }
 
 /**
@@ -198,8 +210,16 @@ export async function runCuratorReview(
   // Phase C — export pass, after consolidation settles so we don't sync a
   // skill Phase B is about to merge away.
   const exportReport: ExportReport = dryRun
-    ? { exported: [], tombstoned: [], candidates: [], skipped: [] }
+    ? { exported: [], tombstoned: [], candidates: [], newCandidates: [], skipped: [] }
     : runExportPass();
+
+  if (!dryRun && exportReport.newCandidates.length > 0) {
+    try {
+      await opts.onExportCandidates?.(exportReport.newCandidates);
+    } catch (e) {
+      log.warn("onExportCandidates callback failed", { error: String(e) });
+    }
+  }
 
   const elapsed = Date.now() - start.getTime();
   const extras: string[] = [];
@@ -486,6 +506,7 @@ function writeRunReport(r: ReportInputs): string {
     if (r.exportReport.exported.length > 0) md.push(`- synced: ${r.exportReport.exported.join(", ")}`);
     if (r.exportReport.tombstoned.length > 0) md.push(`- tombstoned: ${r.exportReport.tombstoned.join(", ")}`);
     if (r.exportReport.candidates.length > 0) md.push(`- awaiting approval: ${r.exportReport.candidates.join(", ")}`);
+    if (r.exportReport.newCandidates.length > 0) md.push(`- newly nudged via Telegram: ${r.exportReport.newCandidates.join(", ")}`);
     for (const s of r.exportReport.skipped) md.push(`- skipped ${s.name}: ${s.reason}`);
     md.push("");
   }

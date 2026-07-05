@@ -35,6 +35,8 @@ import { indexItemEntities } from "../atlas/entities.ts";
 import type { AtlasItem } from "../atlas/index.ts";
 import type { AgentService } from "../agent/index.ts";
 import { maybeRunCurator } from "../curator/index.ts";
+import { tmaLink } from "../telegram/format.ts";
+import { markExportNudged, exportNudgeId } from "../skills/usage.ts";
 
 const log = createLogger("heartbeat");
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
@@ -285,6 +287,7 @@ export class HeartbeatRunner {
       void maybeRunCurator(this.agent, {
         idleForSeconds,
         onSummary: (s) => log.info(s),
+        onExportCandidates: (names) => this.notifyExportCandidates(names),
       }).catch((err) => log.warn("Curator tick failed", { error: String(err) }));
     }
 
@@ -603,6 +606,10 @@ export class HeartbeatRunner {
     if (c.notePath) {
       lines.push(`<code>${escapeHtml(c.notePath)}</code>`);
     }
+    const reviewLink = tmaLink("review");
+    if (reviewLink) {
+      lines.push(`<a href="${escapeHtml(reviewLink)}">Open review queue</a>`);
+    }
     const msg = lines.join("\n");
 
     for (const chatId of targetChatIds) {
@@ -615,6 +622,58 @@ export class HeartbeatRunner {
           error: String(err),
         });
       }
+    }
+  }
+
+  // --- Skill export-candidate nudge (curator Phase C) ---
+  // The curator only *computes* which candidates are new (export.ts, backed
+  // by the usage.ts nudge sidecar for dedupe); sending is done here because
+  // this is where bot/chat-id access already lives (same pattern as
+  // notifyResearchComplete). Approve/Skip are handled by the "sxa"/"sxs"
+  // callback cases in telegram/keyboards.ts.
+  private async notifyExportCandidates(names: string[]): Promise<void> {
+    if (names.length === 0) return;
+    const bot = this.getBot();
+    if (!bot) return;
+
+    const targetChatIds: (string | number)[] = this.digestChatId
+      ? [this.digestChatId]
+      : this.defaultChatIds;
+    const topicOpts = this.digestChatId && this.digestTopicId
+      ? { message_thread_id: this.digestTopicId }
+      : {};
+    if (targetChatIds.length === 0) return;
+
+    if (this.digestChatId && isTopicMuted(this.digestChatId, this.digestTopicId ?? null)) {
+      return;
+    }
+
+    const skillsLink = tmaLink("skills");
+
+    for (const name of names) {
+      const id = exportNudgeId(name);
+      const lines = [
+        `🧩 Skill export candidate: <b>${escapeHtml(name)}</b>`,
+        `Meets the quality bar for export to ~/.claude/skills.`,
+      ];
+      if (skillsLink) {
+        lines.push(`<a href="${escapeHtml(skillsLink)}">Review skills</a>`);
+      }
+      const msg = lines.join("\n");
+      const kb = new InlineKeyboard().text("Approve", `sxa:${id}`).text("Skip", `sxs:${id}`);
+
+      let sent = false;
+      for (const chatId of targetChatIds) {
+        try {
+          await bot.api.sendMessage(chatId, msg, { parse_mode: "HTML", reply_markup: kb, ...topicOpts });
+          sent = true;
+        } catch (err) {
+          log.error("Failed to send export-candidate nudge", { chatId, name, error: String(err) });
+        }
+      }
+      // Only mark nudged once actually delivered somewhere — a fully-failed
+      // send should be retried next tick rather than silently suppressed.
+      if (sent) markExportNudged(name);
     }
   }
 

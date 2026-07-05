@@ -23,6 +23,7 @@ import type { AutonomyLevelChange } from "../heartbeat/autonomy.ts";
 import type { MemorySystem } from "../memory/index.ts";
 import { getPendingItemById } from "../db/queries.ts";
 import { applyItemAction } from "../triage/actions.ts";
+import { setExportApproved, resolveExportNudgeId, markExportDeclined, clearExportNudge } from "../skills/usage.ts";
 
 const log = createLogger("telegram:keyboards");
 
@@ -640,6 +641,44 @@ export function createCallbackHandler(deps: CallbackDeps) {
             ctx,
             `Here is today's morning brief:\n\n${briefText}\n\nI'd like to discuss this brief. What questions do you have, or what should I focus on?`
           );
+          break;
+        }
+
+        case "sxa": {
+          // Skill export — Approve. payload is the short nudge id (skill
+          // names can exceed the 64-byte callback_data limit). Runs the
+          // exact same code path as skill_manage action=approve_export.
+          const sxaName = resolveExportNudgeId(payload);
+          if (!sxaName) {
+            await ctx.answerCallbackQuery({ text: "Unknown skill (nudge expired)" });
+            return;
+          }
+          setExportApproved(sxaName, true);
+          clearExportNudge(sxaName);
+          await ctx.answerCallbackQuery({ text: `Approved '${sxaName}' for export` });
+          await ctx.editMessageText(
+            `✅ Approved <b>${escapeHtml(sxaName)}</b> for export (synced to ~/.claude/skills on next curator pass).`,
+            { parse_mode: "HTML" },
+          ).catch(() => {});
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          break;
+        }
+
+        case "sxs": {
+          // Skill export — Skip. Marks the candidate declined so it isn't
+          // re-nudged on future curator passes.
+          const sxsName = resolveExportNudgeId(payload);
+          if (!sxsName) {
+            await ctx.answerCallbackQuery({ text: "Unknown skill (nudge expired)" });
+            return;
+          }
+          markExportDeclined(sxsName);
+          await ctx.answerCallbackQuery({ text: `Skipped '${sxsName}'` });
+          await ctx.editMessageText(
+            `⏭️ Skipped export of <b>${escapeHtml(sxsName)}</b> (won't ask again).`,
+            { parse_mode: "HTML" },
+          ).catch(() => {});
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
         }
 

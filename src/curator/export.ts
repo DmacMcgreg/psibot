@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { getConfig } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
 import { readSkill, resolveSkillDir, skillExists } from "../skills/index.ts";
-import { allSkillsReport, loadUsage, setExported } from "../skills/usage.ts";
+import { allSkillsReport, loadUsage, setExported, isExportDeclined, wasExportNudged } from "../skills/usage.ts";
 import type { SkillUsageRecord } from "../skills/types.ts";
 
 const log = createLogger("curator.export");
@@ -43,6 +43,13 @@ export interface ExportReport {
   tombstoned: string[];
   /** Quality-bar-passing skills awaiting David's approve_export. */
   candidates: string[];
+  /**
+   * Subset of `candidates` that haven't been Telegram-nudged yet and weren't
+   * explicitly skipped — the ones the heartbeat should actually notify about
+   * this pass. Nudged/declined state lives in the export-nudge sidecar
+   * (src/skills/usage.ts) so a candidate is only ever nudged once.
+   */
+  newCandidates: string[];
   /** Approved skills that could not be synced (collision, missing, etc). */
   skipped: Array<{ name: string; reason: string }>;
 }
@@ -185,7 +192,7 @@ function tombstoneOne(name: string, rec: SkillUsageRecord, report: ExportReport)
  * archived ones, and nominate new candidates. Never raises.
  */
 export function runExportPass(): ExportReport {
-  const report: ExportReport = { exported: [], tombstoned: [], candidates: [], skipped: [] };
+  const report: ExportReport = { exported: [], tombstoned: [], candidates: [], newCandidates: [], skipped: [] };
   try {
     const onDisk = new Map(allSkillsReport().map((r) => [r.name, r.record]));
 
@@ -205,7 +212,12 @@ export function runExportPass(): ExportReport {
         syncOne(name, rec, report);
       } else {
         const bar = meetsQualityBar(name, rec);
-        if (bar.ok) report.candidates.push(name);
+        if (bar.ok) {
+          report.candidates.push(name);
+          if (!isExportDeclined(name) && !wasExportNudged(name)) {
+            report.newCandidates.push(name);
+          }
+        }
       }
     }
   } catch (e) {
