@@ -1,6 +1,29 @@
 import { miniAppLayout } from "./shell.ts";
-import { escapeHtml } from "../../../shared/html.ts";
+import {
+  escapeHtml,
+  escapeAttr,
+  formatAgo,
+  formatCost,
+  pageHeader,
+  statusBadge,
+  filterChips,
+  searchBar,
+  emptyState,
+  errorState,
+  skeletonList,
+  listRow,
+  section,
+  formField,
+  formActions,
+  detailsPanel,
+  button,
+  type ChipOption,
+} from "./components.ts";
 import type { AgentNotifyPolicy, Job, JobRun } from "../../../shared/types.ts";
+
+// ---------------------------------------------------------------------------
+// Static option tables
+// ---------------------------------------------------------------------------
 
 const NOTIFY_POLICY_OPTIONS: Array<{ value: "" | AgentNotifyPolicy; label: string }> = [
   { value: "", label: "(inherit from agent)" },
@@ -19,12 +42,14 @@ function notifyPolicyLabel(policy: AgentNotifyPolicy | null): string {
 
 // Topic ID -> human label mapping (from INSTANCE.md)
 const TOPIC_LABELS: Record<number, string> = {
+  5: "GLM",
   49: "News",
   56: "Videos",
   103: "Trading",
 };
 const TOPIC_OPTIONS = [
   { value: 0, label: "DM (no topic)" },
+  { value: 5, label: "GLM" },
   { value: 49, label: "News" },
   { value: 56, label: "Videos" },
   { value: 103, label: "Trading" },
@@ -37,14 +62,6 @@ function topicLabel(job: Job): string {
   }
   if (job.notify_topic_id) return `Topic #${job.notify_topic_id}`;
   return "Group";
-}
-
-function topicGroup(job: Job): string {
-  if (!job.notify_chat_id) return "DM";
-  if (job.notify_topic_id && TOPIC_LABELS[job.notify_topic_id]) {
-    return TOPIC_LABELS[job.notify_topic_id];
-  }
-  return "Other";
 }
 
 function modelLabel(job: Job): string {
@@ -72,7 +89,11 @@ function cronToHuman(cron: string): string {
   const [min, hour, _dom, _mon, dow] = parts;
 
   const dowMap: Record<string, string> = {
-    "0": "Sun", "1": "Mon-Fri", "1-5": "Mon-Fri", "6": "Sat", "*": "",
+    "0": "Sun",
+    "1": "Mon-Fri",
+    "1-5": "Mon-Fri",
+    "6": "Sat",
+    "*": "",
   };
   const dowLabel = dowMap[dow] ?? `d${dow}`;
 
@@ -100,178 +121,155 @@ function isPaused(job: Job): boolean {
   return job.skip_runs > 0;
 }
 
-function relativeTime(isoStr: string): string {
-  const d = new Date(isoStr.endsWith("Z") ? isoStr : isoStr + "Z");
-  const diff = Date.now() - d.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+function jobStatusForBadge(job: Job): string {
+  if (isPaused(job)) return "paused";
+  return job.status === "enabled" ? "enabled" : "disabled";
 }
 
-// --- Page ---
+// ---------------------------------------------------------------------------
+// Filter state (URL query params so reload preserves it)
+// ---------------------------------------------------------------------------
 
-export function tmaJobsPage(jobs: Job[]): string {
-  const enabled = jobs.filter((j) => j.status === "enabled");
-  const groups = groupByTopic(enabled);
-  const inactive = jobs.filter((j) => j.status !== "enabled");
+export interface JobFilters {
+  q: string;
+  topic: string; // "all" | "Trading" | "News" | "DM" | "Other"
+  type: string; // "all" | "cron" | "once"
+  status: string; // "all" | "enabled" | "disabled" | "paused"
+}
 
-  const topicFilters = ["All", "Trading", "News", "DM", "Other"].map((f) =>
-    `<button class="tma-filter-btn" data-filter-topic="${f}" onclick="filterByTopic('${f}')">${f}</button>`
-  ).join("");
+export const DEFAULT_JOB_FILTERS: JobFilters = {
+  q: "",
+  topic: "all",
+  type: "all",
+  status: "all",
+};
 
-  const modelFilters = ["All", "Sonnet", "Haiku", "Opus", "Default"].map((f) =>
-    `<button class="tma-filter-btn" data-filter-model="${f}" onclick="filterByModel('${f}')">${f}</button>`
-  ).join("");
+function topicGroup(job: Job): string {
+  if (!job.notify_chat_id) return "DM";
+  if (job.notify_topic_id && TOPIC_LABELS[job.notify_topic_id]) {
+    return TOPIC_LABELS[job.notify_topic_id];
+  }
+  return "Other";
+}
 
-  const typeFilters: Array<{ label: string; value: string }> = [
-    { label: "All", value: "All" },
-    { label: "Recurring", value: "cron" },
-    { label: "One-off", value: "once" },
-  ];
-  const typeFilterHtml = typeFilters.map((f) =>
-    `<button class="tma-filter-btn" data-filter-type="${f.value}" onclick="filterByType('${f.value}')">${f.label}</button>`
-  ).join("");
+function matchesFilters(job: Job, filters: JobFilters): boolean {
+  if (filters.q) {
+    const q = filters.q.toLowerCase();
+    if (!job.name.toLowerCase().includes(q)) return false;
+  }
+  if (filters.topic !== "all" && topicGroup(job) !== filters.topic) return false;
+  if (filters.type !== "all" && job.type !== filters.type) return false;
+  if (filters.status !== "all") {
+    const s = jobStatusForBadge(job);
+    if (s !== filters.status) return false;
+  }
+  return true;
+}
 
-  const sortOptions: Array<{ label: string; value: string }> = [
-    { label: "Default", value: "default" },
-    { label: "Name", value: "name" },
-    { label: "Last run", value: "lastrun" },
-    { label: "Next run", value: "nextrun" },
-  ];
-  const sortHtml = sortOptions.map((s) =>
-    `<button class="tma-filter-btn" data-sort="${s.value}" onclick="sortJobs('${s.value}')">${s.label}</button>`
-  ).join("");
+function buildQuery(filters: JobFilters, overrides: Partial<JobFilters>): string {
+  const merged = { ...filters, ...overrides };
+  const params = new URLSearchParams();
+  if (merged.q) params.set("q", merged.q);
+  if (merged.topic !== "all") params.set("topic", merged.topic);
+  if (merged.type !== "all") params.set("type", merged.type);
+  if (merged.status !== "all") params.set("status", merged.status);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
 
-  const groupedHtml = groups.map(([group, items]) =>
-    `<div class="tma-group" data-group="${escapeHtml(group)}">
-      <div class="tma-group-header">${escapeHtml(group)} <span class="tma-hint">(${items.length})</span></div>
-      ${items.map((j) => tmaJobCardFragment(j)).join("\n")}
-    </div>`
-  ).join("\n");
+function chipOptions(
+  base: string,
+  filters: JobFilters,
+  key: keyof JobFilters,
+  values: Array<{ value: string; label: string }>,
+): ChipOption[] {
+  return values.map((v) => ({
+    value: v.value,
+    label: v.label,
+    href: `${base}${buildQuery(filters, { [key]: v.value } as Partial<JobFilters>)}`,
+  }));
+}
 
-  const inactiveHtml = inactive.length > 0
-    ? `<details style="padding:0 16px 16px;">
-        <summary class="tma-hint" style="cursor:pointer; padding:8px 0; font-size:13px;">${inactive.length} inactive</summary>
-        ${inactive.map((j) => tmaJobCardFragment(j)).join("\n")}
-      </details>`
-    : "";
+// ---------------------------------------------------------------------------
+// Page (list)
+// ---------------------------------------------------------------------------
 
-  return miniAppLayout("jobs", `
-    <div style="padding:8px 0;">
-      <div style="padding:8px 16px;">
-        <input type="search" class="tma-input" placeholder="Search jobs..." id="job-search"
-          oninput="searchJobs(this.value)" style="font-size:13px; padding:8px 12px;">
-      </div>
-      <div style="padding:4px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
-        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Type:</span>
-        ${typeFilterHtml}
-      </div>
-      <div style="padding:2px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
-        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Topic:</span>
-        ${topicFilters}
-      </div>
-      <div style="padding:2px 16px 4px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
-        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Model:</span>
-        ${modelFilters}
-      </div>
-      <div style="padding:2px 16px 8px; display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;">
-        <span class="tma-hint" style="font-size:11px; align-self:center; white-space:nowrap;">Sort:</span>
-        ${sortHtml}
-      </div>
+export function tmaJobsPage(jobs: Job[], filters: JobFilters = DEFAULT_JOB_FILTERS): string {
+  return miniAppLayout(
+    "jobs",
+    `${pageHeader("Jobs")}
+    <div class="tma-search-scope" data-tma-filter-scope>
+      ${tmaJobsToolbar(filters)}
       <div id="job-list">
-        ${groupedHtml}
+        ${tmaJobListInner(jobs, filters)}
       </div>
-      ${inactiveHtml}
-    </div>
-    <script>
-    var activeTopic = 'All';
-    var activeModel = 'All';
-    var activeType = 'All';
-    var activeSort = 'default';
-    var searchQuery = '';
+    </div>`,
+  );
+}
 
-    function applyFilters() {
-      document.querySelectorAll('.tma-card[data-name]').forEach(function(card) {
-        var name = card.getAttribute('data-name') || '';
-        var model = card.getAttribute('data-model') || '';
-        var type = card.getAttribute('data-type') || '';
-        var matchSearch = !searchQuery || name.includes(searchQuery);
-        var matchModel = activeModel === 'All' || model === activeModel;
-        var matchType = activeType === 'All' || type === activeType;
-        card.style.display = (matchSearch && matchModel && matchType) ? '' : 'none';
-      });
-      document.querySelectorAll('.tma-group').forEach(function(g) {
-        var matchTopic = activeTopic === 'All' || g.getAttribute('data-group') === activeTopic;
-        if (!matchTopic) { g.style.display = 'none'; return; }
-        var visible = g.querySelectorAll('.tma-card[data-name]:not([style*="display: none"])').length;
-        g.style.display = visible > 0 ? '' : 'none';
-      });
-    }
-    function searchJobs(q) {
-      searchQuery = q.toLowerCase();
-      applyFilters();
-    }
-    function filterByTopic(f) {
-      activeTopic = f;
-      document.querySelectorAll('[data-filter-topic]').forEach(function(b) {
-        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter-topic') === f);
-      });
-      applyFilters();
-    }
-    function filterByModel(f) {
-      activeModel = f;
-      document.querySelectorAll('[data-filter-model]').forEach(function(b) {
-        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter-model') === f);
-      });
-      applyFilters();
-    }
-    function filterByType(f) {
-      activeType = f;
-      document.querySelectorAll('[data-filter-type]').forEach(function(b) {
-        b.classList.toggle('tma-filter-active', b.getAttribute('data-filter-type') === f);
-      });
-      applyFilters();
-    }
-    function sortJobs(mode) {
-      activeSort = mode;
-      document.querySelectorAll('[data-sort]').forEach(function(b) {
-        b.classList.toggle('tma-filter-active', b.getAttribute('data-sort') === mode);
-      });
-      document.querySelectorAll('.tma-group').forEach(function(group) {
-        var cards = Array.from(group.querySelectorAll('.tma-card[data-name]'));
-        if (cards.length < 2) return;
-        cards.sort(function(a, b) {
-          if (mode === 'name') {
-            return (a.getAttribute('data-name') || '').localeCompare(b.getAttribute('data-name') || '');
-          }
-          if (mode === 'lastrun') {
-            var la = parseInt(a.getAttribute('data-lastrun') || '0', 10);
-            var lb = parseInt(b.getAttribute('data-lastrun') || '0', 10);
-            return lb - la;
-          }
-          if (mode === 'nextrun') {
-            var na = parseInt(a.getAttribute('data-nextrun') || '0', 10) || Infinity;
-            var nb = parseInt(b.getAttribute('data-nextrun') || '0', 10) || Infinity;
-            return na - nb;
-          }
-          var oa = parseInt(a.getAttribute('data-order') || '0', 10);
-          var ob = parseInt(b.getAttribute('data-order') || '0', 10);
-          return oa - ob;
-        });
-        cards.forEach(function(c) { group.appendChild(c); });
-      });
-    }
-    // Activate "All" / "default" on load
-    document.querySelector('[data-filter-topic="All"]')?.classList.add('tma-filter-active');
-    document.querySelector('[data-filter-model="All"]')?.classList.add('tma-filter-active');
-    document.querySelector('[data-filter-type="All"]')?.classList.add('tma-filter-active');
-    document.querySelector('[data-sort="default"]')?.classList.add('tma-filter-active');
-    </script>
-  `);
+function tmaJobsToolbar(filters: JobFilters): string {
+  // Chips navigate to the full page (fragment URLs render unstyled if the
+  // browser follows them directly); search swaps the fragment via HTMX.
+  const base = "/tma/jobs";
+  const frag = "/tma/jobs/list";
+  const typeChips = chipOptions(base, filters, "type", [
+    { value: "all", label: "All" },
+    { value: "cron", label: "Recurring" },
+    { value: "once", label: "One-off" },
+  ]);
+  const topicChips = chipOptions(base, filters, "topic", [
+    { value: "all", label: "All" },
+    { value: "Trading", label: "Trading" },
+    { value: "News", label: "News" },
+    { value: "DM", label: "DM" },
+    { value: "Other", label: "Other" },
+  ]);
+  const statusChips = chipOptions(base, filters, "status", [
+    { value: "all", label: "All" },
+    { value: "enabled", label: "Enabled" },
+    { value: "paused", label: "Paused" },
+    { value: "disabled", label: "Disabled" },
+  ]);
+
+  // Bake non-q filters into the search action so searching preserves them;
+  // the fragment replaces the whole .tma-search-scope (toolbar + list).
+  const searchAction = `${frag}${buildQuery(filters, { q: "" })}`;
+  // Status is the most-used filter, so it stays visible; type + topic fold
+  // into a "Filters ▾" disclosure to avoid stacking 3 chip rows (~200px).
+  // Chips inside stay full-page <a href> links (not fragment URLs) — see the
+  // fragment-URL styling bug fixed in the previous polish pass.
+  const moreOpen = filters.type !== "all" || filters.topic !== "all";
+  return `<form hx-get="${searchAction}" hx-target="closest .tma-search-scope" hx-swap="innerHTML" hx-trigger="submit">
+    ${searchBar(searchAction, "Search jobs…", filters.q)}
+  </form>
+  ${filterChips("status", statusChips, filters.status)}
+  <details class="tma-filter-more"${moreOpen ? " open" : ""}>
+    <summary>Filters</summary>
+    <div class="tma-filter-more-body">
+      ${filterChips("type", typeChips, filters.type)}
+      ${filterChips("topic", topicChips, filters.topic)}
+    </div>
+  </details>`;
+}
+
+function tmaJobListInner(jobs: Job[], filters: JobFilters): string {
+  const filtered = jobs.filter((j) => matchesFilters(j, filters));
+  if (jobs.length === 0) {
+    return emptyState("\u{1F4C5}", "No jobs configured", "Scheduled jobs will show up here.");
+  }
+  if (filtered.length === 0) {
+    return emptyState("\u{1F50D}", "No matching jobs", "Try clearing filters or search.");
+  }
+
+  const groups = groupByTopic(filtered);
+  return groups
+    .map(
+      ([group, items]) => `<div class="tma-group" data-group="${escapeAttr(group)}">
+      <div class="tma-group-header">${escapeHtml(group)} <span class="tma-hint">(${items.length})</span></div>
+      ${items.map((j) => tmaJobRow(j)).join("\n")}
+    </div>`,
+    )
+    .join("\n");
 }
 
 function groupByTopic(jobs: Job[]): [string, Job[]][] {
@@ -283,152 +281,198 @@ function groupByTopic(jobs: Job[]): [string, Job[]][] {
     if (!map.has(g)) map.set(g, []);
     map.get(g)!.push(job);
   }
-  // Remove empty groups
   return [...map.entries()].filter(([, items]) => items.length > 0);
 }
 
-// --- Card (compact, expandable) ---
+/** Loading skeleton for the job list (used by the route while data loads client-side, if ever needed). */
+export function tmaJobListSkeleton(): string {
+  return skeletonList(4);
+}
 
-export function tmaJobCardFragment(job: Job): string {
-  const paused = isPaused(job);
-  const statusCls = paused ? "tma-badge-paused" : job.status === "enabled" ? "tma-badge-enabled" : "tma-badge-disabled";
-  const statusLabel = paused ? "Paused" : job.status;
+/** Error state for the job list. */
+export function tmaJobListError(message: string): string {
+  return errorState(message, "/tma/jobs/list");
+}
 
-  const model = modelLabel(job);
-  const backend = backendLabel(job);
+// ---------------------------------------------------------------------------
+// Row (list item -> navigates to detail page)
+// ---------------------------------------------------------------------------
+
+export function tmaJobRow(job: Job): string {
   const sched = scheduleLabel(job);
-  const dest = topicLabel(job);
-  const isRecurring = job.type === "cron";
-  const typePill = isRecurring
-    ? `<span class="tma-pill" style="background:#4f46e520; color:#818cf8;">Recurring</span>`
-    : `<span class="tma-pill" style="background:#f59e0b20; color:#f59e0b;">One-off</span>`;
+  const lastRun = job.last_run_at ? formatAgo(job.last_run_at) : "never";
+  // "Next" is only meaningful for jobs that will actually run; on disabled/
+  // paused jobs it renders stale nonsense ("Next: 2mo ago").
+  const willRun = job.status === "enabled" && !isPaused(job);
+  const nextRun = willRun && job.next_run_at ? formatAgo(job.next_run_at) : null;
+  const meta = `${sched} · ran ${lastRun}${nextRun ? ` · next ${nextRun}` : ""}`;
 
-  const pills = [
-    typePill,
-    `<span class="tma-pill">${escapeHtml(sched)}</span>`,
-    `<span class="tma-pill">${escapeHtml(model)}</span>`,
-    backend !== "Claude" ? `<span class="tma-pill">${escapeHtml(backend)}</span>` : "",
-    job.use_browser ? `<span class="tma-pill">Browser</span>` : "",
-    job.agent_name ? `<span class="tma-pill">${escapeHtml(job.agent_name)}</span>` : "",
-    job.next_job_id ? `<span class="tma-pill">Pipeline</span>` : "",
-  ].filter(Boolean).join(" ");
+  // No `meta: dest` — the list is already grouped by topic, so repeating the
+  // topic name in every row is noise.
+  return listRow({
+    title: job.name,
+    subtitle: meta,
+    badge: statusBadge(jobStatusForBadge(job)),
+    hxGet: `/tma/jobs/${job.id}`,
+    chevron: true,
+  });
+}
 
-  const lastRun = job.last_run_at ? relativeTime(job.last_run_at) : "never";
-
-  const lastRunTs = job.last_run_at ? new Date(job.last_run_at.endsWith("Z") ? job.last_run_at : job.last_run_at + "Z").getTime() : 0;
-  const nextRunTs = job.next_run_at ? new Date(job.next_run_at.endsWith("Z") ? job.next_run_at : job.next_run_at + "Z").getTime() : 0;
-
-  return `<div class="tma-card" id="job-${job.id}" data-name="${escapeHtml(job.name.toLowerCase())}" data-dest="${escapeHtml(dest)}" data-model="${escapeHtml(model)}" data-type="${job.type}" data-order="${job.id}" data-lastrun="${lastRunTs}" data-nextrun="${nextRunTs}">
-    <div style="display:flex; justify-content:space-between; align-items:start; gap:8px; cursor:pointer;"
-         hx-get="/tma/api/jobs/${job.id}/detail" hx-target="#job-${job.id}" hx-swap="outerHTML">
-      <div style="min-width:0; flex:1;">
-        <div style="font-weight:600; font-size:14px;">${escapeHtml(job.name)}</div>
-        <div style="display:flex; gap:4px; margin-top:5px; flex-wrap:wrap; align-items:center;">
-          ${pills}
-        </div>
-        <div class="tma-hint" style="margin-top:4px; font-size:11px;">Last: ${lastRun}</div>
-      </div>
-      <span class="tma-badge ${statusCls}" style="flex-shrink:0;">${statusLabel}</span>
-    </div>
+/**
+ * Search-scope fragment (toolbar + list). Swapped into `.tma-search-scope`
+ * by the search input, so it must rebuild the toolbar alongside the list —
+ * otherwise the swap destroys the search box and chips (see memory.ts note).
+ */
+export function tmaJobListFragment(jobs: Job[], filters: JobFilters = DEFAULT_JOB_FILTERS): string {
+  return `${tmaJobsToolbar(filters)}
+  <div id="job-list">
+    ${tmaJobListInner(jobs, filters)}
   </div>`;
 }
 
-// --- Detail (expanded view with actions + run history) ---
+// ---------------------------------------------------------------------------
+// Detail page (own route, BackButton pattern — not inline expansion)
+// ---------------------------------------------------------------------------
+
+export function tmaJobDetailPage(job: Job, runs: JobRun[], allJobs: Job[]): string {
+  return miniAppLayout(
+    "jobs",
+    `${pageHeader(job.name, { subtitle: `Job #${job.id}` })}
+    <div id="job-detail-root">
+      ${tmaJobDetailFragment(job, runs, allJobs)}
+    </div>`,
+    false,
+  );
+}
+
+/** Loading skeleton for the detail page. */
+export function tmaJobDetailSkeleton(): string {
+  return skeletonList(3);
+}
+
+/** Error state for the detail page. */
+export function tmaJobDetailError(message: string, jobId: number): string {
+  return errorState(message, `/tma/jobs/${jobId}`);
+}
 
 export function tmaJobDetailFragment(job: Job, runs: JobRun[], allJobs?: Job[]): string {
   const paused = isPaused(job);
-  const statusCls = paused ? "tma-badge-paused" : job.status === "enabled" ? "tma-badge-enabled" : "tma-badge-disabled";
-  const statusLabel = paused ? "Paused" : job.status;
   const toggleLabel = job.status === "enabled" ? "Disable" : "Enable";
 
   const model = modelLabel(job);
   const backend = backendLabel(job);
   const sched = scheduleLabel(job);
   const dest = topicLabel(job);
-  const lastRun = job.last_run_at ? relativeTime(job.last_run_at) : "never";
+  const lastRun = job.last_run_at ? formatAgo(job.last_run_at) : "never";
 
-  const promptPreview = job.prompt.length > 200
-    ? escapeHtml(job.prompt.slice(0, 200)) + "..."
-    : escapeHtml(job.prompt);
+  const promptPreview = job.prompt.length > 400 ? escapeHtml(job.prompt.slice(0, 400)) + "…" : escapeHtml(job.prompt);
 
-  const runRows = runs.length > 0
-    ? runs.map((r) => {
-        const dur = r.duration_ms ? `${(r.duration_ms / 1000).toFixed(1)}s` : "-";
-        const cost = r.cost_usd ? `$${r.cost_usd.toFixed(3)}` : "-";
-        const statusIcon = r.status === "success" ? "ok" : r.status === "running" ? "..." : "err";
-        const time = relativeTime(r.started_at);
-        return `<div class="tma-run-row">
-          <span class="tma-run-status tma-run-${r.status}">${statusIcon}</span>
-          <span>${time}</span>
-          <span>${dur}</span>
-          <span>${cost}</span>
+  const pipelineNext =
+    job.next_job_id && allJobs
+      ? (allJobs.find((j) => j.id === job.next_job_id)?.name ?? `Job #${job.next_job_id}`)
+      : null;
+
+  const scheduleRows = `<tr><td class="tma-dt-label">Schedule</td><td>${escapeHtml(sched)}${job.schedule ? ` <span class="tma-hint">(${escapeHtml(job.schedule)})</span>` : ""}</td></tr>
+    <tr><td class="tma-dt-label">Model</td><td>${escapeHtml(model)}</td></tr>
+    <tr><td class="tma-dt-label">Backend</td><td>${escapeHtml(backend)}</td></tr>
+    <tr><td class="tma-dt-label">Posts to</td><td>${escapeHtml(dest)}</td></tr>
+    <tr><td class="tma-dt-label">Budget</td><td>${formatCost(job.max_budget_usd)}</td></tr>
+    <tr><td class="tma-dt-label">Browser</td><td>${job.use_browser ? "Yes" : "No"}</td></tr>
+    <tr><td class="tma-dt-label">Last run</td><td>${escapeHtml(lastRun)}</td></tr>
+    ${job.next_run_at ? `<tr><td class="tma-dt-label">Next run</td><td>${escapeHtml(job.next_run_at)}</td></tr>` : ""}`;
+
+  const configRows = `<tr><td class="tma-dt-label">Agent</td><td>${job.agent_name ? escapeHtml(job.agent_name) : "Default"}</td></tr>
+    <tr><td class="tma-dt-label">Subagents</td><td>${job.subagents ? escapeHtml(JSON.parse(job.subagents).join(", ")) : "All"}</td></tr>
+    <tr><td class="tma-dt-label">Notify</td><td>${escapeHtml(notifyPolicyLabel(job.notify_policy))}</td></tr>
+    <tr><td class="tma-dt-label">Template</td><td>${job.output_template ? "custom" : "none"}</td></tr>
+    <tr><td class="tma-dt-label">Pipeline</td><td>${pipelineNext ? escapeHtml(`→ ${pipelineNext}`) : "None"}</td></tr>`;
+
+  const runRows =
+    runs.length > 0
+      ? runs
+          .map((r) => {
+            const dur = r.duration_ms ? `${(r.duration_ms / 1000).toFixed(1)}s` : "—";
+            const cost = formatCost(r.cost_usd);
+            const statusIcon = r.status === "success" ? "✓" : r.status === "running" ? "…" : "✗";
+            const time = formatAgo(r.started_at);
+            return `<div class="tma-run-row">
+          <span class="tma-run-status tma-run-${escapeAttr(r.status)}">${statusIcon}</span>
+          <span>${escapeHtml(time)}</span>
+          <span>${escapeHtml(dur)}</span>
+          <span>${escapeHtml(cost)}</span>
         </div>`;
-      }).join("")
-    : `<div class="tma-hint" style="padding:4px 0; font-size:12px;">No runs yet</div>`;
+          })
+          .join("")
+      : `<div class="tma-hint" style="padding:var(--sp-2) 0; font-size:var(--fs-sm);">No runs yet</div>`;
 
-  return `<div class="tma-card tma-card-expanded" id="job-${job.id}" data-name="${escapeHtml(job.name.toLowerCase())}" data-dest="${escapeHtml(dest)}">
-    <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
-      <div style="min-width:0; flex:1;">
-        <div style="font-weight:600; font-size:15px;">${escapeHtml(job.name)}</div>
-        <span class="tma-badge ${statusCls}" style="margin-top:4px;">${statusLabel}</span>
-      </div>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary"
-              hx-get="/tma/api/jobs/${job.id}/card" hx-target="#job-${job.id}" hx-swap="outerHTML"
-              style="font-size:18px; padding:2px 8px; line-height:1;">x</button>
+  const promptSection = job.agent_prompt
+    ? `${detailsPanel(
+        "Agent Prompt",
+        `<div class="tma-mono tma-mono-scroll">${
+          job.agent_prompt.length > 400 ? escapeHtml(job.agent_prompt.slice(0, 400)) + "…" : escapeHtml(job.agent_prompt)
+        }</div>`,
+      )}
+      ${detailsPanel(
+        "Job Prompt",
+        `<div class="tma-mono tma-mono-scroll">${promptPreview}</div>`,
+      )}`
+    : detailsPanel(
+        "Prompt",
+        `<div class="tma-mono tma-mono-scroll">${promptPreview}</div>`,
+      );
+
+  const actions = formActions(
+    button("Run Now", {
+      small: true,
+      attrs: `hx-post="/tma/api/jobs/${job.id}/trigger" hx-target="#job-detail-root" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="showToast('Job triggered')"`,
+    }),
+    button("Edit", {
+      small: true,
+      kind: "secondary",
+      attrs: `hx-get="/tma/api/jobs/${job.id}/edit" hx-target="#job-detail-root" hx-swap="innerHTML" hx-disabled-elt="this"`,
+    }),
+    button(toggleLabel, {
+      small: true,
+      kind: "secondary",
+      attrs: `hx-post="/tma/api/jobs/${job.id}/toggle" hx-target="#job-detail-root" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="showToast('${toggleLabel === "Disable" ? "Disabled" : "Enabled"}')"`,
+    }),
+    button(paused ? "Unpause" : "Pause 24h", {
+      small: true,
+      kind: "secondary",
+      attrs: `hx-post="/tma/api/jobs/${job.id}/pause" hx-target="#job-detail-root" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="showToast('${paused ? "Unpaused" : "Paused 24h"}')"`,
+    }),
+    button("Delete", {
+      small: true,
+      kind: "danger",
+      attrs: `hx-post="/tma/api/jobs/${job.id}/delete" hx-target="#job-detail-root" hx-swap="innerHTML" hx-confirm="Delete this job?" hx-disabled-elt="this"`,
+    }),
+  );
+
+  return `<div id="job-${job.id}">
+    <div style="display:flex; justify-content:space-between; align-items:start; gap:var(--sp-2); padding:0 var(--sp-4);">
+      <span class="tma-hint">${escapeHtml(job.type === "cron" ? "Recurring" : "One-off")}</span>
+      ${statusBadge(jobStatusForBadge(job))}
     </div>
-
-    <table class="tma-detail-table" style="margin-top:10px;">
-      <tr><td class="tma-dt-label">Schedule</td><td>${escapeHtml(sched)}${job.schedule ? ` <span class="tma-hint">(${escapeHtml(job.schedule)})</span>` : ""}</td></tr>
-      <tr><td class="tma-dt-label">Model</td><td>${escapeHtml(model)}</td></tr>
-      <tr><td class="tma-dt-label">Backend</td><td>${escapeHtml(backend)}</td></tr>
-      <tr><td class="tma-dt-label">Posts to</td><td>${escapeHtml(dest)}</td></tr>
-      <tr><td class="tma-dt-label">Budget</td><td>$${job.max_budget_usd.toFixed(2)}</td></tr>
-      <tr><td class="tma-dt-label">Browser</td><td>${job.use_browser ? "Yes" : "No"}</td></tr>
-      <tr><td class="tma-dt-label">Agent</td><td>${job.agent_name ? escapeHtml(job.agent_name) : "Default"}</td></tr>
-      <tr><td class="tma-dt-label">Subagents</td><td>${job.subagents ? escapeHtml(JSON.parse(job.subagents).join(", ")) : "All"}</td></tr>
-      <tr><td class="tma-dt-label">Notify</td><td>${escapeHtml(notifyPolicyLabel(job.notify_policy))}</td></tr>
-      <tr><td class="tma-dt-label">Template</td><td>${job.output_template ? "<em>custom</em>" : "none"}</td></tr>
-      <tr><td class="tma-dt-label">Pipeline</td><td>${job.next_job_id && allJobs ? escapeHtml("-> " + (allJobs.find((j) => j.id === job.next_job_id)?.name ?? `Job #${job.next_job_id}`)) : "None"}</td></tr>
-      <tr><td class="tma-dt-label">Last run</td><td>${lastRun}</td></tr>
-      ${job.next_run_at ? `<tr><td class="tma-dt-label">Next run</td><td>${escapeHtml(job.next_run_at)}</td></tr>` : ""}
-    </table>
-
-    ${job.agent_prompt ? `<details style="margin-top:10px;">
-      <summary class="tma-hint" style="cursor:pointer; font-size:12px;">Agent Prompt</summary>
-      <div style="margin-top:6px; font-size:12px; white-space:pre-wrap; line-height:1.4; max-height:200px; overflow-y:auto;">${job.agent_prompt.length > 200 ? escapeHtml(job.agent_prompt.slice(0, 200)) + "..." : escapeHtml(job.agent_prompt)}</div>
-    </details>
-    <details style="margin-top:10px;">
-      <summary class="tma-hint" style="cursor:pointer; font-size:12px;">Job Prompt</summary>
-      <div style="margin-top:6px; font-size:12px; white-space:pre-wrap; line-height:1.4; max-height:200px; overflow-y:auto;">${promptPreview}</div>
-    </details>` : `<details style="margin-top:10px;">
-      <summary class="tma-hint" style="cursor:pointer; font-size:12px;">Prompt</summary>
-      <div style="margin-top:6px; font-size:12px; white-space:pre-wrap; line-height:1.4; max-height:200px; overflow-y:auto;">${promptPreview}</div>
-    </details>`}
-
-    <div style="margin-top:10px;">
-      <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Recent Runs</div>
-      <div class="tma-run-header">
-        <span></span><span>When</span><span>Time</span><span>Cost</span>
-      </div>
-      ${runRows}
-    </div>
-
-    <div style="display:flex; gap:6px; margin-top:12px; flex-wrap:wrap;">
-      <button class="tma-btn tma-btn-sm" hx-post="/tma/api/jobs/${job.id}/trigger" hx-target="#job-${job.id}" hx-swap="outerHTML"
-              hx-disabled-elt="this" hx-on::after-request="showToast('Job triggered')">Run Now</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-get="/tma/api/jobs/${job.id}/edit" hx-target="#job-${job.id}" hx-swap="outerHTML"
-              hx-disabled-elt="this">Edit</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/toggle" hx-target="#job-${job.id}" hx-swap="outerHTML"
-              hx-disabled-elt="this" hx-on::after-request="showToast('${toggleLabel === 'Disable' ? 'Disabled' : 'Enabled'}')">${toggleLabel}</button>
-      <button class="tma-btn tma-btn-sm tma-btn-secondary" hx-post="/tma/api/jobs/${job.id}/pause" hx-target="#job-${job.id}" hx-swap="outerHTML"
-              hx-disabled-elt="this" hx-on::after-request="showToast('${paused ? 'Unpaused' : 'Paused 24h'}')">${paused ? "Unpause" : "Pause 24h"}</button>
-      <button class="tma-btn tma-btn-sm tma-btn-danger" hx-post="/tma/api/jobs/${job.id}/delete" hx-target="#job-list" hx-swap="innerHTML" hx-confirm="Delete this job?"
-              hx-disabled-elt="this">Delete</button>
-    </div>
+    ${section("Schedule", `<table class="tma-detail-table tma-px-4">${scheduleRows}</table>`)}
+    ${section("Config", `<table class="tma-detail-table tma-px-4">${configRows}</table>`)}
+    ${promptSection}
+    ${section(
+      "Recent Runs",
+      `<div class="tma-run-header tma-px-4"><span></span><span>When</span><span>Time</span><span>Cost</span></div>
+       <div class="tma-px-4">${runRows}</div>`,
+    )}
+    ${actions}
   </div>`;
 }
 
-// --- Edit form ---
+/** Fragment used by the card-swap job-mutation endpoints (returns the row for list contexts). */
+export function tmaJobCardFragment(job: Job): string {
+  return `<div id="job-${job.id}">${tmaJobRow(job)}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Edit form
+// ---------------------------------------------------------------------------
 
 export function tmaJobEditFragment(job: Job, agentNames: string[], allJobs: Job[]): string {
   const topicId = job.notify_topic_id ?? 0;
@@ -445,125 +489,92 @@ export function tmaJobEditFragment(job: Job, agentNames: string[], allJobs: Job[
     { value: "glm", label: "GLM" },
   ];
 
-  return `<div class="tma-card tma-card-expanded" id="job-${job.id}">
-    <form hx-post="/tma/api/jobs/${job.id}/update" hx-target="#job-${job.id}" hx-swap="outerHTML">
-      <div style="font-weight:600; font-size:15px; margin-bottom:12px;">Edit: ${escapeHtml(job.name)}</div>
+  const subagentSelected: string[] = job.subagents ? JSON.parse(job.subagents) : [];
 
-      <div class="tma-form-row">
-        <label class="tma-form-label">Name</label>
-        <input name="name" value="${escapeHtml(job.name)}" class="tma-input tma-input-sm" required>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Schedule (cron)</label>
-        <input name="schedule" value="${escapeHtml(job.schedule ?? "")}" class="tma-input tma-input-sm" placeholder="*/30 * * * *">
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-        <div class="tma-form-row">
-          <label class="tma-form-label">Model</label>
-          <select name="model" class="tma-input tma-input-sm">
-            ${modelOptions.map((o) => `<option value="${o.value}" ${(job.model ?? "") === o.value || (job.model?.includes(o.value) && o.value) ? "selected" : ""}>${o.label}</option>`).join("")}
-          </select>
-        </div>
-        <div class="tma-form-row">
-          <label class="tma-form-label">Backend</label>
-          <select name="backend" class="tma-input tma-input-sm">
-            ${backendOptions.map((o) => `<option value="${o.value}" ${(job.backend ?? "claude") === o.value ? "selected" : ""}>${o.label}</option>`).join("")}
-          </select>
-        </div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-        <div class="tma-form-row">
-          <label class="tma-form-label">Posts to</label>
-          <select name="notify_topic_id" class="tma-input tma-input-sm">
-            ${TOPIC_OPTIONS.map((o) => `<option value="${o.value}" ${topicId === o.value ? "selected" : ""}>${o.label}</option>`).join("")}
-          </select>
-        </div>
-        <div class="tma-form-row">
-          <label class="tma-form-label">Budget ($)</label>
-          <input name="max_budget_usd" type="number" step="0.01" value="${job.max_budget_usd}" class="tma-input tma-input-sm">
-        </div>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">
-          <input type="checkbox" name="use_browser" ${job.use_browser ? "checked" : ""} style="margin-right:6px;">
-          Enable browser
-        </label>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Agent</label>
-        <select name="agent_name" class="tma-input tma-input-sm">
-          <option value=""${!job.agent_name ? " selected" : ""}>Default (none)</option>
-          ${agentNames.map((name) => `<option value="${escapeHtml(name)}"${job.agent_name === name ? " selected" : ""}>${escapeHtml(name)}</option>`).join("")}
-        </select>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Agent Prompt Override (optional)</label>
-        <textarea name="agent_prompt" rows="3" class="tma-input tma-input-sm" style="font-size:12px; line-height:1.4; resize:vertical;">${escapeHtml(job.agent_prompt ?? "")}</textarea>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Notify policy (override)</label>
-        <select name="notify_policy" class="tma-input tma-input-sm">
-          ${NOTIFY_POLICY_OPTIONS.map((o) => `<option value="${o.value}"${(job.notify_policy ?? "") === o.value ? " selected" : ""}>${o.label}</option>`).join("")}
-        </select>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Output template (override, optional)</label>
-        <textarea name="output_template" rows="3" class="tma-input tma-input-sm" placeholder="{{headline}} &#8212; {{summary}}" style="font-size:12px; line-height:1.4; resize:vertical; font-family:monospace;">${escapeHtml(job.output_template ?? "")}</textarea>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Subagents</label>
-        <div style="display:flex; flex-wrap:wrap; gap:6px 12px; margin-top:4px;">
-          ${(() => {
-            const selected: string[] = job.subagents ? JSON.parse(job.subagents) : [];
-            return agentNames.map((name) =>
-              `<label style="display:flex; align-items:center; gap:4px; font-size:12px;">
-  <input type="checkbox" name="subagents" value="${escapeHtml(name)}"${selected.includes(name) ? " checked" : ""}>
+  const subagentCheckboxes =
+    agentNames.length > 0
+      ? agentNames
+          .map(
+            (name) =>
+              `<label style="display:flex; align-items:center; gap:var(--sp-1); font-size:var(--fs-sm); min-height:var(--touch);">
+  <input type="checkbox" name="subagents" value="${escapeAttr(name)}"${subagentSelected.includes(name) ? " checked" : ""}>
   ${escapeHtml(name)}
-</label>`
-            ).join("\n          ");
-          })()}
-        </div>
-      </div>
+</label>`,
+          )
+          .join("\n")
+      : `<span class="tma-hint">No subagents configured</span>`;
 
-      <div class="tma-form-row">
-        <label class="tma-form-label">Prompt</label>
-        <textarea name="prompt" rows="6" class="tma-input tma-input-sm" style="font-size:12px; line-height:1.4; resize:vertical;">${escapeHtml(job.prompt)}</textarea>
-      </div>
-
-      <div class="tma-form-row">
-        <label class="tma-form-label">Pipeline (next job)</label>
-        <select name="next_job_id" class="tma-input tma-input-sm">
+  return `<form id="job-${job.id}" hx-post="/tma/api/jobs/${job.id}/update" hx-target="#job-detail-root" hx-swap="innerHTML">
+    <div class="tma-px-4">
+      ${formField("Name", `<input name="name" value="${escapeAttr(job.name)}" class="tma-input" required>`)}
+      ${formField("Schedule (cron)", `<input name="schedule" value="${escapeAttr(job.schedule ?? "")}" class="tma-input" placeholder="*/30 * * * *">`)}
+      ${formField(
+        "Model",
+        `<select name="model" class="tma-input">
+          ${modelOptions.map((o) => `<option value="${o.value}" ${(job.model ?? "") === o.value || (job.model?.includes(o.value) && o.value) ? "selected" : ""}>${o.label}</option>`).join("")}
+        </select>`,
+      )}
+      ${formField(
+        "Backend",
+        `<select name="backend" class="tma-input">
+          ${backendOptions.map((o) => `<option value="${o.value}" ${(job.backend ?? "claude") === o.value ? "selected" : ""}>${o.label}</option>`).join("")}
+        </select>`,
+      )}
+      ${formField(
+        "Posts to",
+        `<select name="notify_topic_id" class="tma-input">
+          ${TOPIC_OPTIONS.map((o) => `<option value="${o.value}" ${topicId === o.value ? "selected" : ""}>${o.label}</option>`).join("")}
+        </select>`,
+      )}
+      ${formField("Budget ($)", `<input name="max_budget_usd" type="number" step="0.01" value="${job.max_budget_usd}" class="tma-input">`)}
+      ${formField(
+        "Browser",
+        `<label style="display:flex; align-items:center; gap:var(--sp-2); min-height:var(--touch);">
+          <input type="checkbox" name="use_browser" ${job.use_browser ? "checked" : ""}>
+          Enable browser
+        </label>`,
+      )}
+      ${formField(
+        "Agent",
+        `<select name="agent_name" class="tma-input">
+          <option value=""${!job.agent_name ? " selected" : ""}>Default (none)</option>
+          ${agentNames.map((name) => `<option value="${escapeAttr(name)}"${job.agent_name === name ? " selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        </select>`,
+      )}
+      ${formField(
+        "Agent Prompt Override (optional)",
+        `<textarea name="agent_prompt" rows="3" class="tma-input tma-mono">${escapeHtml(job.agent_prompt ?? "")}</textarea>`,
+      )}
+      ${formField(
+        "Notify policy (override)",
+        `<select name="notify_policy" class="tma-input">
+          ${NOTIFY_POLICY_OPTIONS.map((o) => `<option value="${o.value}"${(job.notify_policy ?? "") === o.value ? " selected" : ""}>${o.label}</option>`).join("")}
+        </select>`,
+      )}
+      ${formField(
+        "Output template (override, optional)",
+        `<textarea name="output_template" rows="3" class="tma-input tma-mono" placeholder="{{headline}} — {{summary}}">${escapeHtml(job.output_template ?? "")}</textarea>`,
+      )}
+      ${formField("Subagents", `<div style="display:flex; flex-direction:column; gap:var(--sp-1); margin-top:var(--sp-1);">${subagentCheckboxes}</div>`)}
+      ${formField("Prompt", `<textarea name="prompt" rows="6" class="tma-input tma-mono">${escapeHtml(job.prompt)}</textarea>`)}
+      ${formField(
+        "Pipeline (next job)",
+        `<select name="next_job_id" class="tma-input">
           <option value=""${!job.next_job_id ? " selected" : ""}>None</option>
-          ${allJobs.filter((j) => j.id !== job.id).map((j) => `<option value="${j.id}"${job.next_job_id === j.id ? " selected" : ""}>${escapeHtml(j.name)}</option>`).join("")}
-        </select>
-      </div>
-
-      <div style="display:flex; gap:6px; margin-top:12px;">
-        <button type="submit" class="tma-btn tma-btn-sm">Save</button>
-        <button type="button" class="tma-btn tma-btn-sm tma-btn-secondary"
-                hx-get="/tma/api/jobs/${job.id}/detail" hx-target="#job-${job.id}" hx-swap="outerHTML">Cancel</button>
-      </div>
-    </form>
-  </div>`;
-}
-
-export function tmaJobListFragment(jobs: Job[]): string {
-  if (jobs.length === 0) return `<div class="tma-empty">No jobs configured</div>`;
-  const enabled = jobs.filter((j) => j.status === "enabled");
-  const groups = groupByTopic(enabled);
-  return groups.map(([group, items]) =>
-    `<div class="tma-group" data-group="${escapeHtml(group)}">
-      <div class="tma-group-header">${escapeHtml(group)} <span class="tma-hint">(${items.length})</span></div>
-      ${items.map((j) => tmaJobCardFragment(j)).join("\n")}
-    </div>`
-  ).join("\n");
+          ${allJobs
+            .filter((j) => j.id !== job.id)
+            .map((j) => `<option value="${j.id}"${job.next_job_id === j.id ? " selected" : ""}>${escapeHtml(j.name)}</option>`)
+            .join("")}
+        </select>`,
+      )}
+    </div>
+    ${formActions(
+      `<button type="submit" class="tma-btn tma-btn-sm tma-btn-primary">Save</button>`,
+      button("Cancel", {
+        small: true,
+        kind: "secondary",
+        attrs: `hx-get="/tma/api/jobs/${job.id}/detail" hx-target="#job-detail-root" hx-swap="innerHTML"`,
+      }),
+    )}
+  </form>`;
 }

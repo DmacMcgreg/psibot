@@ -1,5 +1,16 @@
 import { miniAppLayout } from "./shell.ts";
-import { escapeHtml } from "../../../shared/html.ts";
+import {
+  pageHeader,
+  card,
+  badge,
+  section,
+  emptyState,
+  errorState,
+  escapeHtml,
+  escapeAttr,
+  button,
+  type BadgeKind,
+} from "./components.ts";
 import type { Skill, SkillSummary, SkillUsageRecord } from "../../../skills/types.ts";
 
 export interface SkillsPageData {
@@ -23,81 +34,96 @@ export interface CuratorPageData {
   totalCount: number;
 }
 
-export function tmaSkillsPage(data: SkillsPageData): string {
-  const { curator } = data;
-  const cards = data.skills.length > 0
-    ? data.skills.map((s) => tmaSkillCard(s.summary, s.record)).join("\n")
-    : `<div class="tma-empty">No skills yet. The background self-improvement review will create them as conversations produce signal.</div>`;
+const STATE_BADGE: Record<string, BadgeKind> = {
+  active: "ok",
+  stale: "warn",
+  inactive: "muted",
+};
 
-  return miniAppLayout("skills", `
-    <div style="padding:8px 0;">
-      <div style="padding:12px 16px;">
-        <h2 style="font-size:18px; font-weight:600; margin-bottom:8px;">Skills</h2>
-        ${tmaCuratorPanel(curator)}
-        <div class="tma-hint" style="margin-top:8px; font-size:12px;">
-          ${data.skills.length} installed · ${curator.agentCreatedCount} agent-created (curator-eligible) · ${data.skills.length - curator.agentCreatedCount} user-authored
-        </div>
-      </div>
-      <div id="skills-list">
-        ${cards}
-      </div>
-    </div>
-  `);
-}
+const STATE_ORDER: Record<string, number> = {
+  active: 0,
+  stale: 1,
+  inactive: 2,
+};
 
-function tmaCuratorPanel(c: CuratorPageData): string {
-  const status = !c.enabled
-    ? `<span style="color:#9ca3af;">disabled</span>`
+function curatorPanel(c: CuratorPageData): string {
+  const statusBadge = !c.enabled
+    ? badge("disabled", "muted")
     : c.paused
-      ? `<span style="color:#f59e0b;">paused</span>`
-      : `<span style="color:#10b981;">active</span>`;
+      ? badge("paused", "warn")
+      : badge("active", "ok");
   const last = c.lastRunAt
-    ? `<div class="tma-hint" style="font-size:12px;">last run: ${escapeHtml(c.lastRunAt)} · ${escapeHtml(c.lastRunSummary ?? "")}</div>`
-    : `<div class="tma-hint" style="font-size:12px;">never run · first pass deferred until ${c.intervalHours}h after seed</div>`;
+    ? `<div class="tma-hint">last run: ${escapeHtml(c.lastRunAt)} · ${escapeHtml(c.lastRunSummary ?? "")}</div>`
+    : `<div class="tma-hint">never run · first pass deferred until ${c.intervalHours}h after seed</div>`;
   const reportLink = c.lastReportPath
-    ? `<div class="tma-hint" style="font-size:11px; margin-top:2px;">report: <code>${escapeHtml(c.lastReportPath)}</code></div>`
+    ? `<div class="tma-hint">report: <code class="tma-mono">${escapeHtml(c.lastReportPath)}</code></div>`
     : "";
-  const duration = c.lastRunDurationMs
-    ? ` · ${(c.lastRunDurationMs / 1000).toFixed(1)}s`
-    : "";
+  const duration = c.lastRunDurationMs ? ` · ${(c.lastRunDurationMs / 1000).toFixed(1)}s` : "";
 
-  return `<div class="tma-card" style="margin:8px 0; padding:10px;">
-    <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-      <strong style="font-size:13px;">Curator</strong>
-      ${status}
-      <span class="tma-hint" style="font-size:11px;">interval ${c.intervalHours}h · ${c.runCount} runs${duration}</span>
+  return card(`
+    <div style="display:flex; align-items:center; gap:var(--sp-2); margin-bottom:var(--sp-1); flex-wrap:wrap;">
+      <strong style="font-size:var(--fs-sm);">Curator</strong>
+      ${statusBadge}
+      <span class="tma-hint">interval ${c.intervalHours}h · ${c.runCount} runs${duration}</span>
     </div>
     ${last}
     ${reportLink}
-  </div>`;
+  `);
 }
 
-function tmaSkillCard(summary: SkillSummary, record: SkillUsageRecord): string {
-  const stateColor =
-    record.state === "active" ? "#10b981" :
-    record.state === "stale" ? "#f59e0b" :
-    "#9ca3af";
-  const provenance = record.created_by === "agent" ? "agent" : "user";
-  const provenanceColor = record.created_by === "agent" ? "#8b5cf6" : "#6b7280";
-  const pinned = record.pinned ? `<span style="color:#3b82f6;">📌</span>` : "";
+function skillCard(summary: SkillSummary, record: SkillUsageRecord): string {
+  const stateBadge = badge(record.state, STATE_BADGE[record.state] ?? "muted");
+  const provenance = record.created_by === "agent" ? badge("agent", "accent") : badge("user", "muted");
+  const pinned = record.pinned ? " 📌" : "";
   const last = record.last_used_at ?? record.last_patched_at ?? record.last_viewed_at ?? "never";
   const tags = summary.tags.length > 0
-    ? `<div style="margin-top:4px;">${summary.tags.map((t) => `<span class="tma-hint" style="font-size:10px; background:rgba(0,0,0,0.06); padding:1px 6px; border-radius:4px; margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>`
+    ? `<div style="margin-top:var(--sp-1); display:flex; flex-wrap:wrap; gap:var(--sp-1);">${summary.tags
+        .map((t) => badge(t, "muted"))
+        .join("")}</div>`
     : "";
 
-  return `<div class="tma-card" style="padding:10px; margin:6px 12px;">
-    <div style="display:flex; align-items:center; gap:6px;">
-      <strong style="font-size:13px; flex:1;">${escapeHtml(summary.name)}</strong>
-      ${pinned}
-      <span style="color:${stateColor}; font-size:11px; font-weight:500;">${escapeHtml(record.state)}</span>
-      <span style="color:${provenanceColor}; font-size:11px;">${provenance}</span>
+  return card(
+    `<a href="/tma/skills/${encodeURIComponent(summary.name)}" style="display:block; color:inherit; text-decoration:none;">
+      <div style="display:flex; align-items:center; gap:var(--sp-2);">
+        <strong style="font-size:var(--fs-sm); flex:1;">${escapeHtml(summary.name)}${pinned}</strong>
+        ${stateBadge}
+        ${provenance}
+      </div>
+      <div style="margin-top:var(--sp-1); font-size:var(--fs-sm); line-height:1.4;">${escapeHtml(summary.description)}</div>
+      ${tags}
+      <div class="tma-hint" style="margin-top:var(--sp-2);">
+        use=${record.use_count} · view=${record.view_count} · patch=${record.patch_count} · last=${escapeHtml(String(last))}
+      </div>
+    </a>`,
+  );
+}
+
+export function tmaSkillsPage(data: SkillsPageData): string {
+  const { curator } = data;
+  const sorted = [...data.skills].sort((a, b) => {
+    const orderDiff = (STATE_ORDER[a.record.state] ?? 99) - (STATE_ORDER[b.record.state] ?? 99);
+    if (orderDiff !== 0) return orderDiff;
+    return a.summary.name.localeCompare(b.summary.name);
+  });
+  const cards = sorted.length > 0
+    ? sorted.map((s) => skillCard(s.summary, s.record)).join("\n")
+    : emptyState("🧩", "No skills yet", "The background self-improvement review will create them as conversations produce signal.");
+
+  const body = `
+    ${pageHeader("Skills")}
+    <div style="padding:0 var(--sp-4);">
+      ${curatorPanel(curator)}
+      <div class="tma-hint" style="margin-top:var(--sp-2);">
+        ${data.skills.length} installed · ${curator.agentCreatedCount} agent-created (curator-eligible) · ${data.skills.length - curator.agentCreatedCount} user-authored
+      </div>
     </div>
-    <div style="margin-top:4px; font-size:12px; line-height:1.4;">${escapeHtml(summary.description)}</div>
-    ${tags}
-    <div class="tma-hint" style="margin-top:6px; font-size:11px;">
-      use=${record.use_count} · view=${record.view_count} · patch=${record.patch_count} · last=${escapeHtml(last)}
-    </div>
-  </div>`;
+    ${section("All skills", cards)}
+  `;
+  return miniAppLayout("skills", body);
+}
+
+export function tmaSkillsErrorFragment(message: string): string {
+  return errorState(message, "/tma/skills");
 }
 
 export function tmaSkillDetailPage(skill: Skill, record: SkillUsageRecord): string {
@@ -111,31 +137,29 @@ export function tmaSkillDetailPage(skill: Skill, record: SkillUsageRecord): stri
   if (skill.scripts.length > 0) {
     supportFiles.push(`<strong>scripts/</strong>`, ...skill.scripts.map((f) => `<div>${escapeHtml(f)}</div>`));
   }
-  const supportBlock = supportFiles.length > 0
-    ? `<div class="tma-card" style="margin-top:12px; padding:10px; font-size:12px;">${supportFiles.join("")}</div>`
-    : "";
+  const supportBlock = supportFiles.length > 0 ? card(supportFiles.join("")) : "";
+  const stateBadge = badge(record.state, STATE_BADGE[record.state] ?? "muted");
+  const provenance = record.created_by === "agent" ? badge("agent-created", "accent") : badge("user-authored", "muted");
 
-  return miniAppLayout("skills", `
-    <div style="padding:8px 0;">
-      <div style="padding:12px 16px;">
-        <a href="/tma/skills" class="tma-hint" style="font-size:12px;">← back to skills</a>
-        <h2 style="font-size:18px; font-weight:600; margin:6px 0 8px;">${escapeHtml(skill.frontmatter.name)}</h2>
-        <div class="tma-hint" style="font-size:12px;">${escapeHtml(skill.frontmatter.description)}</div>
-        <div class="tma-hint" style="margin-top:8px; font-size:11px;">
-          state=${escapeHtml(record.state)} ·
-          ${record.created_by === "agent" ? "agent-created" : "user-authored"} ·
-          use=${record.use_count} · view=${record.view_count} · patch=${record.patch_count}
-        </div>
+  const body = `
+    ${pageHeader(skill.frontmatter.name, { subtitle: skill.frontmatter.description })}
+    <div style="padding:0 var(--sp-4);">
+      <div style="display:flex; gap:var(--sp-2); align-items:center; flex-wrap:wrap;">
+        ${stateBadge}
+        ${provenance}
+        <span class="tma-hint">use=${record.use_count} · view=${record.view_count} · patch=${record.patch_count}</span>
       </div>
-      <div class="tma-card" style="margin:8px 12px; padding:12px;" data-md-toggle-root>
-        <div style="display:flex; gap:8px; margin-bottom:8px;">
-          <button type="button" class="tma-btn" style="font-size:12px; padding:4px 10px;"
-            onclick="window.toggleMdView(this);">Raw</button>
-        </div>
-        <div class="md-rendered" data-md data-md-src="${escapeHtml(skill.body)}" style="font-size:13px; line-height:1.5;"></div>
-        <pre class="md-raw" style="display:none; font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--tg-theme-bg-color, #0f0f0f); color:var(--tg-theme-text-color, #fafafa); padding:10px; border-radius:6px; margin:0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">${escapeHtml(skill.body)}</pre>
-      </div>
-      ${supportBlock}
     </div>
-  `);
+    <div style="padding:var(--sp-2) var(--sp-4);" data-md-toggle-root>
+      ${card(`
+        <div style="display:flex; gap:var(--sp-2); margin-bottom:var(--sp-2);">
+          ${button("Raw", { small: true, attrs: `onclick="window.toggleMdView(this);"` })}
+        </div>
+        <div class="md-rendered tma-md" data-md data-md-src="${escapeAttr(skill.body)}"></div>
+        <pre class="md-raw tma-mono" style="display:none; white-space:pre-wrap; word-break:break-word;">${escapeHtml(skill.body)}</pre>
+      `)}
+    </div>
+    ${supportBlock ? `<div style="padding:0 var(--sp-4) var(--sp-4);">${supportBlock}</div>` : ""}
+  `;
+  return miniAppLayout("skills", body, false);
 }

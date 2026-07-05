@@ -1,54 +1,78 @@
 import { miniAppLayout } from "./shell.ts";
-import { escapeHtml } from "../../../shared/html.ts";
+import {
+  pageHeader,
+  searchBar,
+  detailsPanel,
+  emptyState,
+  errorState,
+  escapeHtml,
+  escapeAttr,
+} from "./components.ts";
 import type { MemoryEntry } from "../../../shared/types.ts";
 
-export function tmaMemoryPage(entries: MemoryEntry[]): string {
-  const entryList = entries.length > 0
-    ? entries.map((e) => tmaMemoryCard(e)).join("\n")
-    : `<div class="tma-empty">No memory entries</div>`;
-
-  return miniAppLayout("memory", `
-    <div style="padding:8px 0;">
-      <div style="padding:12px 16px;">
-        <h2 style="font-size:18px; font-weight:600; margin-bottom:8px;">Memory</h2>
-        <form hx-get="/tma/api/memory/search" hx-target="#memory-list" hx-swap="innerHTML">
-          <input type="text" name="q" placeholder="Search memory..." class="tma-input" autocomplete="off">
-        </form>
-      </div>
-      <div id="memory-list">
-        ${entryList}
-      </div>
-    </div>
-  `);
+function memorySnippet(content: string): string {
+  if (content.length <= 140) return content;
+  return content.slice(0, 140).replace(/\s+\S*$/, "") + "…";
 }
 
-function tmaMemoryCard(entry: MemoryEntry): string {
-  const snippet = entry.content.length > 140
-    ? entry.content.slice(0, 140).replace(/\s+\S*$/, "") + "\u2026"
-    : entry.content;
-  const cardId = `mem-${entry.id}`;
+function memoryEntryPanel(entry: MemoryEntry): string {
   const raw = escapeHtml(entry.content);
-
-  return `<details class="tma-card" id="${cardId}" data-md-toggle-root
-    ontoggle="if(this.open){if(window.renderMarkdown)window.renderMarkdown();}">
-    <summary style="cursor:pointer; list-style:none;">
-      <div style="font-weight:600; font-size:14px;">${escapeHtml(entry.title)}</div>
-      <div class="tma-hint" style="margin-top:2px; font-size:12px;">${escapeHtml(entry.file_path)}</div>
-      <div class="md-snippet" style="margin-top:6px; font-size:13px; line-height:1.4; color:var(--tg-theme-hint-color, #6b7280);">${escapeHtml(snippet)}</div>
-    </summary>
-
-    <div style="display:flex; gap:8px; align-items:center; margin:10px 0 8px;">
-      <button type="button" class="tma-btn" style="font-size:12px; padding:4px 10px;"
-        onclick="window.toggleMdView(this); event.stopPropagation();">Raw</button>
-      <span class="tma-hint" style="font-size:11px;">${entry.content.length.toLocaleString()} chars</span>
+  const attrRaw = escapeAttr(entry.content);
+  const summary = `${entry.title}  ·  ${entry.file_path}`;
+  const inner = `<div class="tma-hint" style="margin-bottom:var(--sp-2);">${memorySnippet(escapeHtml(entry.content))}</div>
+    <div style="display:flex; gap:var(--sp-2); align-items:center; margin-bottom:var(--sp-2);" data-md-toggle-root>
+      <button type="button" class="tma-btn tma-btn-sm tma-btn-secondary" onclick="window.toggleMdView(this); event.stopPropagation();">Raw</button>
+      <span class="tma-hint">${entry.content.length.toLocaleString()} chars</span>
     </div>
-
-    <div class="md-rendered" data-md data-md-src="${raw}" style="font-size:13px; line-height:1.5;"></div>
-    <pre class="md-raw" style="display:none; font-size:12px; white-space:pre-wrap; word-break:break-word; background:var(--tg-theme-bg-color, #0f0f0f); color:var(--tg-theme-text-color, #fafafa); padding:10px; border-radius:6px; margin:0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">${raw}</pre>
-  </details>`;
+    <div class="md-rendered tma-md" data-md data-md-src="${attrRaw}"></div>
+    <pre class="md-raw tma-mono" style="display:none; white-space:pre-wrap; word-break:break-word;">${raw}</pre>`;
+  return detailsPanel(summary, inner);
 }
 
-export function tmaMemoryListFragment(entries: MemoryEntry[]): string {
-  if (entries.length === 0) return `<div class="tma-empty">No results</div>`;
-  return entries.map((e) => tmaMemoryCard(e)).join("\n");
+function memoryList(entries: MemoryEntry[]): string {
+  if (entries.length === 0) {
+    return emptyState("🗂️", "No memory entries", "Nothing indexed yet.");
+  }
+  return entries.map(memoryEntryPanel).join("\n");
+}
+
+// NOTE: Memory scope is deliberately narrow — agent-context files only
+// (identity/user/tools/heartbeat/memory.md + per-agent memory dirs). Daily
+// logs, research, trading, weekly rollups and scans are content, not
+// context, and surface only in Library (Atlas). See src/memory/index.ts
+// MEMORY_INCLUDE_* for the enforced boundary; getAllMemoryEntries() /
+// searchMemory() only ever return rows within that scope.
+
+export function tmaMemoryPage(entries: MemoryEntry[]): string {
+  const body = `
+    ${pageHeader("Agent Memory", { subtitle: "Identity, user context & learned notes" })}
+    <div class="tma-search-scope">
+      <div style="padding:0 var(--sp-4);">
+        ${searchBar("/tma/api/memory/search", "Search memory…")}
+      </div>
+      <div class="tma-section" id="memory-list">
+        ${memoryList(entries)}
+      </div>
+    </div>
+  `;
+  return miniAppLayout("memory", body);
+}
+
+/**
+ * NOTE for foundation agents: the search results fragment must replace the
+ * whole `.tma-search-scope` innerHTML (searchBar()'s hx-target is
+ * `closest .tma-search-scope`), which re-submits the input itself. We rebuild
+ * the input + list together here so the swap doesn't drop the search box.
+ */
+export function tmaMemoryListFragment(entries: MemoryEntry[], query = ""): string {
+  return `<div style="padding:0 var(--sp-4);">
+      ${searchBar("/tma/api/memory/search", "Search memory…", query)}
+    </div>
+    <div class="tma-section" id="memory-list">
+      ${memoryList(entries)}
+    </div>`;
+}
+
+export function tmaMemoryErrorFragment(message: string): string {
+  return errorState(message, "/tma/api/memory/search");
 }

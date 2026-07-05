@@ -9,7 +9,7 @@ import { createMemoryRoutes } from "./routes/memory.ts";
 import { createLogRoutes } from "./routes/logs.ts";
 import { createAuthRoutes } from "./routes/auth.ts";
 import { createYoutubeGraphRoutes } from "./routes/youtube-graph.ts";
-import { createMiniAppRoutes } from "./routes/mini-app.ts";
+import { createMiniAppRoutes } from "./routes/mini-app/index.ts";
 import { createInboxRoutes } from "./routes/inbox.ts";
 import { createLogger } from "../shared/logger.ts";
 

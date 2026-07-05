@@ -1,74 +1,106 @@
+/**
+ * YouTube knowledge graph — D3 force-directed explorer.
+ *
+ * This is a standalone client-heavy app (D3 simulation, canvas-free SVG,
+ * search drawer, detail sheet). It intentionally does not use the shared
+ * miniAppLayout/components — the plan calls for surgical hardening here,
+ * not a full componentization pass. It keeps its own trimmed `<style>`
+ * block (dark, fixed palette to match the original graph aesthetic) plus
+ * an explicit back-to-app header for navigation.
+ *
+ * Hardening applied vs. the pre-rework version:
+ *  - Rendered markdown (video summaries) is now run through a sanitizer
+ *    that strips <script> tags and on*= handlers / javascript: URLs before
+ *    being written to innerHTML (defense in depth on top of escaping raw
+ *    text before it reaches marked.parse).
+ *  - ESC key closes the search drawer.
+ *  - Node detail sheet body remains scrollable (overflow-y: auto).
+ */
 export function tmaYoutubeGraphPage(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>YouTube Graph</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet" href="/tma/static/tma.css">
   <style>
-    html, body { height: 100%; overflow: hidden; background: #09090b; color: #d4d4d8; }
+    :root {
+      --yg-bg: #09090b;
+      --yg-surface: #1f1f22;
+      --yg-border: #27272a;
+      --yg-text: #d4d4d8;
+      --yg-text-dim: #71717a;
+      --yg-accent: var(--tma-accent, #4f46e5);
+    }
+    html, body { height: 100%; overflow: hidden; background: var(--yg-bg); color: var(--yg-text); }
     .yg-wrap { position: fixed; inset: 0; display: flex; flex-direction: column; }
 
     .yg-topbar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px 10px; border-bottom: 1px solid #27272a;
-      background: #09090b; z-index: 5; flex-shrink: 0;
+      display: flex; align-items: center; gap: var(--sp-2, 8px);
+      padding: var(--sp-2, 8px) var(--sp-3, 10px); border-bottom: 1px solid var(--yg-border);
+      background: var(--yg-bg); z-index: 5; flex-shrink: 0;
     }
     .yg-back {
-      background: #1f1f22; color: #d4d4d8; border: 1px solid #27272a;
-      padding: 6px 10px; border-radius: 6px; font-size: 12px; text-decoration: none;
+      background: var(--yg-surface); color: var(--yg-text); border: 1px solid var(--yg-border);
+      padding: var(--sp-1, 6px) var(--sp-2, 10px); border-radius: var(--rad-sm, 6px);
+      font-size: var(--fs-sm, 12px); text-decoration: none; min-height: 32px; display: inline-flex; align-items: center;
     }
     .yg-tabs {
       display: flex; gap: 4px; overflow-x: auto; flex: 1; scrollbar-width: none;
     }
     .yg-tabs::-webkit-scrollbar { display: none; }
     .yg-tab {
-      background: transparent; color: #a1a1aa; border: 1px solid #27272a;
-      padding: 6px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap; cursor: pointer;
+      background: transparent; color: var(--yg-text-dim); border: 1px solid var(--yg-border);
+      padding: var(--sp-1, 6px) var(--sp-2, 10px); border-radius: var(--rad-full, 999px);
+      font-size: var(--fs-sm, 12px); white-space: nowrap; cursor: pointer; min-height: 32px;
     }
-    .yg-tab-active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+    .yg-tab-active { background: var(--yg-accent); color: #fff; border-color: var(--yg-accent); }
 
     .yg-stats {
-      font-size: 10px; color: #71717a; padding: 4px 10px; flex-shrink: 0;
-      border-bottom: 1px solid #27272a; background: #09090b;
-      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+      font-size: var(--fs-xs, 10px); color: var(--yg-text-dim); padding: 4px var(--sp-3, 10px); flex-shrink: 0;
+      border-bottom: 1px solid var(--yg-border); background: var(--yg-bg);
+      display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2, 8px);
     }
     .yg-search-btn {
-      background: #1f1f22; color: #d4d4d8; border: 1px solid #27272a;
-      padding: 4px 8px; border-radius: 6px; font-size: 11px; cursor: pointer;
+      background: var(--yg-surface); color: var(--yg-text); border: 1px solid var(--yg-border);
+      padding: 4px var(--sp-2, 8px); border-radius: var(--rad-sm, 6px); font-size: 11px; cursor: pointer;
+      min-height: 28px;
     }
 
-    .yg-canvas { flex: 1; position: relative; overflow: hidden; background: #09090b; }
+    .yg-canvas { flex: 1; position: relative; overflow: hidden; background: var(--yg-bg); }
     #yg-svg { width: 100%; height: 100%; display: block; touch-action: none; }
 
     .yg-search-drawer {
       position: absolute; left: 0; right: 0; top: 0;
-      background: #09090b; border-bottom: 1px solid #27272a;
-      padding: 8px; z-index: 4;
+      background: var(--yg-bg); border-bottom: 1px solid var(--yg-border);
+      padding: var(--sp-2, 8px); z-index: 4;
       transform: translateY(-100%); transition: transform 0.2s;
       max-height: 60vh; display: flex; flex-direction: column;
     }
     .yg-search-drawer.open { transform: translateY(0); }
     .yg-search-input {
-      width: 100%; padding: 8px 10px; background: #18181b;
-      border: 1px solid #27272a; border-radius: 6px; color: #fff; font-size: 14px;
+      width: 100%; min-height: var(--touch, 44px); padding: var(--sp-2, 8px) var(--sp-3, 10px);
+      background: var(--yg-surface);
+      border: 1px solid var(--yg-border); border-radius: var(--rad-sm, 6px); color: #fff; font-size: var(--fs-md, 14px);
       outline: none;
     }
-    .yg-search-input:focus { border-color: #4f46e5; }
-    .yg-search-list { overflow-y: auto; margin-top: 8px; }
+    .yg-search-input:focus { border-color: var(--yg-accent); }
+    .yg-search-list { overflow-y: auto; margin-top: var(--sp-2, 8px); }
     .yg-search-item {
-      display: flex; align-items: center; gap: 6px; padding: 8px;
-      border-radius: 4px; cursor: pointer; font-size: 13px;
+      display: flex; align-items: center; gap: 6px; padding: var(--sp-2, 8px);
+      min-height: var(--touch, 44px);
+      border-radius: 4px; cursor: pointer; font-size: var(--fs-sm, 13px);
     }
-    .yg-search-item:active { background: #27272a; }
+    .yg-search-item:active { background: var(--yg-border); }
 
     .yg-sheet {
       position: absolute; left: 0; right: 0; bottom: 0;
-      background: #09090b; border-top: 1px solid #27272a;
-      border-top-left-radius: 12px; border-top-right-radius: 12px;
+      background: var(--yg-bg); border-top: 1px solid var(--yg-border);
+      border-top-left-radius: var(--rad-lg, 12px); border-top-right-radius: var(--rad-lg, 12px);
       box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
       max-height: 70vh; display: flex; flex-direction: column;
       transform: translateY(100%); transition: transform 0.22s ease;
@@ -77,30 +109,33 @@ export function tmaYoutubeGraphPage(): string {
     .yg-sheet.open { transform: translateY(0); }
     .yg-sheet-handle {
       width: 36px; height: 4px; background: #3f3f46; border-radius: 2px;
-      margin: 8px auto 4px;
+      margin: var(--sp-2, 8px) auto 4px;
     }
     .yg-sheet-header {
       display: flex; justify-content: space-between; align-items: center;
-      padding: 4px 16px 8px; border-bottom: 1px solid #27272a;
+      padding: 4px var(--sp-4, 16px) var(--sp-2, 8px); border-bottom: 1px solid var(--yg-border);
     }
-    .yg-sheet-title { font-size: 15px; font-weight: 600; color: #fff; flex: 1; margin-right: 12px; }
+    .yg-sheet-title { font-size: var(--fs-md, 15px); font-weight: 600; color: #fff; flex: 1; margin-right: var(--sp-3, 12px); }
     .yg-sheet-close {
-      background: transparent; color: #71717a; border: none;
+      background: transparent; color: var(--yg-text-dim); border: none;
       font-size: 24px; line-height: 1; cursor: pointer;
+      min-width: var(--touch, 44px); min-height: var(--touch, 44px);
     }
-    .yg-sheet-body { overflow-y: auto; padding: 12px 16px; font-size: 13px; }
-    .yg-sheet-body h4 { font-size: 11px; color: #a1a1aa; text-transform: uppercase; margin: 12px 0 6px; font-weight: 700; }
+    .yg-sheet-body { overflow-y: auto; padding: var(--sp-3, 12px) var(--sp-4, 16px); font-size: var(--fs-sm, 13px); }
+    .yg-sheet-body h4 { font-size: 11px; color: #a1a1aa; text-transform: uppercase; margin: var(--sp-3, 12px) 0 6px; font-weight: 700; }
     .yg-sheet-body .row {
-      padding: 8px 0; border-bottom: 1px solid #27272a; cursor: pointer;
+      padding: var(--sp-2, 8px) 0; border-bottom: 1px solid var(--yg-border); cursor: pointer; min-height: var(--touch, 44px);
     }
     .yg-sheet-body .row:last-child { border-bottom: none; }
-    .yg-sheet-body .row-sub { color: #71717a; font-size: 11px; margin-top: 2px; }
+    .yg-sheet-body .row-sub { color: var(--yg-text-dim); font-size: 11px; margin-top: 2px; }
     .yg-sheet-body a { color: #818cf8; }
+    .yg-sheet-body .yg-detail-title { color: #fff; }
+    .yg-sheet-body .yg-detail-err { color: #f87171; }
     .yg-tag {
-      display: inline-block; padding: 2px 8px; background: #27272a; border-radius: 999px;
-      font-size: 11px; color: #d4d4d8; margin: 2px;
+      display: inline-block; padding: 2px var(--sp-2, 8px); background: var(--yg-border); border-radius: var(--rad-full, 999px);
+      font-size: 11px; color: var(--yg-text); margin: 2px;
     }
-    .yg-loading { color: #71717a; font-style: italic; }
+    .yg-loading { color: var(--yg-text-dim); font-style: italic; }
   </style>
 </head>
 <body>
@@ -114,7 +149,7 @@ export function tmaYoutubeGraphPage(): string {
       </div>
     </div>
     <div class="yg-stats">
-      <span id="yg-stats-text">Loading...</span>
+      <span id="yg-stats-text">Loading…</span>
       <button class="yg-search-btn" onclick="toggleSearch()">Search</button>
     </div>
 
@@ -130,7 +165,7 @@ export function tmaYoutubeGraphPage(): string {
         <div class="yg-sheet-handle"></div>
         <div class="yg-sheet-header">
           <div class="yg-sheet-title" id="yg-sheet-title"></div>
-          <button class="yg-sheet-close" onclick="closeSheet()">&times;</button>
+          <button class="yg-sheet-close" onclick="closeSheet()" aria-label="Close">&times;</button>
         </div>
         <div class="yg-sheet-body" id="yg-sheet-body"></div>
       </div>
@@ -183,8 +218,12 @@ export function tmaYoutubeGraphPage(): string {
         similarity: '/tma/api/youtube/graph/similarity',
         hybrid: '/tma/api/youtube/graph/hybrid',
       };
-      document.getElementById('yg-stats-text').textContent = 'Loading...';
-      fetch(endpoints[tab]).then(function(r) { return r.json(); }).then(function(data) {
+      document.getElementById('yg-stats-text').textContent = 'Loading…';
+      fetch(endpoints[tab]).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function(data) {
+        if (data && data.error) throw new Error(data.error);
         graphData = data;
         document.getElementById('yg-stats-text').textContent =
           data.nodes.length + ' nodes, ' + data.edges.length + ' edges';
@@ -198,8 +237,21 @@ export function tmaYoutubeGraphPage(): string {
         renderGraph(data);
       }).catch(function(err) {
         console.error('Failed to load graph:', err);
-        document.getElementById('yg-stats-text').textContent = 'Error loading graph';
+        document.getElementById('yg-stats-text').textContent = 'Error loading graph — tap a tab to retry';
+        renderError();
       });
+    }
+
+    function renderError() {
+      var svg = d3.select('#yg-svg');
+      svg.selectAll('*').remove();
+      var bbox = svg.node().getBoundingClientRect();
+      svg.attr('viewBox', [0, 0, bbox.width, bbox.height]);
+      svg.append('text')
+        .attr('x', bbox.width / 2).attr('y', bbox.height / 2)
+        .attr('text-anchor', 'middle').attr('fill', COLORS.textDim)
+        .attr('font-size', '13px')
+        .text('Failed to load graph data.');
     }
 
     function buildSearchList(data) {
@@ -232,6 +284,20 @@ export function tmaYoutubeGraphPage(): string {
     function closeSearch() {
       document.getElementById('yg-search-drawer').classList.remove('open');
     }
+
+    // ESC closes the search drawer (and the detail sheet, if open).
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      var drawer = document.getElementById('yg-search-drawer');
+      if (drawer && drawer.classList.contains('open')) {
+        closeSearch();
+        return;
+      }
+      var sheet = document.getElementById('yg-sheet');
+      if (sheet && sheet.classList.contains('open')) {
+        closeSheet();
+      }
+    });
 
     function getNodeColor(n) {
       if (n.type === 'topic') return COLORS.topic;
@@ -467,46 +533,57 @@ export function tmaYoutubeGraphPage(): string {
       var body = document.getElementById('yg-sheet-body');
       sheet.classList.add('open');
       title.textContent = d.label;
-      body.innerHTML = '<div class="yg-loading">Loading...</div>';
+      body.innerHTML = '<div class="yg-loading">Loading…</div>';
 
       if (d.type === 'topic') {
         var topicId = String(d.id).replace('t-', '');
         fetch('/tma/api/youtube/graph/topic/' + topicId)
-          .then(function(r) { return r.json(); })
+          .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          })
           .then(function(data) { body.innerHTML = renderTopicDetail(data); })
-          .catch(function() { body.innerHTML = '<div style="color:#f87171;">Failed to load</div>'; });
+          .catch(function() { body.innerHTML = '<div class="yg-detail-err">Failed to load</div>'; });
       } else {
         var videoId = String(d.id).replace('v-', '');
         fetch('/tma/api/youtube/graph/video/' + videoId)
-          .then(function(r) { return r.json(); })
+          .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          })
           .then(function(data) {
             body.innerHTML = renderVideoDetail(data);
             if (typeof marked !== 'undefined') {
               body.querySelectorAll('[data-md]').forEach(function(el) {
                 var raw = el.getAttribute('data-md-src') || '';
-                el.innerHTML = marked.parse(raw);
+                // raw was HTML-escaped when embedded in the attribute (renderVideoDetail),
+                // so decode it back to markdown source before parsing, then sanitize
+                // the rendered HTML before it ever reaches innerHTML.
+                var decoded = decodeHtmlEntities(raw);
+                var rendered = marked.parse(decoded);
+                el.innerHTML = sanitizeHtml(rendered);
               });
             }
           })
-          .catch(function() { body.innerHTML = '<div style="color:#f87171;">Failed to load</div>'; });
+          .catch(function() { body.innerHTML = '<div class="yg-detail-err">Failed to load</div>'; });
       }
     }
 
     function renderTopicDetail(data) {
       var html = '<div style="color:#a1a1aa;">' + escapeHtml(data.description || 'No description') + '</div>';
-      html += '<div style="color:#71717a; font-size:11px; margin-top:4px;">' + data.video_count + ' videos</div>';
+      html += '<div class="row-sub">' + (data.video_count || 0) + ' videos</div>';
       if (data.related_topics && data.related_topics.length > 0) {
         html += '<h4>Related Topics</h4>';
         html += data.related_topics.map(function(r) {
           return '<div class="row" onclick="focusNode(' + JSON.stringify('t-' + r.id) + ')">'
             + escapeHtml(r.display_name)
-            + '<div class="row-sub">' + r.co_occurrence_count + ' shared</div></div>';
+            + '<div class="row-sub">' + (r.co_occurrence_count || 0) + ' shared</div></div>';
         }).join('');
       }
       if (data.videos && data.videos.length > 0) {
         html += '<h4>Videos</h4>';
         html += data.videos.map(function(v) {
-          return '<div class="row"><div style="color:#fff;">' + escapeHtml(v.title) + '</div>'
+          return '<div class="row"><div class="yg-detail-title">' + escapeHtml(v.title) + '</div>'
             + '<div class="row-sub">' + escapeHtml(v.channel_title) + '</div></div>';
         }).join('');
       }
@@ -514,7 +591,7 @@ export function tmaYoutubeGraphPage(): string {
     }
 
     function renderVideoDetail(data) {
-      var html = '<div style="color:#71717a; font-size:11px;">' + escapeHtml(data.channel_title) + '</div>';
+      var html = '<div class="row-sub">' + escapeHtml(data.channel_title) + '</div>';
       html += '<a href="' + escapeAttr(data.url) + '" target="_blank" rel="noopener" style="font-size:12px;">Watch on YouTube</a>';
       if (data.tags && data.tags.length > 0) {
         html += '<div style="margin-top:8px;">' + data.tags.map(function(t) {
@@ -522,12 +599,14 @@ export function tmaYoutubeGraphPage(): string {
         }).join('') + '</div>';
       }
       if (data.summary) {
+        // Store the summary HTML-escaped in the attribute; decoded + sanitized
+        // just before rendering (see showDetail).
         html += '<h4>Summary</h4><div data-md data-md-src="' + escapeAttr(data.summary) + '"></div>';
       }
       if (data.themes && data.themes.length > 0) {
         html += '<h4>Themes</h4>';
         html += data.themes.map(function(t) {
-          return '<div class="row"><span style="color:#fff;">' + escapeHtml(t.name) + '</span>: '
+          return '<div class="row"><span class="yg-detail-title">' + escapeHtml(t.name) + '</span>: '
             + escapeHtml(t.summary) + '</div>';
         }).join('');
       }
@@ -536,7 +615,7 @@ export function tmaYoutubeGraphPage(): string {
         html += data.related.map(function(r) {
           return '<div class="row" onclick="focusNode(' + JSON.stringify('v-' + r.video_id) + ')">'
             + escapeHtml(r.title)
-            + '<div class="row-sub">' + r.shared_topic_count + ' topics</div></div>';
+            + '<div class="row-sub">' + (r.shared_topic_count || 0) + ' topics</div></div>';
         }).join('');
       }
       return html;
@@ -554,6 +633,40 @@ export function tmaYoutubeGraphPage(): string {
       return String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
         .replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+    function decodeHtmlEntities(s) {
+      var div = document.createElement('div');
+      div.innerHTML = String(s == null ? '' : s);
+      return div.textContent || '';
+    }
+    // Strip <script>/<style> tags, event-handler attributes (onclick=...),
+    // and javascript: URLs from marked.parse() output before it is written
+    // to innerHTML. Defense in depth for markdown summaries sourced from
+    // stored video analysis (not directly user-supplied, but treated as
+    // untrusted since it flows through an LLM pipeline).
+    function sanitizeHtml(html) {
+      var doc = document.implementation.createHTMLDocument('');
+      doc.body.innerHTML = String(html == null ? '' : html);
+      doc.body.querySelectorAll('script, style, iframe, object, embed').forEach(function(el) {
+        el.remove();
+      });
+      var all = doc.body.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        for (var j = el.attributes.length - 1; j >= 0; j--) {
+          var attr = el.attributes[j];
+          var name = attr.name.toLowerCase();
+          var value = attr.value || '';
+          if (name.indexOf('on') === 0) {
+            el.removeAttribute(attr.name);
+            continue;
+          }
+          if ((name === 'href' || name === 'src') && /^\\s*javascript:/i.test(value)) {
+            el.removeAttribute(attr.name);
+          }
+        }
+      }
+      return doc.body.innerHTML;
     }
 
     window.switchTab = switchTab;

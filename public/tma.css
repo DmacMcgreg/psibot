@@ -1,256 +1,1068 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* ==========================================================================
+   Telegram Mini App — design system
+   Single source of truth for tokens, primitives, and components.
+   All colors via tokens, all spacing via --sp-*, all type via --fs-*.
+   Dark mode comes free from Telegram theme vars (no media queries needed).
+   ========================================================================== */
+
+:root {
+  /* spacing — 4/8 ladder */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* type scale */
+  --fs-xs: 11px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+
+  /* radius */
+  --rad-sm: 8px;
+  --rad-md: 12px;
+  --rad-lg: 16px;
+  --rad-full: 999px;
+
+  /* semantic colors derived from Telegram theme */
+  --tma-bg: var(--tg-theme-bg-color, #fff);
+  --tma-bg-secondary: var(--tg-theme-secondary-bg-color, #f0f2f5);
+  --tma-text: var(--tg-theme-text-color, #000);
+  --tma-hint: var(--tg-theme-hint-color, #8e8e93);
+  --tma-accent: var(--tg-theme-button-color, #3390ec);
+  --tma-accent-text: var(--tg-theme-button-text-color, #fff);
+  --tma-link: var(--tg-theme-link-color, #3390ec);
+  --tma-destructive: var(--tg-theme-destructive-text-color, #e53935);
+  --tma-surface: color-mix(in srgb, var(--tma-bg) 92%, var(--tma-text) 8%);
+  --tma-border: color-mix(in srgb, var(--tma-text) 12%, transparent);
+
+  /* status colors — used by badges; NEVER hardcode hex in views */
+  --tma-ok: #34c759;
+  --tma-warn: #ff9f0a;
+  --tma-err: #ff3b30;
+
+  /* touch target floor */
+  --touch: 44px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--tg-theme-bg-color, #fff);
-  color: var(--tg-theme-text-color, #000);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--tma-bg);
+  color: var(--tma-text);
   height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  font-size: var(--fs-md);
+  -webkit-tap-highlight-color: transparent;
 }
+
+/* Accessible focus for keyboard / switch-control users */
+:focus-visible {
+  outline: 2px solid var(--tma-accent);
+  outline-offset: 2px;
+  border-radius: var(--rad-sm);
+}
+
+a {
+  color: var(--tma-link);
+  text-decoration: none;
+}
+
+/* ==========================================================================
+   Layout shell
+   ========================================================================== */
+
 .tma-main {
   flex: 1;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--sp-2);
 }
+
+/* ==========================================================================
+   Tab bar
+   ========================================================================== */
+
 .tma-tab-bar {
   display: flex;
-  border-top: 1px solid var(--tg-theme-hint-color, #ccc);
-  background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+  border-top: 1px solid var(--tma-border);
+  background: var(--tma-bg-secondary);
   padding-bottom: env(safe-area-inset-bottom, 0);
   flex-shrink: 0;
 }
+
 .tma-tab {
   flex: 1;
-  text-align: center;
-  padding: 10px 4px 8px;
-  font-size: 12px;
-  color: var(--tg-theme-hint-color, #999);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 49px;
+  padding: var(--sp-1) var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--tma-hint);
   text-decoration: none;
-  transition: color 0.2s;
+  transition: color 0.15s;
 }
+
+.tma-tab svg {
+  width: 24px;
+  height: 24px;
+  display: block;
+}
+
 .tma-tab-active {
-  color: var(--tg-theme-button-color, #3390ec);
+  color: var(--tma-accent);
+}
+
+/* ==========================================================================
+   Page header
+   ========================================================================== */
+
+.tma-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-4) var(--sp-2);
+}
+
+.tma-page-header h1 {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.tma-page-header .tma-page-subtitle {
+  font-size: var(--fs-sm);
+  color: var(--tma-hint);
+  margin-top: 2px;
+}
+
+.tma-page-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Section
+   ========================================================================== */
+
+.tma-section {
+  margin: var(--sp-4) 0;
+}
+
+.tma-section-title,
+.tma-group-header {
+  font-size: var(--fs-sm);
   font-weight: 600;
+  padding: var(--sp-2) var(--sp-4) var(--sp-1);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--tma-hint);
 }
+
+/* ==========================================================================
+   Card
+   ========================================================================== */
+
 .tma-card {
-  background: var(--tg-theme-secondary-bg-color, #f5f5f5);
-  border-radius: 12px;
-  padding: 12px;
-  margin: 8px 16px;
+  background: var(--tma-bg-secondary);
+  border-radius: var(--rad-md);
+  padding: var(--sp-3);
+  margin: var(--sp-2) var(--sp-4);
 }
-.tma-btn {
-  background: var(--tg-theme-button-color, #3390ec);
-  color: var(--tg-theme-button-text-color, #fff);
-  border: none;
-  border-radius: 8px;
-  padding: 8px 16px;
-  font-size: 14px;
+
+a.tma-card,
+.tma-card[onclick] {
+  display: block;
+  cursor: pointer;
+  color: inherit;
+}
+
+.tma-card-expanded {
+  border: 1px solid var(--tma-accent);
+}
+
+/* ==========================================================================
+   List row — standard tappable row
+   ========================================================================== */
+
+.tma-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--touch);
+  padding: var(--sp-3);
+  margin: var(--sp-2) var(--sp-4);
+  background: var(--tma-bg-secondary);
+  border-radius: var(--rad-md);
+  color: inherit;
+  text-decoration: none;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.tma-btn-sm {
-  padding: 4px 10px;
-  font-size: 12px;
-  border-radius: 6px;
+
+.tma-list-row:active {
+  background: var(--tma-surface);
 }
-.tma-btn-danger {
-  background: #e53935;
+
+.tma-list-row-body {
+  flex: 1;
+  min-width: 0;
 }
+
+/* Titles may wrap to 2 lines (long inbox/research titles are common); the
+   clamp keeps row height predictable so lists don't jump between 1- and
+   3-line rows. line-height is set explicitly since the clamp math depends
+   on it. */
+.tma-list-row-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tma-list-row-subtitle {
+  font-size: var(--fs-sm);
+  color: var(--tma-hint);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tma-list-row-meta {
+  font-size: var(--fs-xs);
+  color: var(--tma-hint);
+  margin-top: 3px;
+}
+
+.tma-list-row-aside {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+
+.tma-chevron {
+  flex-shrink: 0;
+  color: var(--tma-hint);
+  opacity: 0.5;
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+.tma-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: var(--touch);
+  background: var(--tma-accent);
+  color: var(--tma-accent-text);
+  border: none;
+  border-radius: var(--rad-sm);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 0.15s;
+}
+
+.tma-btn:active {
+  opacity: 0.8;
+}
+
+.tma-btn-primary {
+  background: var(--tma-accent);
+  color: var(--tma-accent-text);
+}
+
 .tma-btn-secondary {
-  background: var(--tg-theme-hint-color, #999);
+  background: var(--tma-surface);
+  color: var(--tma-text);
 }
-/* HTMX loading states */
+
+.tma-btn-danger {
+  background: var(--tma-destructive);
+  color: #fff;
+}
+
+/* Small button — still keeps a comfortable tap target via padding rules */
+.tma-btn-sm {
+  min-height: 36px;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-sm);
+  border-radius: var(--rad-sm);
+}
+
+.tma-btn-icon {
+  min-height: var(--touch);
+  min-width: var(--touch);
+  padding: var(--sp-2);
+}
+
+/* HTMX loading state */
 .tma-btn.htmx-request {
   opacity: 0.6;
   pointer-events: none;
 }
-/* Toast notification */
-.tma-toast {
-  position: fixed;
-  bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: #2e7d32;
-  color: #fff;
-  padding: 8px 20px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 600;
-  z-index: 1000;
-  animation: tma-toast-in 0.2s ease, tma-toast-out 0.3s ease 1.5s forwards;
-  pointer-events: none;
+
+/* ==========================================================================
+   Chip row (filter chips) — horizontal scroll
+   ========================================================================== */
+
+.tma-chip-row {
+  display: flex;
+  gap: var(--sp-2);
+  overflow-x: auto;
+  padding: var(--sp-2) var(--sp-4);
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
 }
-@keyframes tma-toast-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.tma-chip-row::-webkit-scrollbar {
+  display: none;
 }
-@keyframes tma-toast-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-.tma-input {
-  width: 100%;
-  background: var(--tg-theme-secondary-bg-color, #f5f5f5);
-  color: var(--tg-theme-text-color, #000);
-  border: 1px solid var(--tg-theme-hint-color, #ccc);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 14px;
-  outline: none;
-}
-.tma-input:focus {
-  border-color: var(--tg-theme-button-color, #3390ec);
-}
-.tma-hint {
-  color: var(--tg-theme-hint-color, #999);
-  font-size: 13px;
-}
-.tma-link {
-  color: var(--tg-theme-link-color, #3390ec);
-  text-decoration: none;
-}
-.tma-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.tma-badge-enabled { background: #e8f5e9; color: #2e7d32; }
-.tma-badge-disabled { background: #fafafa; color: #999; }
-.tma-badge-paused { background: #fff3e0; color: #e65100; }
-.tma-badge-error { background: #ffebee; color: #c62828; }
-.tma-bubble {
-  max-width: 85%;
-  padding: 10px 14px;
-  border-radius: 16px;
-  margin: 4px 16px;
-  font-size: 14px;
-  line-height: 1.4;
-  word-break: break-word;
-}
-.tma-bubble-user {
-  background: var(--tg-theme-button-color, #3390ec);
-  color: var(--tg-theme-button-text-color, #fff);
-  margin-left: auto;
-  border-bottom-right-radius: 4px;
-}
-.tma-bubble-assistant {
-  background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-  color: var(--tg-theme-text-color, #000);
-  margin-right: auto;
-  border-bottom-left-radius: 4px;
-}
-.tma-pill {
-  display: inline-block;
-  padding: 2px 7px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--tg-theme-secondary-bg-color, #e8e8e8);
-  color: var(--tg-theme-hint-color, #666);
-  border: 1px solid var(--tg-theme-hint-color, #ccc);
-  white-space: nowrap;
-}
-/* Jobs page */
-.tma-group-header {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 10px 16px 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--tg-theme-hint-color, #888);
-}
-.tma-card-expanded {
-  border: 1px solid var(--tg-theme-button-color, #3390ec);
-}
+
+.tma-chip,
 .tma-filter-btn {
-  background: var(--tg-theme-secondary-bg-color, #eee);
-  color: var(--tg-theme-text-color, #333);
-  border: 1px solid var(--tg-theme-hint-color, #ccc);
-  border-radius: 14px;
-  padding: 4px 12px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  background: var(--tma-surface);
+  color: var(--tma-text);
+  border: 1px solid var(--tma-border);
+  border-radius: var(--rad-full);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-sm);
   cursor: pointer;
   white-space: nowrap;
   -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
 }
+
+.tma-chip-active,
 .tma-filter-active {
-  background: var(--tg-theme-button-color, #3390ec);
-  color: var(--tg-theme-button-text-color, #fff);
-  border-color: var(--tg-theme-button-color, #3390ec);
+  background: var(--tma-accent);
+  color: var(--tma-accent-text);
+  border-color: var(--tma-accent);
 }
-.tma-detail-table {
-  width: 100%;
-  font-size: 13px;
-  border-collapse: collapse;
+
+/* Health/status chips that need attention — distinct from an active filter. */
+.tma-chip-warn {
+  background: color-mix(in srgb, var(--tma-warn) 15%, transparent);
+  color: var(--tma-warn);
+  border-color: color-mix(in srgb, var(--tma-warn) 35%, transparent);
 }
-.tma-detail-table td {
-  padding: 3px 0;
-  vertical-align: top;
+
+/* Compact chip variant for inline hints stacked in a row's aside column
+   (e.g. "+1 research" duplicate-group pill, "also NAME" entity hint) —
+   smaller than the standard filter chip so it doesn't compete with the
+   kind/status badge above it. */
+.tma-chip-sm {
+  min-height: auto;
+  padding: 1px var(--sp-2);
+  font-size: var(--fs-xs);
 }
-.tma-dt-label {
-  color: var(--tg-theme-hint-color, #999);
-  width: 80px;
-  font-size: 12px;
+
+/* ==========================================================================
+   Pill (small inline tag)
+   ========================================================================== */
+
+.tma-pill {
+  display: inline-block;
+  padding: 2px var(--sp-2);
+  border-radius: var(--rad-sm);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  background: var(--tma-surface);
+  color: var(--tma-hint);
+  border: 1px solid var(--tma-border);
+  white-space: nowrap;
 }
-.tma-run-header, .tma-run-row {
-  display: grid;
-  grid-template-columns: 28px 1fr 50px 50px;
+
+/* ==========================================================================
+   Badges — semantic status
+   ========================================================================== */
+
+.tma-badge {
+  display: inline-block;
+  padding: 2px var(--sp-2);
+  border-radius: var(--rad-full);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tma-badge-ok {
+  background: color-mix(in srgb, var(--tma-ok) 18%, transparent);
+  color: var(--tma-ok);
+}
+
+.tma-badge-warn {
+  background: color-mix(in srgb, var(--tma-warn) 18%, transparent);
+  color: var(--tma-warn);
+}
+
+.tma-badge-err {
+  background: color-mix(in srgb, var(--tma-err) 18%, transparent);
+  color: var(--tma-err);
+}
+
+.tma-badge-accent {
+  background: color-mix(in srgb, var(--tma-accent) 18%, transparent);
+  color: var(--tma-accent);
+}
+
+.tma-badge-muted {
+  background: var(--tma-surface);
+  color: var(--tma-hint);
+}
+
+/* Legacy badge aliases (kept until page agents migrate) */
+.tma-badge-enabled {
+  background: color-mix(in srgb, var(--tma-ok) 18%, transparent);
+  color: var(--tma-ok);
+}
+.tma-badge-disabled {
+  background: var(--tma-surface);
+  color: var(--tma-hint);
+}
+.tma-badge-paused {
+  background: color-mix(in srgb, var(--tma-warn) 18%, transparent);
+  color: var(--tma-warn);
+}
+.tma-badge-error {
+  background: color-mix(in srgb, var(--tma-err) 18%, transparent);
+  color: var(--tma-err);
+}
+
+/* ==========================================================================
+   Chat bubbles
+   ========================================================================== */
+
+.tma-bubble {
+  max-width: 85%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--rad-lg);
+  margin: var(--sp-1) var(--sp-4);
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.tma-bubble-user {
+  background: var(--tma-accent);
+  color: var(--tma-accent-text);
+  margin-left: auto;
+  border-bottom-right-radius: var(--sp-1);
+}
+
+.tma-bubble-assistant {
+  background: var(--tma-bg-secondary);
+  color: var(--tma-text);
+  margin-right: auto;
+  border-bottom-left-radius: var(--sp-1);
+}
+
+.tma-bubble-error {
+  background: color-mix(in srgb, var(--tma-err) 14%, transparent);
+  color: var(--tma-text);
+  border: 1px solid color-mix(in srgb, var(--tma-err) 40%, transparent);
+  margin-right: auto;
+}
+
+.tma-bubble-meta {
+  font-size: var(--fs-xs);
+  color: var(--tma-hint);
+  margin: 0 var(--sp-4) var(--sp-2);
+}
+
+/* Typing indicator (animated dots) */
+.tma-typing {
+  display: inline-flex;
   gap: 4px;
-  font-size: 12px;
-  padding: 3px 0;
   align-items: center;
 }
-.tma-run-header {
-  color: var(--tg-theme-hint-color, #999);
-  border-bottom: 1px solid var(--tg-theme-hint-color, #ddd);
-  font-size: 11px;
+
+.tma-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tma-hint);
+  animation: tma-typing 1.2s infinite ease-in-out;
 }
+
+.tma-typing span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.tma-typing span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes tma-typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* ==========================================================================
+   Sticky composer (chat input above tab bar)
+   ========================================================================== */
+
+.tma-composer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-end;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--tma-bg);
+  border-top: 1px solid var(--tma-border);
+}
+
+.tma-composer textarea {
+  flex: 1;
+  resize: none;
+  max-height: 120px;
+  background: var(--tma-bg-secondary);
+  color: var(--tma-text);
+  border: 1px solid var(--tma-border);
+  border-radius: var(--rad-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  line-height: 1.4;
+  outline: none;
+}
+
+.tma-composer textarea:focus {
+  border-color: var(--tma-accent);
+}
+
+/* ==========================================================================
+   Form fields
+   ========================================================================== */
+
+.tma-input,
+.tma-textarea,
+.tma-select {
+  width: 100%;
+  min-height: var(--touch);
+  background: var(--tma-bg-secondary);
+  color: var(--tma-text);
+  border: 1px solid var(--tma-border);
+  border-radius: var(--rad-sm);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  outline: none;
+}
+
+.tma-textarea {
+  resize: vertical;
+  min-height: 88px;
+  line-height: 1.45;
+}
+
+.tma-input:focus,
+.tma-textarea:focus,
+.tma-select:focus {
+  border-color: var(--tma-accent);
+}
+
+.tma-input-sm {
+  min-height: 36px;
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.tma-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New",
+    monospace;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+/* Scrollable monospace box — prompt/agent-prompt previews in job details. */
+.tma-mono-scroll {
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Horizontal padding matching the standard page gutter, for wrapper divs
+   around tables/lists that don't otherwise carry their own margin. */
+.tma-px-4 {
+  padding-left: var(--sp-4);
+  padding-right: var(--sp-4);
+}
+
+/* Chip row that wraps instead of scrolling — used for "show all" expanders
+   (related entities, item entities) where every chip should stay visible. */
+.tma-chip-row-wrap {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+/* Compact variant of .tma-link for header back-links ("← Entities"). */
+.tma-link-sm {
+  font-size: var(--fs-sm);
+}
+
+/* Visual chrome for the raw-markdown toggle box (tma.js's toggleMdView).
+   `display` itself stays inline (JS reads/writes el.style.display directly
+   to drive the toggle) — only the static box styling lives here. Callers
+   inside an already-padded container add `tma-md-raw-box-inset` to skip the
+   extra horizontal margin. */
+.tma-md-raw-box {
+  white-space: pre-wrap;
+  margin: 0 var(--sp-4);
+  padding: var(--sp-3);
+  border-radius: var(--rad-md);
+  background: var(--tma-bg-secondary);
+}
+
+.tma-md-raw-box-inset {
+  margin: 0;
+}
+
+.tma-form-field {
+  margin: 0 var(--sp-4) var(--sp-3);
+}
+
+.tma-form-row {
+  margin-bottom: var(--sp-2);
+}
+
+.tma-form-label,
+.tma-field-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--tma-hint);
+  margin-bottom: var(--sp-1);
+}
+
+.tma-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+/* ==========================================================================
+   Search bar
+   ========================================================================== */
+
+.tma-search {
+  padding: var(--sp-2) var(--sp-4);
+}
+
+.tma-search input {
+  width: 100%;
+  min-height: var(--touch);
+  background: var(--tma-bg-secondary);
+  color: var(--tma-text);
+  border: 1px solid var(--tma-border);
+  border-radius: var(--rad-full);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-md);
+  outline: none;
+}
+
+.tma-search input:focus {
+  border-color: var(--tma-accent);
+}
+
+/* ==========================================================================
+   Empty / error states
+   ========================================================================== */
+
+.tma-empty,
+.tma-error-state {
+  text-align: center;
+  padding: var(--sp-6) var(--sp-4);
+  color: var(--tma-hint);
+}
+
+.tma-empty-icon {
+  font-size: 40px;
+  margin-bottom: var(--sp-2);
+  opacity: 0.7;
+}
+
+.tma-empty-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--tma-text);
+  margin-bottom: var(--sp-1);
+}
+
+.tma-empty-hint {
+  font-size: var(--fs-sm);
+}
+
+.tma-error-state {
+  color: var(--tma-err);
+}
+
+.tma-error-state .tma-btn {
+  margin-top: var(--sp-3);
+}
+
+/* ==========================================================================
+   Skeleton loading placeholders
+   ========================================================================== */
+
+.tma-skeleton {
+  margin: var(--sp-2) var(--sp-4);
+  height: 64px;
+  border-radius: var(--rad-md);
+  background: var(--tma-bg-secondary);
+  position: relative;
+  overflow: hidden;
+}
+
+.tma-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--tma-text) 6%, transparent),
+    transparent
+  );
+  animation: tma-shimmer 1.4s infinite;
+}
+
+@keyframes tma-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* HTMX request indicator convenience */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+/* ==========================================================================
+   Details panel (styled <details>)
+   ========================================================================== */
+
+.tma-details {
+  margin: var(--sp-2) var(--sp-4);
+  background: var(--tma-bg-secondary);
+  border-radius: var(--rad-md);
+  overflow: hidden;
+}
+
+.tma-details > summary {
+  cursor: pointer;
+  list-style: none;
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tma-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tma-details > summary::before {
+  content: "▸";
+  color: var(--tma-hint);
+  transition: transform 0.15s;
+}
+
+.tma-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tma-details-body {
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+
+/* ==========================================================================
+   Detail table (key/value)
+   ========================================================================== */
+
+.tma-detail-table {
+  width: 100%;
+  font-size: var(--fs-sm);
+  border-collapse: collapse;
+}
+
+.tma-detail-table td {
+  padding: var(--sp-1) 0;
+  vertical-align: top;
+}
+
+.tma-dt-label {
+  color: var(--tma-hint);
+  width: 88px;
+  font-size: var(--fs-sm);
+}
+
+/* ==========================================================================
+   Job run rows (compact grid)
+   ========================================================================== */
+
+.tma-run-header,
+.tma-run-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 56px 56px;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) 0;
+  align-items: center;
+}
+
+.tma-run-header {
+  color: var(--tma-hint);
+  border-bottom: 1px solid var(--tma-border);
+  font-size: var(--fs-xs);
+}
+
 .tma-run-status {
   display: inline-block;
   width: 20px;
   text-align: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: var(--rad-sm);
   padding: 1px 0;
 }
-.tma-run-success { color: #2e7d32; }
-.tma-run-running { color: var(--tg-theme-button-color, #3390ec); }
-.tma-run-failed, .tma-run-error { color: #c62828; }
-.tma-form-row {
-  margin-bottom: 8px;
+
+.tma-run-success {
+  color: var(--tma-ok);
 }
-.tma-form-label {
-  display: block;
-  font-size: 12px;
-  color: var(--tg-theme-hint-color, #999);
-  margin-bottom: 3px;
+.tma-run-running {
+  color: var(--tma-accent);
 }
-.tma-input-sm {
-  padding: 6px 10px;
-  font-size: 13px;
-  border-radius: 6px;
+.tma-run-failed,
+.tma-run-error {
+  color: var(--tma-err);
 }
-.tma-empty {
-  text-align: center;
-  padding: 40px 16px;
-  color: var(--tg-theme-hint-color, #999);
+
+/* ==========================================================================
+   Text / misc utilities
+   ========================================================================== */
+
+.tma-hint {
+  color: var(--tma-hint);
+  font-size: var(--fs-sm);
 }
+
+.tma-link {
+  color: var(--tma-link);
+  text-decoration: none;
+}
+
 .tma-meta {
-  font-size: 11px;
-  color: var(--tg-theme-hint-color, #999);
-  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--tma-hint);
+  margin-top: var(--sp-1);
 }
-/* Dark mode detection via Telegram variables */
-@media (prefers-color-scheme: dark) {
-  .tma-badge-enabled { background: #1b5e20; color: #a5d6a7; }
-  .tma-badge-disabled { background: #333; color: #999; }
-  .tma-badge-paused { background: #bf360c; color: #ffcc80; }
-  .tma-badge-error { background: #b71c1c; color: #ef9a9a; }
-  .tma-pill { background: #2a2a2a; color: #aaa; border-color: #444; }
-  .tma-filter-btn { background: #2a2a2a; color: #ccc; border-color: #444; }
-  .tma-run-header { border-bottom-color: #444; }
+
+.tma-border {
+  border: 1px solid var(--tma-border);
+}
+
+.tma-card-bg {
+  background: var(--tma-bg-secondary);
+}
+
+.tma-group {
+  margin-bottom: var(--sp-3);
+}
+
+/* ==========================================================================
+   Filter "more" disclosure — collapses secondary chip rows (e.g. type/topic)
+   under the primary/most-used chip row so the toolbar doesn't stack 3 rows.
+   ========================================================================== */
+
+.tma-filter-more {
+  margin: 0 0 var(--sp-1);
+}
+
+.tma-filter-more > summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 32px;
+  padding: var(--sp-1) var(--sp-3);
+  margin: 0 var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--tma-hint);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tma-filter-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tma-filter-more > summary::after {
+  content: "▾";
+  transition: transform 0.15s;
+}
+
+.tma-filter-more[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.tma-filter-more-body > .tma-chip-row {
+  padding-top: 0;
+}
+
+/* ==========================================================================
+   Toast notifications
+   ========================================================================== */
+
+.tma-toast {
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0) + 68px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - var(--sp-6));
+  color: #fff;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--rad-full);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  z-index: 1000;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  animation: tma-toast-in 0.2s ease, tma-toast-out 0.3s ease 2.2s forwards;
+}
+
+.tma-toast-success {
+  background: var(--tma-ok);
+}
+
+.tma-toast-error {
+  background: var(--tma-err);
+}
+
+@keyframes tma-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes tma-toast-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* ==========================================================================
+   Rendered markdown content
+   ========================================================================== */
+
+.tma-md {
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.tma-md h1,
+.tma-md h2,
+.tma-md h3 {
+  font-size: var(--fs-lg);
+  margin: var(--sp-3) 0 var(--sp-2);
+}
+
+.tma-md p {
+  margin: var(--sp-2) 0;
+}
+
+.tma-md ul,
+.tma-md ol {
+  margin: var(--sp-2) 0;
+  padding-left: var(--sp-5);
+}
+
+.tma-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--tma-surface);
+  padding: 1px 4px;
+  border-radius: var(--rad-sm);
+}
+
+.tma-md pre {
+  background: var(--tma-surface);
+  padding: var(--sp-3);
+  border-radius: var(--rad-sm);
+  overflow-x: auto;
+}
+
+.tma-md pre code {
+  background: none;
+  padding: 0;
+}
+
+/* Save-status feedback (agent memory editor) */
+.tma-save-ok {
+  color: var(--tma-ok);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.tma-save-error {
+  color: var(--tma-err);
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
