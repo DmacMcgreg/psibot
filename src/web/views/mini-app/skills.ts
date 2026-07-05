@@ -11,7 +11,7 @@ import {
   button,
   type BadgeKind,
 } from "./components.ts";
-import type { Skill, SkillSummary, SkillUsageRecord } from "../../../skills/types.ts";
+import type { Skill, SkillState, SkillSummary, SkillUsageRecord } from "../../../skills/types.ts";
 
 export interface SkillsPageData {
   skills: Array<{
@@ -34,16 +34,16 @@ export interface CuratorPageData {
   totalCount: number;
 }
 
-const STATE_BADGE: Record<string, BadgeKind> = {
+const STATE_BADGE: Record<SkillState, BadgeKind> = {
   active: "ok",
   stale: "warn",
-  inactive: "muted",
+  archived: "muted",
 };
 
-const STATE_ORDER: Record<string, number> = {
+const STATE_ORDER: Record<SkillState, number> = {
   active: 0,
   stale: 1,
-  inactive: 2,
+  archived: 2,
 };
 
 function curatorPanel(c: CuratorPageData): string {

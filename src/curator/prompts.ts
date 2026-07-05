@@ -118,7 +118,15 @@ export const CURATOR_REVIEW_PROMPT = (
   "belong as a subsection or support file under a class-level umbrella.\n" +
   "5. Iterate. After one consolidation round, scan the remaining set " +
   "and look for the NEXT umbrella opportunity. Don't stop after 3 " +
-  "merges.\n\n" +
+  "merges.\n" +
+  "6. Check body length. If a skill's SKILL.md body exceeds ~300 lines, " +
+  "split it: move detailed/reference material into " +
+  "`references/<topic>.md` file(s) via skill_manage action=write_file, " +
+  "and rewrite SKILL.md (action=patch) to keep only the trigger " +
+  "description plus the core procedure, linking out to the reference " +
+  "file(s) for the rest. This applies even to a skill you are NOT " +
+  "otherwise consolidating this pass — an oversized SKILL.md defeats " +
+  "the point of a scannable trigger, regardless of clustering.\n\n" +
   "Your toolset:\n" +
   "  - skills_list, skill_view        — read the current landscape\n" +
   "  - skill_manage action=patch      — add sections to the umbrella\n" +
