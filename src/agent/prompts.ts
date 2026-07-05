@@ -206,12 +206,6 @@ interface TopicConfig {
 }
 
 const TOPIC_CONFIGS: Record<number, TopicConfig> = {
-  5: {
-    name: "GLM",
-    knowledgeFiles: [],
-    persona: `You are in the **GLM** topic. Messages here are routed to z.ai GLM models (not Anthropic Claude).
-You are a helpful AI assistant powered by GLM. Be concise, helpful, and proactive.`,
-  },
   103: {
     name: "Trading",
     knowledgeFiles: ["trading/GLOSSARY.md", "trading/CHAT_FORMAT.md"],

@@ -7,6 +7,7 @@ import { createYoutubeTools } from "./youtube-tools.ts";
 import { loadAgentDefinitions } from "./subagents.ts";
 import { buildSystemPrompt, buildJobPrompt } from "./prompts.ts";
 import { getGlmMcpServers } from "./glm-mcp.ts";
+import { getHubMcpServer } from "./hub-mcp.ts";
 import { createTradingMcpServer } from "./trading-mcp.ts";
 import {
   insertChatMessage,
@@ -17,6 +18,7 @@ import { createLogger } from "../shared/logger.ts";
 import type { AgentRunOptions, AgentRunResult, StopReason, MessageSource } from "../shared/types.ts";
 import { pickReviewPrompt, type ReviewKind } from "./review-prompts.ts";
 import { withWriteOriginAsync, BACKGROUND_REVIEW } from "../skills/provenance.ts";
+import { recordVerdict } from "../skills/usage.ts";
 import { StreamingContextScrubber } from "../shared/context-scrubber.ts";
 
 const log = createLogger("agent");
@@ -61,6 +63,15 @@ export class AgentService {
   private static readonly MEMORY_REVIEW_INTERVAL = 10;
   private static readonly SKILL_REVIEW_TURN_THRESHOLD = 10;
 
+  /**
+   * Skills loaded via skill_view in each user-facing session, accumulated since
+   * that session's last background review. Drives the deterministic
+   * neutral-verdict backfill: any skill consulted in the reviewed session that
+   * the review LLM didn't explicitly verdict gets a programmatic 'neutral'.
+   * Cleared per session once its review has processed the views.
+   */
+  private viewedSkillsBySession = new Map<string, Set<string>>();
+
   /** User-facing sources eligible for the background review. Heartbeat / job runs are excluded. */
   private static readonly REVIEW_ELIGIBLE_SOURCES: ReadonlySet<MessageSource> = new Set<MessageSource>([
     "telegram",
@@ -99,6 +110,10 @@ export class AgentService {
    * Gives the daily log meaningful content beyond heartbeat stats.
    */
   private appendSessionToDailyLog(options: AgentRunOptions, result: AgentRunResult): void {
+    // Background review forks resume a user-facing session, so their `source`
+    // looks like telegram/web/mini-app. They must never write to the daily log
+    // (or Atlas ingests the review's own "Nothing to save." chatter).
+    if (options._isBackgroundReview) return;
     if (!AgentService.DAILY_LOG_SOURCES.has(options.source)) return;
 
     try {
@@ -115,7 +130,16 @@ export class AgentService {
         .slice(0, 120);
 
       const hhmm = new Date().toISOString().slice(11, 16);
-      const costStr = result.costUsd > 0 ? ` ($${result.costUsd.toFixed(2)})` : "";
+      // GLM is a flat-rate plan and its SDK cost is zeroed (fictitious Anthropic
+      // pricing on z.ai tokens), so annotate rather than print a $0.00 that
+      // reads like a free Claude run.
+      const backend = options.backend ?? (getConfig().DEFAULT_BACKEND as "claude" | "glm");
+      const costStr =
+        backend === "glm"
+          ? " (glm flat-rate)"
+          : result.costUsd > 0
+            ? ` ($${result.costUsd.toFixed(2)})`
+            : "";
       const turnsStr = result.numTurns > 1 ? `, ${result.numTurns} turns` : "";
 
       const line = `- ${hhmm} session (${options.source}${turnsStr}${costStr}): "${userSnippet}${userSnippet.length >= 100 ? "..." : ""}" → ${resultSnippet}${resultSnippet.length >= 120 ? "..." : ""}`;
@@ -145,18 +169,43 @@ export class AgentService {
     };
   }
 
+  /** Top Claude escalation model — the last-resort rung and the explicit
+   *  "think hard" override target. Not a default (quota decision stays GLM). */
+  private static readonly OPUS_ESCALATION_MODEL = "claude-opus-4-8";
+
+  /** Explicit user escalation marker: route the whole turn straight to Opus. */
+  private static readonly OPUS_ESCALATION_MARKER = /\b(think hard|use opus|deep think)\b/i;
+
   /**
    * Build the fallback tier ladder for a run.
    *
    * Ladder: primary backend first (model 1 + retry, model 2 + retry), then the
-   * other backend (model 1 + retry, model 2 + retry). 8 tiers worst case.
+   * other backend (model 1 + retry, model 2 + retry), and finally a single
+   * claude-opus-4-8 escalation rung reached only when every cheaper tier failed.
    *
-   * Only advances on `first_response_timeout` — every other stop reason is final.
+   * Explicit escalation: if the user prompt carries an Opus marker
+   * ("think hard" / "use opus" / "deep think"), skip the ladder and run the
+   * turn directly on the Claude backend at claude-opus-4-8 (with a Sonnet
+   * safety net if Opus itself never responds).
+   *
+   * Only advances on `first_response_timeout` / `error` — every other stop
+   * reason is final.
    */
   private buildFallbackTiers(
     options: AgentRunOptions,
   ): Array<{ backend: "claude" | "glm"; model: string; attempt: number }> {
     const config = getConfig();
+
+    // Explicit user escalation takes precedence over the default GLM routing.
+    if (options.prompt && AgentService.OPUS_ESCALATION_MARKER.test(options.prompt)) {
+      return [
+        { backend: "claude", model: AgentService.OPUS_ESCALATION_MODEL, attempt: 1 },
+        { backend: "claude", model: AgentService.OPUS_ESCALATION_MODEL, attempt: 2 },
+        // Safety net: fall to Sonnet only if Opus never produced a first response.
+        { backend: "claude", model: "sonnet", attempt: 1 },
+      ];
+    }
+
     const primaryBackend = options.backend ?? (config.DEFAULT_BACKEND as "claude" | "glm");
     const primaryModel = options.model ?? config.DEFAULT_MODEL;
 
@@ -167,13 +216,13 @@ export class AgentService {
     const isHaiku = /haiku/i.test(primaryModel) || primaryModel === config.GLM_HAIKU_MODEL;
 
     // For the primary backend, preserve exactly what the caller asked for as tier 1,
-    // then step down one rung for tier 2.
+    // then step down one sensible rung for tier 2 (opus→sonnet→haiku).
     const primaryTopModel = primaryModel;
     const primaryFallbackModel = isOpus ? "sonnet" : isSonnet ? "haiku" : isHaiku ? "haiku" : primaryModel;
 
-    // For the secondary backend, start at the same rung the caller asked for.
-    const secondaryTopModel = isOpus ? "opus" : isSonnet ? "sonnet" : isHaiku ? "haiku" : primaryModel;
-    const secondaryFallbackModel = isOpus ? "sonnet" : isSonnet ? "haiku" : isHaiku ? "haiku" : primaryModel;
+    // Secondary backend degrades sensibly: sonnet before haiku, never the reverse.
+    const secondaryTopModel = isOpus ? "opus" : isSonnet ? "sonnet" : isHaiku ? "haiku" : "sonnet";
+    const secondaryFallbackModel = isOpus ? "sonnet" : "haiku";
 
     const secondaryBackend: "claude" | "glm" = primaryBackend === "claude" ? "glm" : "claude";
 
@@ -184,8 +233,16 @@ export class AgentService {
       { backend: primaryBackend, model: primaryFallbackModel, attempt: 2 },
     ];
 
-    // When backendOnly is set, don't fall back to the other provider
-    if (options.backendOnly) return primaryTiers;
+    // Final last-resort rung: escalate to Opus on the Claude backend once every
+    // cheaper tier has failed. Skipped only when backendOnly pins us to a
+    // non-Claude backend (so the "don't cross providers" contract holds).
+    const opusRung = { backend: "claude" as const, model: AgentService.OPUS_ESCALATION_MODEL, attempt: 1 };
+
+    // When backendOnly is set, don't fall back to the other provider. The Opus
+    // rung is still valid if the primary backend is already Claude.
+    if (options.backendOnly) {
+      return primaryBackend === "claude" ? [...primaryTiers, opusRung] : primaryTiers;
+    }
 
     return [
       ...primaryTiers,
@@ -193,6 +250,7 @@ export class AgentService {
       { backend: secondaryBackend, model: secondaryTopModel, attempt: 2 },
       { backend: secondaryBackend, model: secondaryFallbackModel, attempt: 1 },
       { backend: secondaryBackend, model: secondaryFallbackModel, attempt: 2 },
+      opusRung,
     ];
   }
 
@@ -344,6 +402,9 @@ export class AgentService {
     const prompt = pickReviewPrompt(args.kind);
     const reviewSource: MessageSource = args.source; // resume same session source
     const captured: string[] = [];
+    // Skills the review explicitly recorded a verdict for this run — used to
+    // skip the deterministic neutral backfill for those.
+    const verdictedSkills = new Set<string>();
 
     await withWriteOriginAsync(BACKGROUND_REVIEW, async () => {
       const result = await this.runOnce({
@@ -357,7 +418,7 @@ export class AgentService {
         model: getConfig().DEFAULT_BACKEND === "glm" ? getConfig().GLM_SONNET_MODEL : "claude-sonnet-4-5-20250929",
         backend: getConfig().DEFAULT_BACKEND as "claude" | "glm",
         _isBackgroundReview: true,
-        onToolUse: (toolName, _input, _subagent) => {
+        onToolUse: (toolName, input, _subagent) => {
           // Capture skill/memory mutations for the surfaced summary.
           if (
             toolName.includes("skill_manage") ||
@@ -366,14 +427,42 @@ export class AgentService {
           ) {
             captured.push(toolName);
           }
+          // Note which skills the LLM explicitly verdicted this run so the
+          // deterministic backfill doesn't double-record them.
+          if (toolName.includes("skill_manage") && input?.action === "verdict") {
+            const verdictName = input.name;
+            if (typeof verdictName === "string" && verdictName) verdictedSkills.add(verdictName);
+          }
         },
       });
+
+      // Deterministic verdict backfill: outcome verdicts are a load-bearing
+      // curator quality signal, so we don't rely on LLM compliance. For skill /
+      // combined reviews, every skill consulted in the reviewed session that
+      // the review didn't explicitly verdict gets a programmatic 'neutral'.
+      let neutralBackfill = 0;
+      if (args.kind !== "memory") {
+        const viewed = this.viewedSkillsBySession.get(args.sessionId);
+        if (viewed && viewed.size > 0) {
+          for (const name of viewed) {
+            if (!verdictedSkills.has(name)) {
+              recordVerdict(name, "neutral");
+              neutralBackfill += 1;
+            }
+          }
+          // Views since the last review have now been accounted for.
+          this.viewedSkillsBySession.delete(args.sessionId);
+        }
+      }
+
       log.info("Background review completed", {
         sessionId: args.sessionId,
         kind: args.kind,
         stopReason: result.stopReason,
         costUsd: result.costUsd,
         toolMutations: captured.length,
+        verdicts: verdictedSkills.size,
+        neutralBackfill,
       });
 
       // Surface the result to the user only when something actually changed.
@@ -442,6 +531,18 @@ export class AgentService {
     const model = options.model ?? config.DEFAULT_MODEL;
     const backend = options.backend ?? (config.DEFAULT_BACKEND as "claude" | "glm");
 
+    // Background review forks resume a user-facing session, so persist their
+    // own turns under a distinct 'review' source. This keeps session_search,
+    // the mini-app chat view, and Atlas ingestion able to exclude the review's
+    // prompt + "Nothing to save." chatter while still recording it. The session
+    // record itself keeps its real source (upsertSession below).
+    const persistSource: MessageSource = options._isBackgroundReview ? "review" : options.source;
+
+    // GLM is a flat-rate plan; the SDK prices z.ai token counts at Anthropic
+    // rates, so its total_cost_usd is fictitious. Zero the recorded USD under
+    // the GLM backend (token counts are kept) so no fake dollars surface.
+    const isGlmBackend = backend === "glm";
+
     // Build env overrides for GLM backend
     const envOverride = backend === "glm" && config.GLM_AUTH_TOKEN
       ? {
@@ -459,6 +560,10 @@ export class AgentService {
     if (backend === "glm") {
       Object.assign(mcpServers, getGlmMcpServers());
     }
+    // Wire the local-mcp-hub as an external stdio MCP server (hub_search /
+    // hub_call / vault_* / golden paths / mac_status). Fail-soft: returns {}
+    // when disabled or the binary is missing.
+    Object.assign(mcpServers, getHubMcpServer());
 
     // Build agents record fresh from DB each run so dashboard edits and per-agent
     // memory files take effect immediately.
@@ -563,7 +668,7 @@ export class AgentService {
           session_id: sessionId,
           role: "user",
           content: options.prompt,
-          source: options.source,
+          source: persistSource,
           source_id: options.sourceId,
         });
       }
@@ -594,7 +699,7 @@ export class AgentService {
                   session_id: sessionId,
                   role: "user",
                   content: options.prompt,
-                  source: options.source,
+                  source: persistSource,
                   source_id: options.sourceId,
                 });
               }
@@ -625,6 +730,19 @@ export class AgentService {
                   const input = block.input as Record<string, unknown> | undefined;
                   toolCache.set(block.id, { name: block.name, input, emitted: true });
                   if (/telegram_send_/.test(block.name)) deliveredViaTool = true;
+                  // Track skills consulted in a user-facing session so the
+                  // background review can deterministically verdict them.
+                  if (!options._isBackgroundReview && /skill_view/.test(block.name) && sessionId) {
+                    const viewedName = input?.name;
+                    if (typeof viewedName === "string" && viewedName) {
+                      let set = this.viewedSkillsBySession.get(sessionId);
+                      if (!set) {
+                        set = new Set<string>();
+                        this.viewedSkillsBySession.set(sessionId, set);
+                      }
+                      set.add(viewedName);
+                    }
+                  }
                   options.onToolUse?.(block.name, input, false);
                   if (sessionId) {
                     try {
@@ -669,7 +787,10 @@ export class AgentService {
 
           case "result": {
             resultText = "result" in message ? String(message.result) : "";
-            totalCost = message.total_cost_usd;
+            // Under GLM the SDK's total_cost_usd is Anthropic-priced on z.ai
+            // tokens — fictitious. Record 0 (flat-rate plan); token counts below
+            // are the real usage signal.
+            totalCost = isGlmBackend ? 0 : message.total_cost_usd;
             durationMs = message.duration_ms;
             numTurns = message.num_turns;
 
@@ -750,7 +871,7 @@ export class AgentService {
         session_id: sessionId,
         role: "assistant",
         content: resultText,
-        source: options.source,
+        source: persistSource,
         source_id: options.sourceId,
         cost_usd: totalCost,
         duration_ms: durationMs,
@@ -798,7 +919,7 @@ export class AgentService {
           session_id: sessionId,
           role: "assistant",
           content: resultText,
-          source: options.source,
+          source: persistSource,
           source_id: options.sourceId,
           cost_usd: totalCost,
           duration_ms: durationMs,
@@ -842,7 +963,7 @@ export class AgentService {
           session_id: sessionId,
           role: "assistant",
           content: fallback,
-          source: options.source,
+          source: persistSource,
           source_id: options.sourceId,
           cost_usd: totalCost,
           duration_ms: Date.now() - (durationMs || Date.now()),

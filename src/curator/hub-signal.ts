@@ -18,6 +18,21 @@
  * Matching is conservative: a span counts for a skill when its toolName or
  * spanName contains the skill's exported directory name. Only redacted-tier
  * metadata columns are read; raw args/results are never touched.
+ *
+ * SCOPE / EXPECTED-ZERO CAVEAT (important): the hub telemetry `spans` table
+ * only records hub-BROKERED tool executions — the tool names the hub itself
+ * mediates (toolName='delegate', spanName='execute_tool delegate', and other
+ * hub_call / hub_route / downstream invocations). It does NOT record the
+ * directory names of skills consumed directly by a harness (a Claude Code
+ * session reading ~/.claude/skills/<name>/SKILL.md never touches the hub, so
+ * no span carries that name). Consequently the `toolName/spanName LIKE
+ * %skillDir%` match below only fires for skills invoked THROUGH the hub — i.e.
+ * once a PsiBot skill is promoted to a routable golden path and used via
+ * hub_route/hub_call. Until that happens, zero matches is the correct,
+ * expected result, not a bug. When golden-path promotion lands, revisit the
+ * match to correlate on the golden-path id / hub_route spans (the
+ * paramNames / redactedIntentText / redactedCandidateTools / projectId columns
+ * exist for exactly this) rather than on the skill's directory name.
  */
 
 import { existsSync } from "node:fs";

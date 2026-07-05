@@ -166,6 +166,15 @@ const envSchema = z.object({
   // Read-only cross-harness usage signal (local-mcp-hub telemetry sink).
   // Empty string disables. Never written, drift-checked, fail-soft.
   HUB_TELEMETRY_DB: z.string().default("~/.config/hub/telemetry.db"),
+  // local-mcp-hub tool integration — wires the hub-edge binary as an external
+  // stdio MCP server so the agent gets hub_search/hub_describe/hub_call,
+  // vault_*, golden paths and mac_status. Off disables the wiring entirely;
+  // if the binary is missing the wiring is silently skipped (fail-soft).
+  HUB_MCP_ENABLED: z
+    .string()
+    .default("true")
+    .transform((s) => s === "true"),
+  HUB_EDGE_BIN: z.string().default("~/.local/bin/hub-edge"),
   // --- Proactive YouTube Discovery ---
   // A self-contained runner that fans out from watch history to find + fully
   // process new videos and surface an interesting news/info digest. See
