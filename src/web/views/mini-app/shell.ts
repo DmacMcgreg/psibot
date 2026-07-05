@@ -6,7 +6,13 @@
  * Primary pages carry `data-tma-root` on .tma-main so tma.js hides the
  * Telegram BackButton; secondary/detail pages omit it (pass isPrimary=false)
  * so the BackButton is shown.
+ *
+ * The Review tab carries a small backlog-count badge, queried fresh on every
+ * page render (cheap COUNT query — see getTriagedCount in views/review.ts).
+ * A query failure just hides the badge rather than breaking the whole shell.
  */
+
+import { getTriagedCount } from "./review.ts";
 
 interface Tab {
   id: string;
@@ -49,11 +55,26 @@ const MORE_PAGES = new Set([
   "skills",
 ]);
 
+/** Triaged backlog count for the Review tab badge. Never throws — a DB hiccup
+ *  just hides the badge rather than breaking every page's shell render. */
+function safeTriagedCount(): number {
+  try {
+    return getTriagedCount();
+  } catch {
+    return 0;
+  }
+}
+
 function tabBar(activePage: string): string {
+  const reviewCount = safeTriagedCount();
   return TABS.map((t) => {
     const active =
       t.id === activePage || (t.id === "more" && MORE_PAGES.has(activePage));
-    return `<a href="${t.href}" class="tma-tab ${active ? "tma-tab-active" : ""}">${t.icon}<span>${t.label}</span></a>`;
+    const tabBadge =
+      t.id === "review" && reviewCount > 0
+        ? `<span class="tma-tab-badge">${reviewCount > 99 ? "99+" : reviewCount}</span>`
+        : "";
+    return `<a href="${t.href}" class="tma-tab ${active ? "tma-tab-active" : ""}"><span class="tma-tab-icon-wrap">${t.icon}${tabBadge}</span><span>${t.label}</span></a>`;
   }).join("\n    ");
 }
 

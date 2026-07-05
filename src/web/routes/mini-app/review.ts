@@ -10,6 +10,7 @@
 
 import { Hono } from "hono";
 import { getDb } from "../../../db/index.ts";
+import { getPendingItemById, updatePendingItem } from "../../../db/queries.ts";
 import type { PendingItem } from "../../../shared/types.ts";
 import { applyItemAction, isItemAction } from "../../../triage/actions.ts";
 import {
@@ -18,10 +19,18 @@ import {
   tmaReviewListError,
   reviewListItems,
   reviewCount,
+  reviewActionsRow,
+  reviewReasonChips,
+  reviewResearchChips,
+  getTriagedCount,
   REVIEW_PAGE_SIZE,
 } from "../../views/mini-app/review.ts";
 import { escapeHtml } from "../../views/mini-app/components.ts";
 import { type MiniAppEnv, requireIntParam, log } from "./shared.ts";
+
+/** Reason slugs accepted on the Archive/Drop reason-chip POST — mirrors
+ *  Telegram's rxr/rdr keyboard (src/telegram/keyboards.ts), read-only here. */
+const REASON_SLUGS = new Set(["known", "outdated", "irrelevant", "low_quality", "none"]);
 
 /**
  * Fetch a page of triaged items ordered priority asc (nulls last), then
@@ -39,14 +48,6 @@ function getTriagedPage(offset: number, limit: number): PendingItem[] {
        LIMIT ? OFFSET ?`
     )
     .all(limit, offset);
-}
-
-/** Count of items currently in the queue. */
-function getTriagedCount(): number {
-  const row = getDb()
-    .prepare<{ cnt: number }, []>(`SELECT COUNT(*) AS cnt FROM pending_items WHERE status = 'triaged'`)
-    .get();
-  return row?.cnt ?? 0;
 }
 
 export function registerReviewRoutes(app: Hono<MiniAppEnv>): void {
@@ -77,16 +78,64 @@ export function registerReviewRoutes(app: Hono<MiniAppEnv>): void {
     }
   });
 
+  // Chip-picker fragments — swapped into #review-actions-:id in place of the
+  // normal action row. GET (idempotent) so htmx's hx-get semantics apply.
+
+  // The normal 4-button action row — also used as the "Cancel" target to back
+  // out of a chip picker without acting.
+  app.get("/review/:id/actions", (c) => {
+    const id = requireIntParam(c, "id");
+    if (id === null) return c.text("Invalid item id", 400);
+    const item = getPendingItemById(id);
+    if (!item) return c.text("Item not found", 404);
+    return c.html(reviewActionsRow(id, item.priority));
+  });
+
+  // Quick Scan / Deep Dive chips (Research), mirroring Telegram's rr keyboard.
+  app.get("/review/:id/research-chips", (c) => {
+    const id = requireIntParam(c, "id");
+    if (id === null) return c.text("Invalid item id", 400);
+    return c.html(reviewResearchChips(id));
+  });
+
+  // Reason chips (Archive/Drop on priority<=3), mirroring rx/rd's keyboard.
+  app.get("/review/:id/reason-chips/:action", (c) => {
+    const id = requireIntParam(c, "id");
+    if (id === null) return c.text("Invalid item id", 400);
+    const action = c.req.param("action") ?? "";
+    if (action !== "archive" && action !== "drop") return c.text("Invalid action", 400);
+    return c.html(reviewReasonChips(id, action));
+  });
+
   // Apply a terminal action to one item. Empty 200 body swaps the card out;
   // an hx-swap-oob count pill updates the header.
+  //
+  // Query params (both optional, only meaningful for specific actions):
+  //   reason=<slug>  — archive/drop only; folded into the logged user_action
+  //                    as "<action>:<reason>", matching Telegram's rxr/rdr.
+  //   depth=quick    — research only; downgrades the queued auto_decision
+  //                    from deep_research_queued to quick_research_queued so
+  //                    the heartbeat's executeQueuedResearch() runs the
+  //                    cheaper preliminaryResearch() pass instead of deepResearch().
   app.post("/api/review/:id/:action", (c) => {
     const id = requireIntParam(c, "id");
     if (id === null) return c.text("Invalid item id", 400);
     const action = c.req.param("action") ?? "";
     if (!isItemAction(action)) return c.text("Invalid action", 400);
+    const params = new URL(c.req.url).searchParams;
+    const reasonRaw = params.get("reason");
+    const reason =
+      (action === "archive" || action === "drop") && reasonRaw && REASON_SLUGS.has(reasonRaw)
+        ? reasonRaw
+        : undefined;
     try {
-      const result = applyItemAction(id, action);
+      const result = applyItemAction(id, action, reason);
       if (!result.ok) return c.text(result.message, 404);
+      if (action === "research" && params.get("depth") === "quick") {
+        // applyItemAction always sets auto_decision: "deep_research_queued";
+        // downgrade it in place for the Quick Scan path.
+        updatePendingItem(id, { auto_decision: "quick_research_queued" });
+      }
       // Empty body → the card (hx-target) is removed; oob pill updates the count.
       return c.html(reviewCount(getTriagedCount()));
     } catch (err) {

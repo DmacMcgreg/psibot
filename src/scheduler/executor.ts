@@ -9,7 +9,7 @@ import {
   getAgentBySlug,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
-import { splitMessage, markdownToTelegramV2 } from "../telegram/format.ts";
+import { splitMessage, markdownToTelegramV2, tmaLink } from "../telegram/format.ts";
 import { briefKeyboard } from "../telegram/keyboards.ts";
 import { PLIST_LABEL } from "../cli/paths.ts";
 import { decideNotify } from "../agent/notify-policy.ts";
@@ -18,7 +18,8 @@ import { tryPublishFromText } from "../agent/agent-run-publisher.ts";
 import { readSkill } from "../skills/index.ts";
 import { bumpUse, markExposed } from "../skills/usage.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
-import type { Bot, InlineKeyboard } from "grammy";
+import { InlineKeyboard } from "grammy";
+import type { Bot } from "grammy";
 
 const log = createLogger("scheduler:executor");
 
@@ -54,6 +55,19 @@ function buildSkillPreamble(job: Job): string {
 
 /** Cooldown per job to prevent diagnostic loops (15 min) */
 const DIAG_COOLDOWN_MS = 15 * 60 * 1000;
+
+/**
+ * Append an "Open in app" URL button deep-linking to `/tma/jobs/{jobId}` onto
+ * an existing keyboard (or create one if none). No-op (returns the keyboard
+ * unchanged) when TELEGRAM_WEBHOOK_HOST isn't configured, so notifications
+ * degrade gracefully with no dangling button. The link rides on the button
+ * row, never the message text, so it never grows chunk count / message size.
+ */
+function withAppLink(keyboard: InlineKeyboard | undefined, jobId: number): InlineKeyboard | undefined {
+  const link = tmaLink(`jobs/${jobId}`);
+  if (!link) return keyboard;
+  return new InlineKeyboard(keyboard?.inline_keyboard ?? []).row().url("Open in app", link);
+}
 
 /** Build a ChatContext from a job's notify routing so the agent's inline
  *  telegram_send_* tools default to the job's configured topic instead of DM. */
@@ -221,7 +235,7 @@ export class JobExecutor {
           `Job "${job.name}" completed\n\n${rendered}`,
           job.notify_chat_id ?? undefined,
           job.notify_topic_id ?? undefined,
-          keyboard,
+          withAppLink(keyboard, jobId),
         );
       } else {
         log.info("Job notification suppressed", { jobId, name: job.name, policy: decision.policy, reason: decision.reason });
@@ -255,6 +269,7 @@ export class JobExecutor {
         `Job "${job.name}" failed: ${message}`,
         job.notify_chat_id ?? undefined,
         job.notify_topic_id ?? undefined,
+        withAppLink(undefined, jobId),
       );
 
       // Spawn diagnostic agent (with cooldown to prevent loops)
@@ -357,6 +372,7 @@ export class JobExecutor {
             `Pipeline "${job.name}" completed\n\n${rendered}`,
             job.notify_chat_id ?? undefined,
             job.notify_topic_id ?? undefined,
+            withAppLink(undefined, jobId),
           );
         } else {
           log.info("Pipeline notification suppressed", { jobId, policy: decision.policy, reason: decision.reason });

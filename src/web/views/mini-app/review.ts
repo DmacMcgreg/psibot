@@ -21,16 +21,32 @@ import {
   escapeHtml,
   escapeAttr,
 } from "./components.ts";
+import { getDb } from "../../../db/index.ts";
 import type { PendingItem } from "../../../shared/types.ts";
 
 /** How many cards render per page / "Load more" batch. */
 export const REVIEW_PAGE_SIZE = 20;
 
-const ACTIONS: { action: string; label: string; kind: "primary" | "secondary" | "danger" }[] = [
-  { action: "research", label: "Research", kind: "primary" },
-  { action: "watch", label: "Watch", kind: "secondary" },
-  { action: "archive", label: "Archive", kind: "secondary" },
-  { action: "drop", label: "Drop", kind: "danger" },
+/**
+ * Count of items currently in the `triaged` review queue. Lives here (rather
+ * than the route file) so the shell's bottom-nav tab badge can reuse the same
+ * query on every page render — see shell.ts's `tabBar()`.
+ */
+export function getTriagedCount(): number {
+  const row = getDb()
+    .prepare<{ cnt: number }, []>(`SELECT COUNT(*) AS cnt FROM pending_items WHERE status = 'triaged'`)
+    .get();
+  return row?.cnt ?? 0;
+}
+
+/** Reason slugs captured for priority<=3 Archive/Drop, matching Telegram's
+ *  rxr/rdr reason keyboard (src/telegram/keyboards.ts) exactly. */
+const REASON_CHIPS: { slug: string; label: string }[] = [
+  { slug: "known", label: "Already knew" },
+  { slug: "outdated", label: "Outdated" },
+  { slug: "irrelevant", label: "Not relevant" },
+  { slug: "low_quality", label: "Low quality" },
+  { slug: "none", label: "Skip reason" },
 ];
 
 /** Priority → badge. P1–P2 accent (hot), P3 warn, P4+ / null muted. */
@@ -47,10 +63,98 @@ export function reviewCount(remaining: number): string {
   return `<span id="review-count" hx-swap-oob="true">${badge(label, remaining > 0 ? "accent" : "muted")}</span>`;
 }
 
+/** One action button that swaps the whole card out on success (terminal verb, no chip step). */
+function directActionButton(id: number, action: "watch" | "archive" | "drop", label: string, kind: "primary" | "secondary" | "danger"): string {
+  return `<button type="button" class="tma-btn tma-btn-${kind} review-action"
+      hx-post="/tma/api/review/${escapeAttr(id)}/${action}"
+      hx-target="#review-card-${escapeAttr(id)}"
+      hx-swap="outerHTML swap:200ms"
+      hx-on::after-request="if(event.detail.successful){showToast('${escapeAttr(label)}');}"
+    >${escapeHtml(label)}</button>`;
+}
+
+/** One action button that swaps in a chip fragment (reason / depth picker) instead of posting directly. */
+function chipTriggerButton(id: number, fetchUrl: string, label: string, kind: "primary" | "secondary" | "danger"): string {
+  return `<button type="button" class="tma-btn tma-btn-${kind} review-action"
+      hx-get="${escapeAttr(fetchUrl)}"
+      hx-target="#review-actions-${escapeAttr(id)}"
+      hx-swap="outerHTML"
+    >${escapeHtml(label)}</button>`;
+}
+
 /**
- * A single triage card. The four action buttons hx-post to the review API;
- * on success the whole card is swapped out (outerHTML, 200ms) so it animates
- * away, and a toast + haptic fire via tma.js.
+ * The card's action row. Research always swaps in a Quick/Deep chip pair
+ * (mirroring Telegram's rr keyboard); Archive/Drop do the same for
+ * priority<=3 items (mirroring rx/rd's reason keyboard) and post directly
+ * otherwise. Exported so the chip-fragment "Cancel" button can re-fetch it.
+ */
+export function reviewActionsRow(id: number, priority: number | null): string {
+  const highPriority = priority !== null && priority <= 3;
+
+  const research = chipTriggerButton(id, `/tma/review/${id}/research-chips`, "Research", "primary");
+  const watch = directActionButton(id, "watch", "Watch", "secondary");
+  const archive = highPriority
+    ? chipTriggerButton(id, `/tma/review/${id}/reason-chips/archive`, "Archive", "secondary")
+    : directActionButton(id, "archive", "Archive", "secondary");
+  const drop = highPriority
+    ? chipTriggerButton(id, `/tma/review/${id}/reason-chips/drop`, "Drop", "danger")
+    : directActionButton(id, "drop", "Drop", "danger");
+
+  return `<div id="review-actions-${escapeAttr(id)}" class="review-card-actions">${research}${watch}${archive}${drop}</div>`;
+}
+
+/** A "back out" chip that re-fetches the normal action row, replacing the chip picker. */
+function cancelChip(id: number): string {
+  return `<button type="button" class="tma-btn tma-btn-secondary review-chip-cancel"
+      hx-get="/tma/review/${escapeAttr(id)}/actions"
+      hx-target="#review-actions-${escapeAttr(id)}"
+      hx-swap="outerHTML"
+    >Cancel</button>`;
+}
+
+/**
+ * Reason-chip fragment shown in place of the action row after tapping
+ * Archive/Drop on a priority<=3 item. Posts action+reason, matching
+ * Telegram's rxr/rdr payload shape (`"<action>:<reason>"` folded into the
+ * feedback log by applyItemAction).
+ */
+export function reviewReasonChips(id: number, action: "archive" | "drop"): string {
+  const label = action === "archive" ? "Archived" : "Dropped";
+  const chips = REASON_CHIPS.map(
+    (r) => `<button type="button" class="tma-btn tma-btn-secondary review-chip"
+      hx-post="/tma/api/review/${escapeAttr(id)}/${action}?reason=${escapeAttr(r.slug)}"
+      hx-target="#review-card-${escapeAttr(id)}"
+      hx-swap="outerHTML swap:200ms"
+      hx-on::after-request="if(event.detail.successful){showToast('${escapeAttr(label)}');}"
+    >${escapeHtml(r.label)}</button>`,
+  ).join("");
+  return `<div id="review-actions-${escapeAttr(id)}" class="review-card-actions review-chip-row">${chips}${cancelChip(id)}</div>`;
+}
+
+/**
+ * Quick Scan / Deep Dive chip fragment shown after tapping Research, mirroring
+ * Telegram's rr -> rqs/rds keyboard.
+ */
+export function reviewResearchChips(id: number): string {
+  const quick = `<button type="button" class="tma-btn tma-btn-secondary review-chip"
+      hx-post="/tma/api/review/${escapeAttr(id)}/research?depth=quick"
+      hx-target="#review-card-${escapeAttr(id)}"
+      hx-swap="outerHTML swap:200ms"
+      hx-on::after-request="if(event.detail.successful){showToast('Quick scan queued');}"
+    >Quick Scan</button>`;
+  const deep = `<button type="button" class="tma-btn tma-btn-secondary review-chip"
+      hx-post="/tma/api/review/${escapeAttr(id)}/research?depth=deep"
+      hx-target="#review-card-${escapeAttr(id)}"
+      hx-swap="outerHTML swap:200ms"
+      hx-on::after-request="if(event.detail.successful){showToast('Deep research queued');}"
+    >Deep Dive</button>`;
+  return `<div id="review-actions-${escapeAttr(id)}" class="review-card-actions review-chip-row">${quick}${deep}${cancelChip(id)}</div>`;
+}
+
+/**
+ * A single triage card. The action row hx-posts/hx-gets to the review API;
+ * on a terminal action the whole card is swapped out (outerHTML, 200ms) so it
+ * animates away, and a toast + haptic fire via tma.js.
  */
 export function reviewCard(item: PendingItem): string {
   const title = item.title?.trim() || item.url || "(untitled)";
@@ -69,16 +173,6 @@ export function reviewCard(item: PendingItem): string {
     ? `<div class="review-card-body">${escapeHtml(body)}</div>`
     : "";
 
-  const buttons = ACTIONS.map((a) => {
-    const toast = a.label; // shown in the success toast
-    return `<button type="button" class="tma-btn tma-btn-${a.kind} review-action"
-      hx-post="/tma/api/review/${escapeAttr(item.id)}/${escapeAttr(a.action)}"
-      hx-target="#review-card-${escapeAttr(item.id)}"
-      hx-swap="outerHTML swap:200ms"
-      hx-on::after-request="if(event.detail.successful){showToast('${escapeAttr(toast)}');}"
-    >${escapeHtml(a.label)}</button>`;
-  }).join("");
-
   return `<article id="review-card-${escapeAttr(item.id)}" class="review-card">
     <div class="review-card-head">
       ${titleHtml}
@@ -86,7 +180,7 @@ export function reviewCard(item: PendingItem): string {
     </div>
     <div class="review-card-meta">${meta}</div>
     ${bodyHtml}
-    <div class="review-card-actions">${buttons}</div>
+    ${reviewActionsRow(item.id, item.priority)}
   </article>`;
 }
 
@@ -148,6 +242,11 @@ const REVIEW_STYLE = `<style>
     margin-top: var(--sp-1);
   }
   .review-card-actions .review-action { min-height: var(--touch); width: 100%; }
+  /* Reason / depth chip pickers reuse the same 2-col grid; the chip and
+     Cancel buttons stay full-width touch targets like the primary actions. */
+  .review-chip-row .review-chip,
+  .review-chip-row .review-chip-cancel { min-height: var(--touch); width: 100%; }
+  .review-chip-row .review-chip-cancel { grid-column: 1 / -1; opacity: 0.7; }
   .review-more { display: flex; justify-content: center; padding: var(--sp-3) 0; }
   .review-more .tma-btn { min-height: var(--touch); }
 </style>`;
