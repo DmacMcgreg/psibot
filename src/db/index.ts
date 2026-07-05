@@ -80,7 +80,7 @@ function expandSourceCheckConstraints(db: Database): void {
         session_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
         content TEXT NOT NULL,
-        source TEXT NOT NULL CHECK(source IN ('web', 'telegram', 'job', 'mini-app', 'heartbeat')),
+        source TEXT NOT NULL CHECK(source IN ('web', 'telegram', 'job', 'mini-app', 'heartbeat', 'review')),
         source_id TEXT,
         cost_usd REAL,
         duration_ms INTEGER,
@@ -90,6 +90,8 @@ function expandSourceCheckConstraints(db: Database): void {
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)",
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_source ON chat_messages(source, source_id)",
       ],
+      // Skip once the CHECK already admits 'review' (latest expansion).
+      guard: "'review'",
     },
     {
       table: "agent_sessions",
@@ -110,16 +112,17 @@ function expandSourceCheckConstraints(db: Database): void {
         "CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_agent_sessions_source ON agent_sessions(source, source_id)",
       ],
+      guard: "mini-app",
     },
   ];
 
-  for (const { table, createSql, indexes } of rebuilds) {
+  for (const { table, createSql, indexes, guard } of rebuilds) {
     const row = db
       .prepare<{ sql: string }, [string]>(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
       )
       .get(table);
-    if (!row || row.sql.includes("mini-app")) continue;
+    if (!row || row.sql.includes(guard)) continue;
 
     log.info(`Rebuilding ${table} to expand source CHECK constraint`);
     db.exec(`DROP TABLE IF EXISTS ${table}_new`);

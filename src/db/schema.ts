@@ -4,7 +4,7 @@ export const MIGRATIONS = [
     session_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
     content TEXT NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('web', 'telegram', 'job', 'mini-app', 'heartbeat')),
+    source TEXT NOT NULL CHECK(source IN ('web', 'telegram', 'job', 'mini-app', 'heartbeat', 'review')),
     source_id TEXT,
     cost_usd REAL,
     duration_ms INTEGER,
