@@ -21,12 +21,12 @@ Always run `date '+%Y-%m-%d %A %H:%M %Z'` first. Do NOT assume today's date.
 
 Use Open-Meteo (free, no API key, gives 7+ days). wttr.in is **NOT** used — it only returns 3 days regardless of params.
 
-Default location: Toronto (lat=43.6532, lon=-79.3832). If `knowledge/USER.md` specifies a different city, look up its lat/lon.
+Default location: Ottawa (lat=45.4215, lon=-75.6972). If `knowledge/USER.md` specifies a different city, look up its lat/lon.
 
 **One call covers both sections** — daily for 7 days (Week Ahead) + hourly for today (rain breakdown). Always use `&temperature_unit=celsius` to ensure Celsius output:
 
 ```bash
-curl -sS 'https://api.open-meteo.com/v1/forecast?latitude=43.6532&longitude=-79.3832&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&hourly=temperature_2m,precipitation_probability,weather_code&timezone=America/Toronto&forecast_days=7&temperature_unit=celsius' -o /tmp/wx.json
+curl -sS 'https://api.open-meteo.com/v1/forecast?latitude=45.4215&longitude=-75.6972&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&hourly=temperature_2m,precipitation_probability,weather_code&timezone=America/Toronto&forecast_days=7&temperature_unit=celsius' -o /tmp/wx.json
 ```
 
 Parse with bun:
@@ -52,15 +52,44 @@ bun -e "const d = JSON.parse(await Bun.file('/tmp/wx.json').text()); console.log
 If Open-Meteo fails, replace the section text with "Weather unavailable" and continue.
 
 ### 3. Calendar
-Run all in parallel, then merge:
+
+Fetch from BOTH Apple Calendar and Google Calendar, then merge.
+
+**Apple Calendar — use AppleScript (RELIABLE METHOD):**
 
 ```bash
-# Apple Calendar (local SQLite, already set up)
-bun run ~/Documents/2_Code/2025-08-01-apple-calendar-query/src/calendar-sqlite.ts
-
-# Google Calendar — today + next 7 days, all calendars
-gog calendar events list --json --time-min now --time-max +7d
+osascript -e '
+set today to current date
+set time of today to 0
+set endDate to today + (7 * days)
+tell application "Calendar"
+    set output to ""
+    repeat with cal in calendars
+        set evts to (every event of cal whose start date ≥ today and start date < endDate)
+        repeat with e in evts
+            set output to output & (start date of e) & " | " & (summary of e) & " [" & (name of cal) & "]" & linefeed
+        end repeat
+    end repeat
+    return output
+end tell'
 ```
+
+DO NOT use the old TS script at `~/Documents/2_Code/2025/2025-08-01-apple-calendar-query/` — it hangs.
+
+**Google Calendar — use gog with EXPLICIT calendar ID:**
+
+```bash
+# IMPORTANT: Always specify the calendar ID. Without it, gog returns 404.
+GOG_ACCOUNT=davejmcg@gmail.com gog calendar events davejmcg@gmail.com --days 7 --no-input
+
+# To get all calendars (holidays, shared, etc.):
+GOG_ACCOUNT=davejmcg@gmail.com gog calendar list --all --days 7 --no-input
+```
+
+NEVER call `gog calendar events list --today` without a calendar ID — it returns `404 notFound`.
+
+If gog returns auth errors (invalid_grant, 401, token expired), follow the `gog-oauth-recovery` skill to fix proactively. Do NOT just skip and say "calendar unavailable".
+
 Merge events from both sources. Dedupe by normalized title + start-time within ±15 min.
 
 ### 4. Bills — scan 4 sources, dedupe, create_reminder for each
@@ -132,6 +161,29 @@ If day is Wednesday or Thursday:
 - Check `~/Documents/NotePlan-Notes/Notes/20 - Areas/gnostic-teaching/upcoming-lectures/`
 - If no notes for tonight's class, add `task_add(title: "Prepare Gnostic class notes", emoji: "📚", source: "briefing")` and mention it in ACTIONS.
 
+### 9. Daily Tarot & Kabbalah Keynote (always include)
+
+David teaches Gnostic Tarot/Kabbalah, so the brief carries his **Keynote of the Day**
+(Tónica del Día) per the AGEAC method. Full reference + birth data:
+`knowledge/tarot-kabbalah/DAILY-TAROT-NUMBERS.md` and `NATAL-CHART.md`.
+
+David's **permanent** constants (do NOT recompute these — they never change):
+- **Inner Urgency = 7** (Arcanum 7, Triumph)
+- **Fundamental Keynote (FK) = 8** (Arcanum 8, Justice)
+
+Compute today's keynote from the date returned by the `date` call:
+1. Reduce day → `D`, month → `M`, year-digit-sum → `Y` (e.g. 2026 → 2+0+2+6 = 10 → 1).
+2. `date_tonic = reduce(D + M + Y)`.
+3. `keynote = reduce(date_tonic + 8)`  ← 8 is the FK.
+4. Map `keynote` to its arcanum using the "22 Arcana — Quick Reference" table in
+   `DAILY-TAROT-NUMBERS.md`. If the pre-reduction sum at step 3 is ≤ 22 and meaningful
+   (e.g. 16, 18, 21 = warning cards), mention it too.
+
+Worked example (2026-05-22): D=4, M=5, Y=1 → date_tonic = 10 → 1; keynote = 1 + 8 = **9**
+(Arcanum 9, The Hermit — act with wisdom; solitude/reflection favored).
+
+Keep it to ONE line. This is reflective flavor, not an action item — no task/reminder needed.
+
 ## Output Format
 
 Single Telegram message (via `[NOTIFY]...[/NOTIFY]`):
@@ -147,9 +199,11 @@ Single Telegram message (via `[NOTIFY]...[/NOTIFY]`):
     {date} — {event}
 
 🌤️ TODAY'S WEATHER
-  {high}°C/{low}°C {conditions} — precip {N}%
+  {emoji} {conditions}
+  High: {high}°C / Low: {low}°C
+  Precip: {N}%
   [Rain hourly, if any bucket ≥ 40% or ≥ 0.5mm:]
-  Hourly: 8am ☀ 0% · 11am ☁ 10% · 2pm 🌧 70% · 5pm 🌧 80% · 8pm ⛅ 20%
+  9am ☀ 0% · 12pm ☁ 10% · 3pm 🌧 70% · 6pm 🌧 80% · 9pm ⛅ 20%
 
 💰 BILLS & PAYMENTS
   Reminders with PAID/SKIP buttons sent separately.
@@ -180,7 +234,12 @@ Single Telegram message (via `[NOTIFY]...[/NOTIFY]`):
   Tue ⛅ 16°C/8°C · 20%
   Wed 🌧 12°C/6°C · 80%
   ... (all 7 days)
+
+🔯 TODAY'S KEYNOTE
+  Arcanum {N} — {name}: {one-line meaning}
 ```
+
+The 🔯 keynote line goes at the very bottom (after Week Ahead). One line only.
 
 Emoji key for weather: clear→☀, partly→⛅, overcast→☁, rain→🌧, snow→🌨, thunder→⛈.
 

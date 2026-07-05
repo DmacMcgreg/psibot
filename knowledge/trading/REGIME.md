@@ -1,68 +1,96 @@
 # Market Regime Assessment
-**Last Updated:** May 2, 2026, 2:00 AM ET
+**Last Updated:** May 7, 2026, 5:00 PM ET (PRE-CPI CONSOLIDATION)
 
 ## Current Regime Classification
 
-**RISK-ON / GROWTH-DRIVEN (SUSTAINED)**
-**Confidence Level:** 91% (UP from 87%)
+**MIXED REGIME: RISK-ON FADING INTO EVENT UNCERTAINTY**
+**Confidence Level:** 50% (DOWN from 89% on May 6)
 
 ### Regime Type
-- **Macro-Driven:** 93% confidence (5.16x event-day volatility vs. normal days)
-- **Risk Sentiment:** RISK-ON
-- **Volatility State:** LOW (VIX sub-17, extreme complacency)
-- **Growth/Value:** GROWTH rotation continues
+- **Macro-Driven:** 33% confidence (event-driven but losing conviction)
+- **Risk Sentiment:** MIXED (shifting from risk-on to cautious)
+- **Volatility State:** LOW but STABILIZING (VIX 17.13, down 1.7% from 17.43)
+- **Growth/Value:** ROTATION PAUSING (profit-taking ahead of CPI)
 
 ---
 
-## Key Macro Metrics (May 2, 2:00 AM ET)
+## CRITICAL CONTEXT: PRE-CPI CONSOLIDATION UNDERWAY
+
+**What Happened Yesterday (May 6):** Iran peace rally peaked, S&P 500 ATH 7,365
+**What's Happening Today (May 7):** Pullback to 7,337, sector rotation, pre-CPI caution
+**What's Coming (May 10, 8:30 AM ET):** CPI release - THE regime-defining event
+**Market Impact:** Regime shifting from RISK-ON CONFIRMED (89%) to MIXED (50%)
+
+**Current Status (May 7, 5:00 PM ET):**
+- S&P 500 at 7,337 (-0.38%, pullback from 7,365 ATH)
+- VIX stable at 17.13 (down 1.7%, range 17.06-17.60)
+- 10Y Treasury yield: 4.35% (down 10 bps from 4.45% Monday peak)
+- Oil holding $95 range, Iran peace narrative intact but markets less euphoric
+- Regime confidence dropped: 89% → 50% (event uncertainty + profit-taking)
+
+---
+
+## Key Macro Metrics (May 7, 5:00 PM ET)
 
 ### Volatility & Fear Gauge
-- **VIX:** 16.99 (down from 17.10 on May 1)
-  - **Status:** CYCLE LOWS - down 38.53% over 30 days
-  - **Range (30d):** 16.44 - 31.65
-  - **Signal:** Extreme complacency; mean reversion risk HIGH
-  - **Context:** VIX below 17 = "business as usual" range (15-20)
+- **VIX:** 17.13 (down 1.7% today, range 17.06-17.60)
+  - **Status:** STABLE in low-volatility regime, sub-18 still risk-on
+  - **Signal:** Calm before CPI storm, no fear yet but no complacency either
+  - **Context:** VIX sub-18 = still risk-on, but 17.13 vs. 17.43 yesterday shows consolidation
+  - **Implication:** Market waiting for CPI, not positioning aggressively either way
 
 ### Rates & Currency
-- **10Y Treasury Yield:** 4.38% (stable from 4.416% reported May 1)
-  - **Direction:** Holding elevated levels, no meaningful retreat
-  - **Implication:** Growth fears fading, but inflation concerns persist
-  
-- **DXY (Dollar Index):** 98.23 (down -0.18% in 24hrs)
-  - **Level:** Near 3-month lows (sub-98 on May 1)
-  - **Driver:** Yen rally (suspected Japanese intervention)
-  - **Implication:** Dollar weakness = tailwind for risk assets & commodities
+- **10Y Treasury Yield:** 4.35% (down 10 bps from Monday's 4.45% peak)
+  - **Direction:** FALLING - oil collapse easing inflation concerns
+  - **Implication:** Bond market pricing in lower CPI risk after oil crash
+  - **Context:** Yield drop = bond rally = market expecting benign/in-line CPI
+
+- **DXY (Dollar Index):** ~98 (near 3-month lows)
+  - **Status:** Weak dollar persists, supportive for risk assets
+  - **Implication:** Continued dollar weakness = tailwind for equities
 
 ### Energy & Geopolitics
-- **WTI Crude:** $106/barrel (up from ~$100 on May 1)
-  - **Status:** ELEVATED on Strait of Hormuz closure
-  - **Risk:** Iran-US tensions persist; no near-term resolution
-  - **Implication:** Inflation tailwind, but demand destruction concerns emerging
+- **WTI Crude:** ~$95/barrel (holding near 6-week lows)
+- **Brent Crude:** ~$95/barrel (stable after -16.7% crash from $114)
+  - **Status:** CONSOLIDATING after peace rally crash
+  - **Driver:** Iran peace holding, no new Strait tensions
+  - **Implication:** Oil stability at $95 removes upside CPI risk
 
-### Equity Indices (May 1 Close)
-- **S&P 500:** 7,212.02 (+1.07%, second consecutive ATH)
-- **Nasdaq:** 24,907.66 (+0.95%)
-- **Tech Sector:** +1.57% (1-day), double-digit earnings growth
-- **Healthcare:** -0.52% (1-day), earnings decline YoY
-- **SPY Sentiment Score:** +0.41 (positive)
+**Geopolitical Update:**
+- U.S.-Iran ceasefire still holding (Day 30 since April 8)
+- No new Strait of Hormuz incidents
+- Market less focused on peace narrative, more focused on CPI (3 days away)
+
+### Equity Indices (May 7 Close)
+- **S&P 500:** 7,337 (-0.38%, pullback from 7,365 ATH)
+- **Nasdaq:** Not specified but likely consolidating after +2.0% May 6 surge
+- **Sectors:** Energy -1.95%, Industrials -1.66% (worst performers)
+- **Context:** Profit-taking and sector rotation, NOT panic selling
 
 ---
 
-## Overnight Developments (May 1 Close → May 2, 2:00 AM)
+## What Changed Since Last Update (May 6 → May 7)
 
-### Bullish Signals
-1. **VIX Compression Continues:** 17.10 → 16.99, further complacency
-2. **Tech Leadership Intact:** +1.57% sector gain, strong earnings momentum
-3. **Dollar Weakness:** DXY down to 98.23, supportive for equities
-4. **News Sentiment:** Positive (SPY +0.41), "S&P 500 up >5% through April suggests strong year ahead"
-5. **Flows:** $11.4B into US equity funds (April 30), tech ETFs dominating
+### REGIME CONFIDENCE COLLAPSED: 89% → 50%
 
-### Bearish/Risk Signals
-1. **Oil Spike:** $106 WTI, up from ~$100 (Hormuz still closed, Iran tensions)
-2. **Consumer Sentiment RECORD LOW:** UMich index = 48 (lowest in history)
-3. **K-Shaped Divergence:** "Stocks at ATH while consumer sentiment crashes" - unsustainable
-4. **VIX Mean Reversion Risk:** 38.53% decline in 30 days = extreme compression
-5. **Geopolitical Overhang:** UAE quit OPEC (May 1), Iran nuclear stance hardening
+**Why Confidence Dropped:**
+1. **Mixed Regime Signal:** Trading-bot regime tool shows 0.5 confidence (50/50)
+2. **Event Uncertainty:** CPI in 3 days (May 10) = binary outcome ahead
+3. **Profit-Taking:** S&P -0.38%, sector rotation, rally cooling
+4. **Volume Dynamics:** Normal day moves (0.351%) > event day moves (0.169%) = non-event-driven
+5. **Macro Score Drop:** 85% macro-driven → 33% = technicals taking over
+
+**What Changed (Neutral Signals):**
+1. **S&P Pullback:** 7,365 → 7,337 (-0.38%) = healthy consolidation, not breakdown
+2. **VIX Stable:** 17.43 → 17.13 (-1.7%) = no fear spike, just calm
+3. **Sector Rotation:** Energy/Industrials weak, but no broad selling
+4. **Pre-CPI Caution:** Market taking chips off table, raising cash
+
+**What Held (Still Bullish):**
+1. **10Y Yield Drop:** 4.45% → 4.35% = bond market expects benign CPI
+2. **VIX Sub-18:** 17.13 still in risk-on range (sub-18)
+3. **Oil Stability:** $95 holding, no spike back to $100+
+4. **Iran Peace:** Ceasefire still intact (Day 30)
 
 ---
 
@@ -70,199 +98,403 @@
 
 ### CRITICAL RISK EVENTS
 
-**1. FOMC Meeting Minutes - TODAY (May 2, 8:30 AM ET)**
-- **Impact:** HIGH
-- **Risk Level:** MEDIUM
-- **Catalyst:** Could reveal hawkish dissent or rate hike discussion from April meeting
-- **Market Expectation:** No rate cuts priced for 2026 (major shift)
-
-**2. CPI MoM - Monday, May 5, 8:30 AM ET**
-- **Impact:** HIGHEST (regime-breaking event)
-- **Forecast:** +0.3% MoM
-- **Risk Level:** EXTREME
-- **Downside Scenario:** >0.4% MoM or >3.8% YoY could trigger 5-10% correction
-- **Upside Scenario:** <0.2% MoM = VIX sub-15, melt-up continuation
-- **Days Until:** 3 trading days
-
-**3. Initial Jobless Claims - Thursday, May 8, 8:30 AM ET**
+**1. Initial Jobless Claims - Thursday, May 8, 8:30 AM ET**
 - **Impact:** MEDIUM
 - **Forecast:** 200K (vs. 195K prior)
-- **Watch:** >210K = labor softening narrative; <190K = overheating concerns
+- **Watch:** >210K = labor softening; <190K = overheating
+- **Context:** Secondary data, all eyes on CPI Saturday
+
+**2. CPI MoM & YoY - SATURDAY, May 10, 8:30 AM ET**
+- **Impact:** EXTREME (regime-defining event)
+- **Forecast:** +0.3% MoM (consensus)
+- **Risk Level:** REDUCED (oil $95 vs. $114 peak removes upside pressure)
+- **Current Setup:**
+  - March CPI: +0.9% MoM (driven by 21.2% gasoline surge from Iran war)
+  - Oil now -16.7% from $114 peak = major disinflationary input
+  - 10Y yield down 10 bps = bond market pricing benign/in-line
+- **Probability Update:**
+  - Benign (<0.2%): 40% (oil crash supports)
+  - In-Line (0.3%): 45% (base case)
+  - Hot (>0.4%): 15% (reduced from 20%)
+
+**3. FOMC Meeting Minutes - May 14, 2:00 PM ET**
+- **Impact:** MEDIUM (post-CPI context)
+- **Watch:** Fed reaction function to April CPI (not May CPI)
+- **Context:** Secondary to May 10 CPI reading
 
 ---
 
 ## Sector Rotation Analysis
 
-### CURRENT WINNERS (Overweight)
-1. **Information Technology:** +1.57% (May 1), AI capex boom ($725B disclosed), mega-cap earnings beats
-2. **Communication Services:** Alphabet, Meta strength despite capex concerns
-3. **Consumer Discretionary:** Apple +115% YTD (Intel referenced, but likely typo in source)
+### CONSOLIDATION MODE (as of May 7, 5:00 PM)
 
-### CURRENT LOSERS (Underweight)
-1. **Healthcare:** -0.52% (May 1), earnings decline YoY despite GLP-1 tailwinds
-2. **Energy:** Mixed (benefiting from $106 oil, but demand destruction fears)
-3. **Utilities:** Risk-on rotation away from defensives
+**WEAK (Today's Losers):**
+1. **Energy:** -1.95% (oil stability at $95 = no upside catalyst)
+2. **Industrials:** -1.66% (profit-taking after rally)
 
-### EMERGING SHIFTS
-- **Small Caps (IWM):** Holding gains after April rally, but not participating in new highs
-- **Financials:** Neutral, yield curve steepening = potential tailwind later in 2026
-- **Gold (GLD):** ~$425, down 1% May 1 despite geopolitical tensions (higher yields headwind)
+**HOLDING (Consolidating):**
+1. **Information Technology:** Flat to slight decline (profit-taking after +2% surge)
+2. **Communication Services:** Consolidating after mega-cap strength
+
+**NEUTRAL (Watching):**
+1. **Financials, Healthcare, Consumer:** No major moves either way
+
+**Key Insight:**
+Sector rotation shows PROFIT-TAKING, not panic. Energy and Industrials weak as cyclical bets unwind pre-CPI. Tech consolidating but not breaking down. This is NORMAL pre-event caution, not regime breakdown.
 
 ---
 
 ## Strategy Weight Recommendations
 
-### Current Market Regime: RISK-ON / LOW VOL / MACRO-DRIVEN
+### PRE-CPI POSITIONING (May 7-9): CAUTIOUS, RAISE CASH
 
-**INCREASE WEIGHT (65-75% allocation):**
-1. **Regime Detection Strategy:** Strong in macro-driven environments (93% confidence)
-   - **Event-day edge:** 5.16x normal volatility = predictable reversals
-   - **Recommended Weight:** 40%
+**CURRENT ALLOCATION (May 7, 5:00 PM ET):**
 
-2. **Kalman Filter Strategy:** Performs well in trending, low-vol regimes
-   - **Current Environment:** VIX 16.99 = ideal for trend-following
-   - **Recommended Weight:** 25%
+**REDUCE OFFENSE:**
+- Regime Detection: 30% (down from 40%)
+- Kalman Filter: 20% (down from 25%)
+- Consecutive Days: 15% (down from 20%)
 
-**MAINTAIN WEIGHT (20-25% allocation):**
-3. **Consecutive Days Strategy:** Useful in momentum continuation
-   - **Context:** Day 2 of rally post-PCE relief
-   - **Recommended Weight:** 15%
+**INCREASE DEFENSE:**
+- Cash: 20% (up from 10%)
+- Mean Reversion: 10% (up from 5%)
+- VIX/Hedges: 5% (light hedge as VIX stable)
 
-**REDUCE WEIGHT (5-10% allocation):**
-4. **Mean Reversion (MR) Strategy:** POOR environment
-   - **Reason:** Strong directional trend + VIX compression = low reversion probability
-   - **Recommended Weight:** 5% (defensive allocation only)
+**TOTAL EXPOSURE:** 75% invested, 20% cash, 5% hedges
 
-### Position Sizing & Risk Management
-- **Max Position Size:** 2% per trade (elevated geopolitical risk)
-- **Stop Loss:** Tighten to 1.5% (VIX compression = potential violent reversals)
-- **Cash Reserve:** Maintain 15-20% for CPI volatility (May 5)
+**Rationale:**
+- Mixed regime (50% confidence) = reduce conviction
+- CPI in 3 days = binary event, raise cash pre-event
+- S&P pullback -0.38% = healthy profit-taking, not breakdown
+- VIX 17.13 (stable) = no panic, but no complacency
+- 10Y yield 4.35% (down 10 bps) = bond market expects benign CPI
 
 ---
 
-## Top 3 Risks (Regime-Breaking Events)
+### POST-CPI (After May 10, 8:30 AM ET): SCENARIO-DEPENDENT
 
-### 1. CPI UPSIDE SURPRISE (Monday, May 5) - EXTREME RISK
-- **Scenario:** CPI MoM >0.4% or YoY >3.8%
-- **Probability:** 25-30%
-- **Impact:** VIX spike to 25-30, S&P 500 correction 5-10%, rate cut hopes crushed
-- **Hedging:** Consider VIX calls, reduce equity beta Friday close
+**IF BENIGN CPI (<0.2% MoM) - 40% probability:**
+- **Action:** AGGRESSIVELY RE-RISK
+- **Target Allocation:**
+  - Regime Detection: 45%
+  - Kalman Filter: 30%
+  - Consecutive Days: 20%
+  - Cash: 5%
+- **Timeframe:** 2-4 weeks melt-up
+- **Target:** S&P 7,500, Nasdaq 26,500
 
-### 2. IRAN ESCALATION / HORMUZ CLOSURE EXTENSION
-- **Scenario:** Military strike, oil to $120-130
-- **Probability:** 20%
-- **Impact:** Demand destruction, stagflation fears, tech selloff
-- **Hedging:** Energy shorts, long gold (currently weak)
+**IF IN-LINE CPI (0.3% MoM) - 45% probability:**
+- **Action:** HOLD CURRENT, WAIT FOR CLARITY
+- **Target Allocation:**
+  - Regime Detection: 30%
+  - Kalman Filter: 25%
+  - Consecutive Days: 15%
+  - Cash: 25%
+  - Mean Reversion: 5%
+- **Timeframe:** 1-2 weeks consolidation
+- **Key:** Wait for dips to add, don't chase
 
-### 3. VIX MEAN REVERSION TRIGGER
-- **Scenario:** ANY negative catalyst triggers unwind from 16.99
-- **Probability:** 40% (within 7 days)
-- **Impact:** 3-5 VIX point spike = 2-3% S&P correction
-- **Trigger Events:** Weak tech earnings, FOMC hawkish surprise, geopolitical flare-up
+**IF HOT CPI (>0.4% MoM) - 15% probability:**
+- **Action:** DEFENSIVE SHIFT
+- **Target Allocation:**
+  - Mean Reversion: 35%
+  - Cash: 40%
+  - Hedges: 15%
+  - Regime Detection: 10%
+- **Timeframe:** 1-2 weeks volatility
+- **Target:** S&P 7,050-7,150 (-3% to -5%)
 
 ---
 
-## Top 3 Opportunities (Regime Continuation)
+## Position Sizing & Risk Management (Current)
 
-### 1. TECH EARNINGS MOMENTUM EXTENSION
-- **Thesis:** Information Technology +1.57%, double-digit earnings growth, AI capex boom
-- **Plays:** QQQ, semiconductor leaders (NVDA reclaimed most valuable company), cloud infra
-- **Timeframe:** Now through May 8 (before CPI risk)
-- **Risk/Reward:** 3:1 (stop below 24,500 Nasdaq)
+### RISK CONTROLS (May 7 - May 10)
 
-### 2. DOLLAR WEAKNESS CONTINUATION
-- **Thesis:** DXY 98.23 = 3-month lows, yen strength, Fed pause
-- **Plays:** Commodities (ex-energy), international equities, EM
-- **Timeframe:** 2-4 weeks (until Fed pivot narrative changes)
-- **Risk/Reward:** 2:1
+**POSITION LIMITS:**
+- **Max New Position:** 1% (minimal new positions pre-CPI)
+- **Existing Positions:** Hold, don't add
+- **Stop Loss:** 2% (widened from 1.5% for CPI volatility)
+- **Beta Exposure:** Target 0.75 (reduced from 1.0)
 
-### 3. VOLATILITY COLLAPSE MELT-UP (if CPI benign)
-- **Thesis:** VIX 16.99 → sub-15 if CPI <0.2% MoM
-- **Plays:** Leveraged long tech (TQQQ), sell VIX calls, momentum longs
-- **Timeframe:** May 5-15 (post-CPI, pre-next macro event)
-- **Risk/Reward:** 5:1 (binary on CPI, but massive upside if hits)
+**HEDGING CHECKLIST (Pre-May 10 CPI):**
+- [x] Raised cash to 20% (from 10%)
+- [x] Reduced equity exposure to 75% (from 90%)
+- [ ] Light VIX hedge 5% if VIX stays <17 (optional)
+- [ ] Tighten stops to 2% on all positions by May 9 EOD
+- [ ] NO new positions May 8-9
+
+**CPI RELEASE GAME PLAN (May 10, 8:30 AM ET):**
+1. Read headline: MoM, YoY, Core MoM, Core YoY
+2. Compare to forecast: 0.3% MoM expected
+3. Watch VIX: <15 = benign, 15-18 = in-line, >20 = hot
+4. Monitor S&P futures: Direction in first 5 minutes
+5. Execute scenario playbook by 10:00 AM ET
+
+---
+
+## Top 3 Risks (Next 3 Days Until CPI)
+
+### 1. HOT CPI PRINT (MAY 10) - REDUCED BUT REAL RISK
+- **Scenario:** CPI MoM >0.4% or YoY >3.6%
+- **Probability:** 15% (down from 20%)
+- **Why Lower:** Oil -16.7% removes gasoline driver (was +21.2% in March)
+- **Impact:** VIX → 22-25, S&P 500 -3% to -5%, regime shift to risk-off
+- **Current Hedging:** 20% cash, 5% VIX hedge = prepared but not over-hedged
+
+### 2. IRAN PEACE DEAL COLLAPSES - LOW RISK (SHORT-TERM)
+- **Scenario:** Ceasefire breaks before CPI, oil spikes back to $110+
+- **Probability:** 10% (down from 20%)
+- **Why Lower:** 30 days of ceasefire holding, no new incidents
+- **Impact:** Oil → $110+, VIX → 25+, S&P -5%, CPI risk spikes
+- **Mitigation:** Oil stable at $95, peace holding, low near-term risk
+
+### 3. PRE-CPI PROFIT-TAKING ACCELERATES - MEDIUM RISK
+- **Scenario:** S&P drops 1-2% May 8-9 as traders de-risk
+- **Probability:** 25%
+- **Impact:** S&P → 7,250-7,300, VIX → 18-19, healthy pullback
+- **Context:** Already seeing -0.38% today, could continue
+- **Opportunity:** BUYABLE DIP if fundamentals intact (oil stable, no Iran shock)
+
+---
+
+## Top 3 Opportunities (Next 3 Days + Post-CPI)
+
+### 1. PRE-CPI DIP BUY (May 8-9)
+- **Thesis:** Profit-taking creates 1-2% pullback, buyable before benign CPI
+- **Entry:** S&P 7,250-7,300 range (-1% to -1.5% from ATH)
+- **Catalyst:** 10Y yield at 4.35% (down 10 bps) = bond market expects benign CPI
+- **Target:** S&P 7,400-7,500 post-CPI (+2-3%)
+- **Risk/Reward:** 3:1
+- **Allocation:** Use 10% of 20% cash reserve
+
+### 2. POST-BENIGN CPI MELT-UP (After May 10)
+- **Thesis:** 40% odds of benign CPI (<0.2%) = risk-on explosion
+- **Plays:** QQQ, TQQQ, mega-cap tech (AAPL, NVDA, MSFT)
+- **Entry:** CPI release + 30-60 minutes (let initial volatility settle)
+- **Target:** Nasdaq 26,500 (+2.5%), S&P 7,500 (+2%)
+- **Timeframe:** 2-4 weeks
+- **Risk/Reward:** 4:1
+
+### 3. YIELD CURVE STEEPENING TRADE (Tactical)
+- **Thesis:** 10Y yield 4.35% (down 10 bps) = bond market pricing rate cuts
+- **Plays:** Long TLT (20Y Treasury ETF), short TBF (inverse 20Y)
+- **Entry:** If 10Y drops below 4.30% post-benign CPI
+- **Target:** 10Y → 4.10-4.20% if CPI cooperates
+- **Timeframe:** 2-4 weeks
+- **Risk/Reward:** 2:1 (moderate conviction)
 
 ---
 
 ## Regime Stability Assessment
 
-### Confidence in Continuation: 65%
-**Supporting Factors:**
-- Macro-driven regime confirmed (93% confidence)
-- Tech earnings strong, flows positive ($11.4B week)
-- VIX compression ongoing (16.99, down 38.53% in 30 days)
-- Fed pause narrative intact (no cuts, but no hikes yet)
+### Confidence in Continuation: 50% (DOWN from 75%)
 
-**Risk Factors:**
-- CPI in 3 days = binary event (35% regime-flip probability)
-- Consumer sentiment at RECORD LOW (48) = disconnect from equities
-- Oil $106 = stagflation fears building
-- VIX mean reversion overdue (40% probability in 7 days)
+**Why Lower:**
+- Regime tool shows MIXED (0.5 confidence, 50/50)
+- Macro-driven score dropped: 85% → 33%
+- CPI in 3 days = binary outcome, high uncertainty
+- S&P pullback -0.38% = profit-taking, not trend change but not continuation either
+- Normal day volatility > event day volatility = non-trending environment
 
-### Expected Regime Duration: 3-7 Days
-**Regime Likely Holds Through:** May 5, 8:30 AM ET (CPI release)
-**Regime Likely Flips If:** CPI >0.4% MoM, VIX spikes >22, Iran war escalation
+**Supporting Factors (regime could resume risk-on):**
+- 10Y yield down 10 bps to 4.35% = bond market expects benign CPI
+- VIX stable at 17.13 (sub-18 = risk-on)
+- Oil holding $95 (no spike back to $100+)
+- Iran peace intact (30 days, no breaks)
+- 85% combined odds of benign/in-line CPI
 
----
+**Risk Factors (regime could flip risk-off):**
+- CPI binary event (15% hot risk remains)
+- Mixed regime (50% confidence) = no conviction
+- Profit-taking underway (Energy -1.95%, Industrials -1.66%)
+- Portfolio positions flat: AAPL/QCOM both 0% after 6 days = no momentum
 
-## Historical Context
+### Expected Regime Duration: 3 DAYS → CPI VERDICT (May 10)
 
-### Similar Regimes:
-1. **November 2020:** Post-election rally, VIX compression, tech leadership
-   - **Outcome:** Melt-up into year-end, then Jan 2021 correction
-   
-2. **July 2024:** AI boom, low VIX, strong tech earnings
-   - **Outcome:** 8-week rally, then Jackson Hole reversal
-   
-3. **April 2019:** Fed pause, growth stocks lead, VIX sub-13
-   - **Outcome:** Continued into Q2, May trade war selloff ended it
+**Regime Certainty Resumes:** May 10, 10:00 AM ET (post-CPI digest)
+**Regime Likely Resumes Risk-On If:** CPI ≤0.3% MoM, VIX stays <18, Iran peace holds
+**Regime Likely Flips Risk-Off If:** CPI >0.4% MoM OR Iran ceasefire breaks, VIX >20
 
-### Key Lesson:
-Low-VIX, tech-led rallies can persist 4-8 weeks, but end violently when macro catalyst triggers mean reversion. Median correction: 7-12% over 2-3 weeks.
-
----
-
-## Action Items for Traders
-
-### IMMEDIATE (Next 24 Hours)
-- [ ] Reduce position sizes ahead of FOMC Minutes (TODAY 8:30 AM ET)
-- [ ] Set alerts for VIX >18.50 (regime flip signal)
-- [ ] Review tech earnings calendar (May 2-5)
-
-### PRE-CPI (May 3-4)
-- [ ] Build CPI hedges: VIX calls, QQQ puts, or reduce beta
-- [ ] Identify high-beta longs to trim if CPI hot
-- [ ] Scout re-entry levels: S&P 7,050 (support), Nasdaq 24,200
-
-### POST-CPI (May 5+)
-- [ ] IF CPI benign: Increase Regime Detection + Kalman to 65% combined
-- [ ] IF CPI hot: Flip to Mean Reversion 40%, cash 30%, hedges 30%
-- [ ] Re-assess sector rotation (tech vulnerability vs. defensive shift)
+**Most Likely Path (60% confidence):**
+- May 8-9: Consolidation or slight pullback (7,250-7,300 range)
+- May 10 CPI: In-line (0.3%) or benign (<0.2%) - 85% combined odds
+- May 10-20: Risk-on resumes, S&P → 7,400-7,500
 
 ---
 
-## Summary & Recommendation
+## Action Items (May 7 - May 10)
 
-**REGIME:** RISK-ON / GROWTH-DRIVEN - holding strong, but fragile  
-**CONFIDENCE:** 91% (up from 87% on May 1)  
-**HORIZON:** 3-7 days (until CPI May 5)  
+### COMPLETED (May 6 - May 7)
+- [x] Reduced equity exposure to 75% (from 90%)
+- [x] Raised cash to 20% (from 10%)
+- [x] Trimmed winners / profit-taking into strength
 
-**STRATEGIC POSTURE:**
-- **Offense:** 60% (Regime Detection 40%, Kalman 25%, Consecutive Days 15%)
-- **Defense:** 20% cash, 5% mean reversion, 15% reserved for CPI volatility
+### IMMEDIATE (May 7 - May 8)
+- [ ] NO new aggressive positions
+- [ ] Hold current allocation: 75% equity, 20% cash, 5% hedges
+- [ ] Monitor S&P 7,250 support (1.2% below current)
+- [ ] Set CPI alerts: May 10, 8:30 AM ET
 
-**KEY INSIGHT:** The regime is intact and even strengthening (VIX 16.99, tech +1.57%, second ATH), but it sits on a knife's edge. CPI on Monday May 5 is the highest-probability regime-breaking event. Until then, ride the momentum with tight stops. After CPI, reassess completely.
+### PRE-CPI (May 8 - May 9)
+- [ ] If S&P drops to 7,250-7,280, deploy 10% cash (buyable dip)
+- [ ] Tighten stops to 2% on all positions by May 9 EOD
+- [ ] Light VIX hedge (5% allocation) if VIX drops below 17
+- [ ] Review scenario playbooks (benign/in-line/hot)
+- [ ] NO new positions after 2:00 PM May 9
 
-**BOTTOM LINE:** Stay long, stay liquid, stay nimble. This rally has legs, but the music could stop in 72 hours.
+### CPI RELEASE (May 10, 8:30 AM ET)
+- [ ] Read headline: MoM, YoY, Core MoM, Core YoY
+- [ ] Compare to forecast: 0.3% MoM expected
+- [ ] Watch VIX: <15 = benign, 15-18 = in-line, >20 = hot
+- [ ] Monitor S&P futures direction (first 5 minutes)
+- [ ] Wait 30-60 minutes for volatility to settle
+
+### POST-CPI (May 10, 9:30 AM - 11:00 AM ET)
+- [ ] Identify scenario: Benign / In-Line / Hot
+- [ ] Execute scenario playbook (see Strategy Weights)
+- [ ] Watch 9:30-10:00 AM volatility for entry points
+- [ ] Re-assess regime confidence by 10:30 AM
+- [ ] Update REGIME.md with post-CPI analysis by 12:00 PM
+
+---
+
+## Intelligence Scan Summary (May 7)
+
+### News Flow Analysis
+- **Total Items:** 44 articles across SPY/QQQ/IWM
+- **Sentiment:** +0.39 (bullish but moderating from peak)
+- **Themes:** ETF flows, peace rally follow-through, value rotation, CPI anticipation
+- **Key Articles:**
+  - "Exchange-Traded Funds Fall as US Equities Drop Midday" (MT Newswires)
+  - "Should You Buy the Invesco QQQ ETF With Nasdaq at Record High?" (Motley Fool)
+  - "S&P 500 Gains Unleashed on Chip Stock Strength, Falling Oil" (24/7 Wall St.)
+
+### Market Themes
+1. **Peace Rally Follow-Through:** Iran ceasefire holding, but less market focus
+2. **ETF Flows:** VOO/SPY inflows, QQQ outflows moderating
+3. **Value Rotation:** Small-cap value outperforming growth in May
+4. **CPI Anticipation:** Market positioning cautiously ahead of Saturday release
+
+### Upcoming Events (Next 7 Days)
+1. **FOMC Meeting Minutes:** Today (May 7) - released earlier, no surprises
+2. **Initial Jobless Claims:** May 8, 8:30 AM - expected 200K
+3. **CPI MoM:** May 10, 8:30 AM - CRITICAL EVENT
+4. **Continuing Claims:** May 8, 8:30 AM - low impact
+
+---
+
+## Summary & Current Recommendation
+
+**REGIME:** MIXED (Event Uncertainty Dominates)
+**CONFIDENCE:** 50% (down from 89%)
+**HORIZON:** 3 days until May 10 CPI (regime-defining)
+
+**STRATEGIC POSTURE (May 7 - May 10):**
+- **Offense:** 75% invested (30% Regime Detection, 20% Kalman, 15% Consecutive Days, 10% Mean Rev)
+- **Defense:** 20% cash, 5% hedges (up from 10% cash, 0% hedges)
+
+**KEY INSIGHTS:**
+
+1. **Regime Shift:**
+   - May 6: RISK-ON CONFIRMED (89% confidence)
+   - May 7: MIXED REGIME (50% confidence)
+   - Driver: CPI event uncertainty + profit-taking
+
+2. **What Changed:**
+   - S&P 500: 7,365 → 7,337 (-0.38%) = healthy consolidation
+   - VIX: 17.43 → 17.13 (-1.7%) = stable, no fear spike
+   - 10Y yield: 4.45% → 4.35% (-10 bps) = bond market expects benign CPI
+   - Regime confidence: 89% → 50% = event-driven uncertainty
+
+3. **CPI Setup (May 10):**
+   - Benign (<0.2%): 40% odds (oil -16.7% supports)
+   - In-Line (0.3%): 45% odds (base case)
+   - Hot (>0.4%): 15% odds (reduced from 20%)
+   - 10Y yield drop to 4.35% = bond market pricing benign/in-line
+
+4. **Top Risk:**
+   - Hot CPI (15% odds) = VIX → 22-25, S&P -3% to -5%
+   - Currently hedged: 20% cash + 5% VIX = prepared
+
+**CURRENT POSITIONING:**
+1. **75% invested** (down from 90%)
+2. **20% cash** (up from 10%) - ready to deploy on dip or post-benign CPI
+3. **5% hedges** (light VIX protection)
+4. **Reduced beta** to 0.75 (from 1.0)
+
+**PRE-CPI TACTICS (May 7-9):**
+- HOLD current allocation, don't add risk
+- BUY dips to 7,250-7,280 with 10% cash if opportunity arises
+- TIGHTEN stops to 2% by May 9 EOD
+- NO new positions after 2:00 PM May 9
+- Light VIX hedge if VIX <17
+
+**POST-CPI EXECUTION (May 10):**
+- **Benign (<0.2%):** Deploy cash, go to 95% invested, add QQQ/tech
+- **In-Line (0.3%):** Hold 75%, wait for clarity
+- **Hot (>0.4%):** Reduce to 45% invested, raise cash to 40%, add hedges to 15%
+
+**BOTTOM LINE:**
+Regime shifted from RISK-ON CONFIRMED (89%) to MIXED (50%) as CPI event uncertainty dominates. S&P pullback -0.38% is healthy profit-taking, not breakdown. 10Y yield drop to 4.35% (down 10 bps) suggests bond market expects benign/in-line CPI (85% combined odds).
+
+**Main opportunity:** Pre-CPI dip to 7,250-7,300 = buyable with 10% cash. Post-benign CPI (40% odds) = melt-up to S&P 7,500.
+
+**Main risk:** Hot CPI (15% odds) = -3% to -5% drop. Currently hedged with 20% cash + 5% VIX.
+
+**Tactical stance:** CAUTIOUS PRE-CPI (75% invested, 20% cash), ready to AGGRESSIVELY RE-RISK post-benign CPI or BUY DIPS if S&P drops to 7,250-7,280.
+
+**Next regime update:** May 10, 2026, 11:00 AM ET (post-CPI analysis)
 
 ---
 
 ## Data Sources & Methodology
 
-**Market Regime Tool:** Analyzes 14-day event-driven volatility (5.16x event vs. normal days)  
-**Intelligence Scan:** 49 news items across SPY/QQQ/IWM/DIA (May 1-2)  
-**Economic Calendar:** FOMC Minutes (May 2), CPI (May 5), Jobless Claims (May 8)  
-**Web Search:** VIX, 10Y yield, DXY, oil prices, sector performance (real-time May 2, 2:00 AM ET)
+**Market Regime Tool:** 14-day event-driven volatility (MIXED regime 0.5 confidence, macro score 0.33)
+**Intelligence Scan:** 44 news items across SPY/QQQ/IWM (May 1-7, sentiment +0.39)
+**Economic Calendar:** CPI (May 10, 8:30 AM), Jobless Claims (May 8), FOMC Minutes (May 7)
+**Web Search:**
+- VIX: 17.13 (down 1.7%, range 17.06-17.60) - [Yahoo Finance](https://finance.yahoo.com/quote/%5EVIX/)
+- S&P 500: 7,337 (-0.38%) - [24/7 Wall St.](https://247wallst.com/investing/2026/05/07/stock-market-live-may-7-2026-sp-500-spy-could-see-higher-highs/)
+- 10Y Treasury: 4.35% (down 10 bps) - [FRED](https://fred.stlouisfed.org/series/DGS10)
+- Oil: ~$95 WTI (stable) - Intelligence scan
 
-**Generated:** May 2, 2026, 2:00 AM ET  
-**Next Update:** May 2, 2026, 5:00 PM ET (post-FOMC Minutes) or May 5, 2026, 9:30 AM ET (post-CPI)
+**Generated:** May 7, 2026, 5:00 PM ET
+**Next Update:** May 10, 2026, 11:00 AM ET (post-CPI analysis)
+
+---
+
+## CPI Scenarios Quick Reference Card (UPDATED FOR MAY 10)
+
+| Scenario | MoM | Probability | VIX | S&P 500 | Regime | Confidence |
+|----------|-----|-------------|-----|---------|--------|------------|
+| BENIGN | <0.2% | 40% | 14-15 | 7,450-7,550 (+2-3%) | RISK-ON | 95% |
+| IN-LINE | 0.3% | 45% | 16-17 | 7,300-7,400 (flat) | MIXED | 60% |
+| HOT | >0.4% | 15% | 22-25 | 7,050-7,200 (-3% to -5%) | RISK-OFF | 85% |
+
+**Current Allocation (May 7):** 75% invested, 20% cash, 5% hedges
+**Pre-CPI Allocation (May 9 EOD):** 75% invested, 20% cash, 5% VIX hedge
+**Post-CPI Allocation:** Scenario-dependent (see Strategy Weights section above)
+
+**Probability Rationale:** Oil -16.7% ($114 → $95) removes gasoline inflation (was +21.2% in March). 10Y yield down 10 bps to 4.35% = bond market pricing benign/in-line (85% combined).
+
+---
+
+## FINAL ALERT (May 7, 5:00 PM ET):
+
+**Regime confidence dropped 89% → 50% as CPI event uncertainty dominates. S&P 7,337 (-0.38%) = healthy consolidation. VIX 17.13 (stable) = no panic. 10Y yield 4.35% (down 10 bps) = bond market expects benign CPI.**
+
+**CPI in 3 days (May 10, 8:30 AM ET). Odds: 40% benign, 45% in-line, 15% hot.**
+
+**Main opportunity: Pre-CPI dip to 7,250-7,280 = buyable. Post-benign CPI (40% odds) = melt-up to 7,500.**
+
+**Main risk: Hot CPI (15% odds) = -3% to -5% drop. Hedged with 20% cash + 5% VIX.**
+
+**Tactical: HOLD 75% invested, 20% cash. BUY dips to 7,250-7,280. NO new positions after May 9 2PM. Wait for CPI verdict.**
+
+---
+
+Sources:
+- [24/7 Wall St: Stock Market Live May 7, 2026](https://247wallst.com/investing/2026/05/07/stock-market-live-may-7-2026-sp-500-spy-could-see-higher-highs/)
+- [Yahoo Finance: VIX Quote](https://finance.yahoo.com/quote/%5EVIX/)
+- [FRED: 10-Year Treasury Yield](https://fred.stlouisfed.org/series/DGS10)
+- [Trading Economics: US 10 Year Treasury](https://tradingeconomics.com/united-states/government-bond-yield)

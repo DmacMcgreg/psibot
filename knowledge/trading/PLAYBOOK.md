@@ -302,3 +302,27 @@ Paper portfolio underperforming all benchmarks by 6-9%. Cash preservation (94.3%
 - T (AT&T) defensive telecom long $28-29, tight stop $27.99, target $31.67 (2026-03-31, 2026-04-02-0200-scan, 2026-04-02-addendum, 2026-04-07)
 - Defense sector long during Iran escalation (LMT/NOC/RTX/ITA), then SHORT once war premium unwinds (2026-04-02-addendum, 2026-04-14 long; 2026-04-23 short reversal)
 - AMZN/AAPL/GOOGL Big Tech 100% MTF bullish + confluence >75 + PCR <0.3 cluster setup (2026-03-24, 2026-04-25, 2026-04-28, 2026-04-30)
+
+## monthly additions (setups) — appended 2026-06-01
+- GDX long $92-101 with 100% MTF bullish + bullish PCR <0.35 as stagflation/risk-off hedge (2026-04-16, 2026-04-20, 2026-04-21, 2026-04-22 both sessions, 2026-04-23, 2026-04-29)
+- DBA long as ag-commodity stagflation hedge via Kalman Filter + Consecutive Days, entry ~$27, tight ATR stop (2026-03-30, 2026-04-02, 2026-04-03, 2026-04-05, 2026-04-06, 2026-04-07, 2026-05-07)
+- T (AT&T) long Kalman Filter defensive at $28-29, target $31.50, tight stop ~$28 (2026-03-27, 2026-03-30, 2026-03-31, 2026-04-02, 2026-04-06, 2026-04-07)
+- MRK long Kalman Filter defensive healthcare at $118-121 with pipeline/KEYTRUDA catalysts (2026-03-30, 2026-03-31, 2026-04-13, 2026-04-14, 2026-04-15, 2026-04-06)
+- JNJ long POC Reversion at $240-243 with max pain $242.50 gravitational support (2026-04-02, 2026-04-03, 2026-04-05, 2026-04-06, 2026-04-07, 2026-04-13, 2026-04-15)
+- UVXY/VIX-call long 15-25% allocation when VIX <19 ahead of binary FOMC/CPI/earnings cluster (2026-04-23, 2026-04-29, 2026-04-30, 2026-05-04 overnight)
+- GOOGL long on pullback to value-area / post-earnings with Cloud +63% YoY thesis and cheap pre-earnings IV (2026-04-24, 2026-04-28, 2026-04-30, 2026-05-01, 2026-05-04, 2026-05-07)
+- NVDA long PEG <0.75 AI-infrastructure setup with breakout >$208-218 or value-area pullback (2026-04-24, 2026-04-25, 2026-04-26, 2026-04-30 0200, 2026-05-01, 2026-05-04, 2026-05-06)
+- V (Visa) long bullish base breakout $308-320 with PCR 0.08 institutional call accumulation, target $345-352 (2026-04-24, 2026-05-01 1700, 2026-05-06)
+- XLE/USO/XOM Consecutive-Days+ADXR long post-Iran-deadline as oil supply-shock continuation (2026-04-02, 2026-04-03, 2026-04-05, 2026-04-06, 2026-04-07, 2026-03-30 session13)
+
+## monthly additions (setups) — appended 2026-07-01
+- **GOOGL long** (100% MTF + confluence >76 + earnings momentum): recurred across scan_2026-05-07, 2026-05-04_ACTIONABLE, 2026-05-04_2100, scan-2026-05-07-1700ET — highest-conviction mega-cap long
+- **AMZN long** (breakout above $229 resistance or pullback to $225-226 support): scan_2026-05-07, 2026-05-04_ACTIONABLE, 2026-04-29_0600ET, 2026-05-04_2100
+- **AAPL pullback-to-support long** ($254-258 zone, 100% MTF alignment): scan_2026-05-07, 2026-05-04_ACTIONABLE, 2026-05-04_2100, scan-2026-05-07-1700ET
+- **GDX gold miners stagflation hedge** (entry $96-101, GLD at ATH support, 100% MTF bullish): 2026-04-17_0200, scan-2026-04-19-0200, 2026-04-21_0200, 2026-04-22_1700
+- **DBA ag commodities stagflation hedge** (consecutive days + Kalman, CPI hedge): scan_2026-05-07, 2026-04-01-0200, 2026-04-17_0200, scan-2026-04-06-0200
+- **WMT defensive staples long** (consecutive days trigger + institutional block call flow 6.6x OI): 2026-04-18-0200, scan-2026-04-19-0200, 2026-05-03_fundamental, 2026-05-03_0200
+- **Energy sector longs** (XOM/CVX/SLB/HAL/EOG with regime detection + Brent tailwind): 2026-03-27_session8, 2026-03-27-0200ET, 2026-04-07-1700, 2026-04-29_fundamental
+- **META short** (100% bearish Kalman/Regime alignment but reduce to 1.5% on squeeze risk when RSI <30 + bullish PCR): 2026-03-31-0200, 2026-04-01-0200, 2026-03-30-1700, 2026-03-31-1707
+- **HPE long breakout** (multi-month base, 100% MTF bullish + confluence >77): 2026-04-23, 2026-05-05-1700, 2026-05-04_comprehensive, 2026-05-04_ACTIONABLE
+- **MRK defensive healthcare hold** (Kalman Filter + pipeline catalysts + PCR <0.25): 2026-04-01-0200, scan-2026-04-13-0200, 2026-03-30-1700, scan-2026-04-12-0200

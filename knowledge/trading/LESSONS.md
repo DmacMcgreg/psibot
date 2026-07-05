@@ -173,3 +173,26 @@ Signal activity observed but P/L attribution IMPOSSIBLE:
 - ITA defense strategies failed regime-matched validation at >95% similarity threshold (2026-03-27 session10, then defense sector flipped to coordinated short 2026-04-23)
 - GLD active strategies (kalman_filter, adxr) underperformed buy-and-hold +46.87% during momentum-driven gold bull run (2026-03-27 session10, 2026-04-15-1700 confirmed passive thesis)
 - META short thesis on capex inflation persisted but conflicting catalysts (Corning deal, data centers) made stop management noisy (2026-04-02-0200-scan still short, 2026-04-30 still AVOID)
+
+## monthly additions (failures) — appended 2026-06-01
+- Energy-equity (XLE/XOM/VLO/PSX) longs failed during oil-spike regime as equities diverged from futures - distribution despite WTI strength (2026-04-22 0200, 2026-04-22 1700, 2026-04-27 1700, 2026-04-29 post-FOMC)
+- 75% MTF alignment entries failed / were rejected - 100% MTF is the real filter, sub-100% setups got vetoed (2026-04-27 0200, 2026-04-27 1700, 2026-04-25, 2026-05-06 technical)
+- NEE defensive utility long failed - entered at range rejection, distribution on volume, breakdown to $81-82 instead of holding $91-94 (2026-04-13, 2026-04-14, 2026-04-15)
+- META short squeeze risk at RSI 22 extreme oversold despite distribution thesis - had to reduce size on IV 0th-percentile + MS upgrade (2026-03-30, 2026-03-31, 2026-04-02)
+- Defense sector (LMT/NOC/RTX/GE/ITA) longs failed despite war/Pentagon catalysts - coordinated 70-86% bearish technicals overrode geopolitical thesis (2026-03-27 session11, 2026-04-23)
+- GLD/gold-miner active strategies underperformed buy-and-hold during momentum bull run (+46.87% passive vs lower active Sharpes) (2026-03-27 session10, 2026-03-30 S11-research)
+- NVDA dual-signal conflict trades (bullish PCR vs bearish technicals or vice versa) flagged AVOID rather than convicted entry (2026-04-05, 2026-04-20, 2026-04-22, 2026-05-04 2100)
+- AMD parabolic chase failed - RSI 70-79 + above upper BB required pullback to $276-295 / $215-220 before safe entry (2026-04-22 1700, 2026-05-01 1700, 2026-05-06 technical)
+- Pre-earnings entries during FOMC/macro cluster weeks failed - AAPL Apr 30, AMZN Apr 29, NVDA May 20 all flagged AVOID-pre-earnings (2026-04-25, 2026-04-28 both)
+- Mean Reversion strategies stayed gated all of April - PCE >2.5% (3.58-4.0%) AND VIX often >25 kept MR cluster offline despite repeated setups (2026-03-30, 2026-04-02, 2026-04-05, 2026-04-06, 2026-04-15, 2026-04-26, 2026-04-27, 2026-05-07)
+
+## monthly additions (failures) — appended 2026-07-01
+- **GDX entry zone never reached**: despite high-conviction thesis and gold at ATH, 75% bearish MTF alignment blocked entries — price stayed below $99-101 target (2026-04-28, scan-2026-04-27, 2026-05-03_0200)
+- **XLE diverged from rising oil**: energy equities distributed while WTI climbed >$100 — institutional selling overrode bullish crude thesis; oil futures (USO) outperformed energy stocks (2026-04-22_0200, 2026-04-28, 2026-05-03_0200)
+- **NVDA repeatedly disqualified**: earnings proximity violated 48h rule, 4h/daily MACD divergence and options/technical conflicts prevented clean entries (scan_2026-05-07, scan-2026-04-27, 2026-05-01_0200)
+- **AMZN signal conflict forced WAIT**: 100% MTF bullish but PCR/options divergence repeatedly blocked entry — only actionable when signals aligned (2026-05-05-1700, scan-2026-04-27, 2026-04-16-0200)
+- **Refiner thesis (VLO/PSX) failed**: technical breakdown overrode crack spread and fundamental strength thesis (2026-04-22_0200, 2026-04-21_0200)
+- **75% MTF alignment insufficient**: regime detection entries require 100% MTF — 75% consistently produced failed or deferred setups (scan-2026-04-27, SCAN-2026-04-27-1700ET, 2026-05-06-technical)
+- **PCR >2.0 as exit signal**: reliable trigger even on winning positions — USO PCR 1.88-2.31 and AMT PCR 11.96 preceded exits (SCAN-2026-04-27-1700ET, scan-2026-04-27, 2026-04-22_1700)
+- **Mean reversion gated entire April**: PCE >2.5% kept MR strategies offline for 4+ weeks, stranding capital in Kalman/Regime allocations (2026-04-23, 2026-04-08-0200, scan-2026-04-12-0200)
+- **EQIX smart money divergence**: institutional options positioning vs weak retail technicals — AVOID despite algo BUY signals (2026-04-23, 2026-05-04_SIGNAL_DISCREPANCIES, 2026-05-04_comprehensive)

@@ -102,3 +102,21 @@ ATR_PCT #1 despite Risk-On regime suggests model may be over-weighting volatilit
 - PEG + ROE + insider transaction volume + analyst PT consensus as fundamental gating filter for Big Tech (2026-04-24, 2026-04-30, 2026-05-01)
 - zscore + Bollinger Band mean-reversion composite gated by Core PCE <2.5% AND VIX <25 (2026-03-31, 2026-04-14)
 - Price Volatility Ratio (event-day vs normal-day move magnitude) as event-cluster sizing input (2026-04-23, 2026-04-25, 2026-04-26)
+
+## monthly additions (indicator combos) — appended 2026-06-01
+- MTF alignment (4h/Daily/Weekly/Monthly) + Confluence score + PCR + Max Pain - the four-tuple used as universal entry filter, 100% MTF + confluence ≥60-70 mandatory (2026-04-15 to 2026-05-07)
+- Kalman Filter + Regime Detection weighted blend (50% / 35-55%) gating Consecutive-Days and POC Reversion as overlays during risk-off stagflation (2026-04-02 through 2026-04-15)
+- Combined Score = Technical Score + Options Score (PCR + IV percentile + Max Pain + GEX + unusual block flow) as composite ranking (2026-04-16, 2026-04-20, 2026-04-22 1700, 2026-04-28 1700)
+- PEG + Revenue Growth YoY + EPS Growth YoY + Net/Operating Margin + ROE + Analyst PT as the standard fundamental scorecard for Mag-7/semis (2026-04-25 fund, 2026-04-28 fund, 2026-04-30 fund, 2026-05-01 fund, 2026-05-04 fund)
+- VIX + OVX + Brent backwardation + GPR index + 10y yield as cross-asset macro-regime gate (I-XTSM / Macro 5-Factor) (2026-03-27 session8, 2026-03-27 session9, 2026-03-30 session12-13)
+- Consecutive Days + ADXR + Volume Imbalance triple composite as position-sizing signal (not entry trigger) on XLE/USO energy cluster (2026-03-27 session10, 2026-03-30 S11/S12 research, 2026-04-06 0200, 2026-04-07 0200)
+- Sentiment score + news mention volume + Bull/Bear/Neutral counts + unusual options block flow (premium $ size + vol/OI ratio) as institutional-conviction overlay (2026-04-18 sentiment, 2026-04-20 0200, 2026-05-06 sentiment)
+
+## monthly additions (indicator combos) — appended 2026-07-01
+- **MTF alignment (4h/daily/weekly/monthly) + Confluence score (0-100) + PCR** — core indicator stack used as universal entry filter across all scans
+- **Mean Reversion gate: PCE <2.5% AND VIX <25** — hard dual-condition gate preventing MR strategy deployment
+- **Kalman Filter (threshold 75) + Regime Detection (50% weight)** — dual-strategy allocation system for risk-off/stagflation regimes
+- **Smart money options divergence detection** — PCR vs technical signal conflict used as AVOID/red-flag trigger
+- **Composite Multi-Factor Scoring** — Technical 40% + Sentiment 20% + Options 10% + ML 10% weighting for setup ranking
+- **VIX term structure M1/M2 ratio** — backwardation (>1.05) as regime filter for upweighting mean-reversion signals
+- **Consecutive Days pattern (10% weight)** — supplementary strategy for commodity/defensive ETFs (DBA, WMT, USO)
