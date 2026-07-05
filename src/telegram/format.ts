@@ -1,4 +1,5 @@
 import telegramifyMarkdown from "telegramify-markdown";
+import { getConfig } from "../config.ts";
 
 const MAX_MESSAGE_LENGTH = 4096;
 
@@ -199,4 +200,14 @@ export function formatJobSummary(job: {
   const schedule =
     job.type === "cron" && job.schedule ? ` (${job.schedule})` : "";
   return `${job.name}${schedule} [${job.status}]`;
+}
+
+/**
+ * Build an absolute Mini App URL (e.g. tmaLink("jobs/12"), tmaLink("digest/2026-W27")).
+ * Returns null when TELEGRAM_WEBHOOK_HOST is unset (no tailnet host configured).
+ */
+export function tmaLink(path: string): string | null {
+  const host = getConfig().TELEGRAM_WEBHOOK_HOST;
+  if (!host) return null;
+  return `https://${host}/tma/${path.replace(/^\/+/, "")}`;
 }
