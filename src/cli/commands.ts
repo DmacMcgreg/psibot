@@ -179,26 +179,42 @@ export async function restart(): Promise<void> {
 }
 
 export async function status(): Promise<void> {
-  const pid = getRunningPid();
+  const filePid = getRunningPid();
   const installed = isInstalled();
+
+  // launchctl is the source of truth when the LaunchAgent is installed: it
+  // reports "state = running" / "pid = N" the instant the process forks,
+  // whereas our PID file is only written once the app finishes loadConfig()
+  // + initDb() + memory.indexAll(). Relying solely on the PID file during
+  // that startup window (or a crash-before-writePid) makes the summary line
+  // say "stopped" while the detail lines below say "running".
+  let launchctlPid: number | null = null;
+  let printOutput = "";
+  if (installed) {
+    const result = exec(["launchctl", "print", serviceTarget()]);
+    if (result.exitCode === 0) {
+      printOutput = result.stdout;
+      const topLevelPidMatch = result.stdout.match(/^\tpid = (\d+)/m);
+      if (topLevelPidMatch) launchctlPid = parseInt(topLevelPidMatch[1]!, 10);
+    }
+  }
+
+  const pid = installed ? launchctlPid : filePid;
 
   console.log(`LaunchAgent: ${installed ? "installed" : "not installed"}`);
   console.log(`Status:      ${pid !== null ? `running (PID ${pid})` : "stopped"}`);
 
-  if (installed) {
-    const result = exec(["launchctl", "print", serviceTarget()]);
-    if (result.exitCode === 0) {
-      // Extract useful lines from launchctl print
-      const lines = result.stdout.split("\n");
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (
-          trimmed.startsWith("pid =") ||
-          trimmed.startsWith("state =") ||
-          trimmed.startsWith("last exit code =")
-        ) {
-          console.log(`  ${trimmed}`);
-        }
+  if (installed && printOutput) {
+    // Extract useful lines from launchctl print
+    const lines = printOutput.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (
+        trimmed.startsWith("pid =") ||
+        trimmed.startsWith("state =") ||
+        trimmed.startsWith("last exit code =")
+      ) {
+        console.log(`  ${trimmed}`);
       }
     }
   }

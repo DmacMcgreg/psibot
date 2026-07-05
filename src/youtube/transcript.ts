@@ -289,8 +289,10 @@ async function extractTranscriptViaAudio(videoId: string, notify?: (message: str
 
 /**
  * Get video metadata (title, channel) using yt-dlp --dump-json.
+ * channelId is the UC... id needed for RSS polling / channel fan-out; it's
+ * populated from yt-dlp's channel_id field when present.
  */
-export async function getVideoMetadata(videoId: string): Promise<{ title: string; channelTitle: string } | null> {
+export async function getVideoMetadata(videoId: string): Promise<{ title: string; channelTitle: string; channelId?: string } | null> {
   try {
     const proc = Bun.spawn(
       ["yt-dlp", "--dump-json", "--skip-download", `https://youtube.com/watch?v=${videoId}`],
@@ -305,10 +307,11 @@ export async function getVideoMetadata(videoId: string): Promise<{ title: string
     const exitCode = await proc.exited;
     if (exitCode !== 0) return null;
 
-    const data = JSON.parse(stdout) as { title?: string; channel?: string; uploader?: string };
+    const data = JSON.parse(stdout) as { title?: string; channel?: string; uploader?: string; channel_id?: string };
     return {
       title: data.title ?? "Unknown Title",
       channelTitle: data.channel ?? data.uploader ?? "Unknown Channel",
+      channelId: data.channel_id,
     };
   } catch {
     return null;

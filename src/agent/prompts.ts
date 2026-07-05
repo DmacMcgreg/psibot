@@ -1,6 +1,12 @@
 import { MemorySystem } from "../memory/index.ts";
 import type { ChatContext } from "../shared/types.ts";
 import { listAgents } from "../db/queries.ts";
+import { listSkills } from "../skills/index.ts";
+import { markExposed } from "../skills/usage.ts";
+import { scoreAllSkills } from "../curator/transitions.ts";
+import { createLogger } from "../shared/logger.ts";
+
+const log = createLogger("agent.prompts");
 
 export function buildSystemPrompt(memory: MemorySystem, chatContext?: ChatContext): string {
   const memoryContent = memory.readMemory();
@@ -38,14 +44,7 @@ ${memoryContent}
 
 ${buildSubagentListing()}
 
-## Skill Library — procedural how-to memory
-
-You have a growing library of class-level "how to do X" skills at \`<PSIBOT_DIR>/skills/\`. Distinct from \`knowledge/\` (static project context) and from subagents (personas). Use them like this:
-
-- **Before any non-trivial task**, call \`skills_list\` to see if a relevant skill already exists. Match on description, not exact name.
-- **\`skill_view name=<slug>\`** to load the full body. Set \`load: true\` when you're actually following the procedure (not just looking).
-- A skill is a directory: \`SKILL.md\` (frontmatter + body) plus optional \`references/\`, \`templates/\`, \`scripts/\`. The view tool returns SKILL.md plus a manifest of support files.
-- Skills self-improve. After turns where the user corrects your style, workflow, or approach, a background review may patch the relevant skill or create a new one. Frustration signals like "stop doing X" or "I hate when you Y" go INTO the skill that governs that task class, not just memory.
+${buildSkillListing()}
 
 After generating media (images, audio), use telegram_send_photo or telegram_send_voice to deliver the results to the user.
 
@@ -99,6 +98,55 @@ When the user asks for research + text output + audio:
 - Each Task MUST only be spawned once per purpose. When a Task returns results, treat them as final.
 - Trust subagent results. When a Task reports it completed an action, accept that it was done.
 - If a Task fails, try a different approach rather than retrying the exact same task. After two failures, report the issue to the user.`;
+}
+
+/**
+ * Render the "Skill Library" section: the HOT tier (pinned + top-scored
+ * skills) listed name + description so relevance-matching costs zero tool
+ * calls — the model only spends a call on skill_view when there's a hit.
+ * This mirrors how Claude Code surfaces skills (frontmatter descriptions
+ * always in context). Discovery-by-instruction ("call skills_list first")
+ * demonstrably never fired; discovery-by-listing is a fact in context.
+ *
+ * Side effect: stamps first_exposed_at on listed skills — the decay clock
+ * starts at first exposure, not creation.
+ */
+export function buildSkillListing(): string {
+  const header = `## Skill Library — procedural how-to memory
+
+You have a library of class-level "how to do X" skills at \`<PSIBOT_DIR>/skills/\`. Distinct from \`knowledge/\` (static project context) and from subagents (personas).`;
+  const footer = `- **\`skill_view name=<slug>\`** loads a skill's full body. Set \`load: true\` when you're actually following the procedure (not just looking).
+- The list above is the most relevant subset — call \`skills_list\` to see the full library when nothing above matches a non-trivial task.
+- A skill is a directory: \`SKILL.md\` plus optional \`references/\`, \`templates/\`, \`scripts/\`. The view tool returns SKILL.md plus a support-file manifest.
+- Skills self-improve. After turns where the user corrects your style, workflow, or approach, a background review may patch the relevant skill or create a new one. Frustration signals like "stop doing X" or "I hate when you Y" go INTO the skill that governs that task class, not just memory.`;
+
+  try {
+    const scored = scoreAllSkills();
+    const hot = scored.filter((s) => s.tier === "hot");
+    if (hot.length === 0) return `${header}\n\n${footer}`;
+
+    // Pinned first, then by score.
+    hot.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.score - a.score));
+    const descriptions = new Map(listSkills().map((s) => [s.name, s.description]));
+    const lines = hot.map((s) => {
+      const desc = descriptions.get(s.name) ?? "";
+      return `- **${s.name}**${s.pinned ? " (pinned)" : ""} — ${desc}`;
+    });
+
+    markExposed(hot.map((s) => s.name));
+
+    return `${header}
+
+Skills most relevant to your recurring work (match on description; load before starting a task they cover):
+
+${lines.join("\n")}
+
+${footer}`;
+  } catch (e) {
+    // Prompt building must never fail on skill plumbing.
+    log.warn("buildSkillListing failed", { error: String(e) });
+    return `${header}\n\n${footer}`;
+  }
 }
 
 /**
@@ -158,6 +206,12 @@ interface TopicConfig {
 }
 
 const TOPIC_CONFIGS: Record<number, TopicConfig> = {
+  5: {
+    name: "GLM",
+    knowledgeFiles: [],
+    persona: `You are in the **GLM** topic. Messages here are routed to z.ai GLM models (not Anthropic Claude).
+You are a helpful AI assistant powered by GLM. Be concise, helpful, and proactive.`,
+  },
   103: {
     name: "Trading",
     knowledgeFiles: ["trading/GLOSSARY.md", "trading/CHAT_FORMAT.md"],

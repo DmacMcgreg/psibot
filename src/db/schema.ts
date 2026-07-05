@@ -360,6 +360,10 @@ export const MIGRATIONS = [
   `UPDATE pending_items SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
   `UPDATE reminders SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
   `UPDATE reminders SET snooze_until = snooze_until || 'Z' WHERE snooze_until IS NOT NULL AND snooze_until NOT LIKE '%Z'`,
+
+  // Add due_date column to reminders for tiered reminder frequency
+  `ALTER TABLE reminders ADD COLUMN due_date TEXT`,
+
   `UPDATE themes SET created_at = created_at || 'Z', updated_at = updated_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
   `UPDATE theme_items SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
   `UPDATE feedback_log SET created_at = created_at || 'Z' WHERE created_at NOT LIKE '%Z'`,
@@ -584,4 +588,81 @@ export const MIGRATIONS = [
     content='',
     contentless_delete=1
   )`,
+
+  // --- Proactive YouTube Discovery ---
+  // Channels to monitor. Seeded from the user's existing youtube_videos history
+  // (GROUP BY channel), then extended with manually-added and auto-discovered
+  // channels. channel_id is the UC... id required for RSS polling.
+  `CREATE TABLE IF NOT EXISTS discovery_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL UNIQUE,
+    channel_title TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'history'
+      CHECK(origin IN ('history','manual','discovered')),
+    watch_count INTEGER NOT NULL DEFAULT 0,
+    last_polled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_discovery_channels_origin ON discovery_channels(origin)`,
+
+  // Candidate pool: every discovered video, pre- and post-scoring. A video can
+  // arrive via multiple sources (UNIQUE(video_id, source)) so we can attribute
+  // reach. status tracks it through candidate -> processing -> processed -> surfaced.
+  `CREATE TABLE IF NOT EXISTS discovery_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id TEXT NOT NULL,
+    channel_id TEXT,
+    title TEXT,
+    published_at TEXT,
+    source TEXT NOT NULL CHECK(source IN ('rss','search','related','channel','manual')),
+    source_detail TEXT,
+    view_count INTEGER,
+    duration_seconds INTEGER,
+    score REAL,
+    score_breakdown_json TEXT,
+    status TEXT NOT NULL DEFAULT 'candidate'
+      CHECK(status IN ('candidate','processing','processed','rejected','surfaced','dismissed')),
+    reason TEXT,
+    discovered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    processed_at TEXT,
+    surfaced_at TEXT,
+    UNIQUE(video_id, source)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_discovery_candidates_status ON discovery_candidates(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovery_candidates_score ON discovery_candidates(status, score DESC)`,
+
+  // User interest profile: weighted topics derived from the knowledge graph
+  // (recent videos + temporal decay) and feedback_log (positive/negative).
+  // The centroid over topic embeddings is computed/cached by profile.ts.
+  `CREATE TABLE IF NOT EXISTS discovery_interest_weights (
+    topic_id INTEGER PRIMARY KEY REFERENCES youtube_topics(id) ON DELETE CASCADE,
+    weight REAL NOT NULL DEFAULT 0,
+    last_bumped_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+
+  // Small key/value store for persisted run state (the lazily-created Telegram
+  // topic id, last profile-build timestamp, cached centroid, quota counters).
+  `CREATE TABLE IF NOT EXISTS discovery_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
+
+  // Per-run bookkeeping for observability and rate limiting.
+  `CREATE TABLE IF NOT EXISTS discovery_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    channels_polled INTEGER DEFAULT 0,
+    searches_run INTEGER DEFAULT 0,
+    quota_units_used INTEGER DEFAULT 0,
+    candidates_found INTEGER DEFAULT 0,
+    processed INTEGER DEFAULT 0,
+    surfaced INTEGER DEFAULT 0,
+    error TEXT
+  )`,
+
+  // Skill lifecycle: jobs can pin skills (comma-separated slugs) whose full
+  // bodies are inlined into the job prompt by the executor — deterministic
+  // injection at the job seam, no discovery needed.
+  `ALTER TABLE jobs ADD COLUMN skills TEXT`,
 ];

@@ -8,14 +8,7 @@ const AFTERHOUR_FAIL_THRESHOLD = 3;
 let consecutiveFailures = 0;
 let disabledUntil = 0;
 
-interface QuiverCongressTrade {
-  Representative: string;
-  Ticker: string;
-  TransactionDate: string;
-  Transaction: "Purchase" | "Sale" | "Sale (Full)" | "Sale (Partial)" | string;
-  Range?: string;
-  House?: string;
-}
+// QuiverCongressTrade interface removed — shadow-quiver polling disabled May 2026
 
 interface AutopilotPortfolioHolding {
   ticker: string;
@@ -25,11 +18,7 @@ interface AutopilotPortfolioHolding {
   lastUpdated?: string;
 }
 
-async function fetchQuiverCongressTrades(): Promise<QuiverCongressTrade[]> {
-  const url = "https://api.quiverquant.com/beta/live/congresstrading";
-  const data = await fetchJson<QuiverCongressTrade[]>(url);
-  return Array.isArray(data) ? data.slice(0, 100) : [];
-}
+// fetchQuiverCongressTrades removed — shadow-quiver polling disabled May 2026
 
 async function fetchAutopilotLeaderboard(): Promise<AutopilotPortfolioHolding[]> {
   // Autopilot has a public leaderboard page
@@ -109,32 +98,9 @@ export async function pollShadowAfterHourAndFallbacks(): Promise<number> {
     log.error("afterhour poll failed", { error: String(err) });
   }
 
-  // Quiver Quantitative: congressional trades (free public JSON)
-  try {
-    const trades = await fetchQuiverCongressTrades();
-    log.info("quiver congress trades fetched", { count: trades.length });
-    for (const t of trades) {
-      if (!t.Ticker || !/^[A-Z]{1,5}(\.[A-Z])?$/.test(t.Ticker)) continue;
-      const signalUrl = `https://quiverquant.com/congresstrading#${t.Representative}-${t.Ticker}-${t.TransactionDate}`;
-      if (getTradingSignalByUrl(signalUrl)) continue;
-      const direction = t.Transaction === "Purchase" ? "long"
-        : t.Transaction.startsWith("Sale") ? "short"
-          : "neutral";
-      if (direction === "neutral") continue;
-      insertTradingSignal({
-        source: "shadow-quiver",
-        ticker: t.Ticker.toUpperCase(),
-        direction,
-        strength: weights.default,
-        reason: `Quiver: ${t.Representative} ${t.Transaction} ${t.Ticker}${t.Range ? ` (${t.Range})` : ""}`,
-        payload_json: JSON.stringify(t),
-        source_url: signalUrl,
-      });
-      total++;
-    }
-  } catch (err) {
-    log.error("quiver poll failed", { error: String(err) });
-  }
+  // Quiver Quantitative: congressional trades — DISABLED (archived May 2026)
+  // Negative alpha, 7.8% action rate, 26-day reporting lag. Polluted atlas search results.
+  // See: playbook "Do NOT Use" + Alpha Researcher S21 recommendation.
 
   // Autopilot: celebrity/politician portfolios
   try {

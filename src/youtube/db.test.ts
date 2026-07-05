@@ -6,7 +6,13 @@ import { MIGRATIONS } from "../db/schema.ts";
 // Standalone DB test - creates an in-memory database with the schema
 // to verify youtube tables and vec operations work without starting the app.
 
-Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+// setCustomSQLite throws if SQLite is already loaded (e.g. another test file
+// imported the db module first). Guard so the suite runs in any order.
+try {
+  Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+} catch {
+  // Already loaded — fine.
+}
 
 let db: Database;
 

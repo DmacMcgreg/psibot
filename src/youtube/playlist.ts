@@ -138,10 +138,19 @@ export async function processPlaylist(
       // Check if already in DB
       const existing = getVideo(videoId);
       if (existing && existing.processing_status === "marked_processed") {
-        // Already fully processed, just remove from source playlist
+        // Already fully processed — ensure it's in destination and remove from source
         try {
+          if (destinationPlaylistId) {
+            await addToPlaylist(destinationPlaylistId, videoId).catch(() => {
+              // May already be in destination — that's fine
+            });
+          }
           await removeFromPlaylist(playlistItemId);
-        } catch { /* ignore */ }
+          log.info("Removed already-processed video from source playlist", { videoId });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log.warn("Failed to remove already-processed video from source playlist", { videoId, playlistItemId, error: message });
+        }
         result.skipped++;
         result.details.push({ videoId, title: existing.title, status: "skipped" });
         await notify(`(${idx}/${itemsToProcess.length}) Skipped: ${existing.title}`);
@@ -149,8 +158,8 @@ export async function processPlaylist(
         continue;
       }
 
-      if (existing && existing.processing_status === "complete") {
-        // Analyzed but not moved yet, just move it
+      if (existing && (existing.processing_status === "complete" || (existing.processing_status === "processing" && existing.markdown_summary))) {
+        // Analyzed but not moved yet (or stuck in 'processing' with data), just move it
         updateVideoProcessingStatus(videoId, "analyzed", playlistItemId);
         try {
           await moveVideo(videoId, playlistItemId, destinationPlaylistId);

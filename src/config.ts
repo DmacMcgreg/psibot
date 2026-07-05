@@ -24,6 +24,7 @@ const envSchema = z.object({
     .transform(Number)
     .pipe(z.number().positive()),
   DEFAULT_MODEL: z.string().default("claude-opus-4-6"),
+  DEFAULT_BACKEND: z.string().default("claude"),
   DEFAULT_MAX_TURNS: z
     .string()
     .default("300")
@@ -92,7 +93,7 @@ const envSchema = z.object({
   OAUTH_VAULT_API_KEY: z.string().default(""),
   YOUTUBE_SOURCE_PLAYLIST_ID: z.string().default(""),
   YOUTUBE_DESTINATION_PLAYLIST_ID: z.string().default(""),
-  YOUTUBE_ANALYSIS_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+  YOUTUBE_ANALYSIS_MODEL: z.string().default("sonnet"),
   REDDIT_FEED_TOKEN: z.string().default(""),
   REDDIT_USERNAME: z.string().default("FunnyRocker"),
   GITHUB_TOKEN: z.string().default(""),
@@ -100,8 +101,8 @@ const envSchema = z.object({
   GLM_BASE_URL: z.string().default("https://api.z.ai/api/anthropic"),
   GLM_AUTH_TOKEN: z.string().default(""),
   GLM_HAIKU_MODEL: z.string().default("glm-4.7"),
-  GLM_SONNET_MODEL: z.string().default("glm-5-turbo"),
-  GLM_OPUS_MODEL: z.string().default("glm-5"),
+  GLM_SONNET_MODEL: z.string().default("glm-5.2"),
+  GLM_OPUS_MODEL: z.string().default("glm-5.1"),
   // Trading agents dashboard — endpoint that receives agent-run envelopes
   // from completed scheduled jobs. Empty string disables publishing.
   TRADING_BOT_URL: z.string().default("http://localhost:8000"),
@@ -131,7 +132,85 @@ const envSchema = z.object({
     .default("90")
     .transform(Number)
     .pipe(z.number().int().positive()),
-  CURATOR_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+  CURATOR_MODEL: z.string().default("sonnet"),
+  // Skill lifecycle — freshness score + HOT/COLD tiers + export seam.
+  // See docs/plans/2026-07-03-skill-lifecycle-hub-integration.md.
+  SKILL_SCORE_HALF_LIFE_DAYS: z
+    .string()
+    .default("21")
+    .transform(Number)
+    .pipe(z.number().positive()),
+  // How many skills (beyond pinned) are listed in the system prompt.
+  SKILL_HOT_SET_SIZE: z
+    .string()
+    .default("8")
+    .transform(Number)
+    .pipe(z.number().int().nonnegative()),
+  // Promote to HOT at this score; demote below 0.7x (hysteresis, no flapping).
+  SKILL_HOT_THRESHOLD: z
+    .string()
+    .default("0.3")
+    .transform(Number)
+    .pipe(z.number().positive()),
+  // Auto-archive requires score below this AND >= CURATOR_ARCHIVE_AFTER_DAYS
+  // idle since exposure (agent-created skills only).
+  SKILL_ARCHIVE_SCORE_THRESHOLD: z
+    .string()
+    .default("0.05")
+    .transform(Number)
+    .pipe(z.number().positive()),
+  // Export seam — where curator-approved skills sync to. The hub's
+  // seed-paths script wraps this exact directory into provenance:"auto"
+  // GoldenPaths, so anything placed here gets ingested with zero hub changes.
+  SKILL_EXPORT_DIR: z.string().default("~/.claude/skills"),
+  // Read-only cross-harness usage signal (local-mcp-hub telemetry sink).
+  // Empty string disables. Never written, drift-checked, fail-soft.
+  HUB_TELEMETRY_DB: z.string().default("~/.config/hub/telemetry.db"),
+  // --- Proactive YouTube Discovery ---
+  // A self-contained runner that fans out from watch history to find + fully
+  // process new videos and surface an interesting news/info digest. See
+  // src/discovery/.
+  DISCOVERY_ENABLED: z
+    .string()
+    .default("true")
+    .transform((s) => s === "true"),
+  DISCOVERY_INTERVAL_HOURS: z
+    .string()
+    .default("6")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  // Max videos to fully process (transcript -> analyze -> embed -> graph) per run.
+  // Each costs one yt-dlp + one LLM analysis pass, so keep small.
+  DISCOVERY_MAX_PROCESS_PER_RUN: z
+    .string()
+    .default("3")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  // Max search.list calls per run. Each search.list costs 100 quota units AND
+  // consumes one of the ~100/day search bucket — keep tight.
+  DISCOVERY_MAX_SEARCH_CALLS_PER_RUN: z
+    .string()
+    .default("5")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  // Telegram topic id for the discovery/news digest. If unset, the topic is
+  // lazily created in the group chat on first run and its id persisted in
+  // discovery_state. Empty/0 forces DM delivery.
+  DISCOVERY_NEWS_TOPIC_ID: z
+    .string()
+    .default("")
+    .transform((s) => (s ? Number(s) : 0))
+    .pipe(z.number().int().nonnegative()),
+  DISCOVERY_QUIET_START: z
+    .string()
+    .default("0")
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(23)),
+  DISCOVERY_QUIET_END: z
+    .string()
+    .default("8")
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(23)),
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -154,4 +233,21 @@ export function loadConfig(): Config {
 export function getConfig(): Config {
   if (!_config) throw new Error("Config not loaded. Call loadConfig() first.");
   return _config;
+}
+
+/**
+ * Returns env overrides for the GLM backend when DEFAULT_BACKEND is "glm",
+ * or undefined when using Claude. Use with the SDK's `query({ options: { env } })`.
+ */
+export function getBackendEnv(): Record<string, string> | undefined {
+  const config = getConfig();
+  if (config.DEFAULT_BACKEND !== "glm" || !config.GLM_AUTH_TOKEN) return undefined;
+  return {
+    ...process.env as Record<string, string>,
+    ANTHROPIC_BASE_URL: config.GLM_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: config.GLM_AUTH_TOKEN,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: config.GLM_HAIKU_MODEL,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: config.GLM_SONNET_MODEL,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: config.GLM_OPUS_MODEL,
+  };
 }

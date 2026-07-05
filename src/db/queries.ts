@@ -261,13 +261,14 @@ export function createJob(params: {
   agent_name?: string | null;
   agent_prompt?: string | null;
   subagents?: string | null;
+  skills?: string | null;
   next_job_id?: number | null;
 }): Job {
   const db = getDb();
   return db
-    .prepare<Job, [string, string, string, string | null, string | null, number, string | null, number, string | null, string | null, string | null, string | null, string | null, number | null]>(
-      `INSERT INTO jobs (name, prompt, type, schedule, run_at, max_budget_usd, allowed_tools, use_browser, model, backend, agent_name, agent_prompt, subagents, next_job_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    .prepare<Job, [string, string, string, string | null, string | null, number, string | null, number, string | null, string | null, string | null, string | null, string | null, string | null, number | null]>(
+      `INSERT INTO jobs (name, prompt, type, schedule, run_at, max_budget_usd, allowed_tools, use_browser, model, backend, agent_name, agent_prompt, subagents, skills, next_job_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`
     )
     .get(
@@ -284,6 +285,7 @@ export function createJob(params: {
       params.agent_name ?? null,
       params.agent_prompt ?? null,
       params.subagents ?? null,
+      params.skills ?? null,
       params.next_job_id ?? null
     )!;
 }
@@ -329,6 +331,7 @@ export function updateJob(
       | "agent_name"
       | "agent_prompt"
       | "subagents"
+      | "skills"
       | "next_job_id"
       | "notify_policy"
       | "output_template"
@@ -1092,12 +1095,13 @@ export function insertReminder(params: {
   source_id?: string;
   priority?: number;
   max_reminds?: number;
+  due_date?: string;
 }): Reminder {
   const db = getDb();
   return db
-    .prepare<Reminder, [string, string, string | null, string | null, number, number]>(
-      `INSERT INTO reminders (type, title, description, source_id, priority, max_reminds)
-       VALUES (?, ?, ?, ?, ?, ?)
+    .prepare<Reminder, [string, string, string | null, string | null, number, number, string | null]>(
+      `INSERT INTO reminders (type, title, description, source_id, priority, max_reminds, due_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        RETURNING *`
     )
     .get(
@@ -1106,7 +1110,8 @@ export function insertReminder(params: {
       params.description ?? null,
       params.source_id ?? null,
       params.priority ?? 3,
-      params.max_reminds ?? 5
+      params.max_reminds ?? 5,
+      params.due_date ?? null
     )!;
 }
 
@@ -1687,4 +1692,22 @@ export function getJobsUsingAgent(slug: string): Job[] {
   return db
     .prepare<Job, [string]>(`SELECT * FROM jobs WHERE agent_name = ? ORDER BY name`)
     .all(slug);
+}
+
+/**
+ * Count jobs grouped by agent_name in a single query (avoids N+1 from calling
+ * countJobsUsingAgent once per agent). Returns a Map from agent slug -> job count.
+ */
+export function countJobsByAgent(): Map<string, number> {
+  const db = getDb();
+  const rows = db
+    .prepare<{ agent_name: string | null; c: number }, []>(
+      `SELECT agent_name, COUNT(*) as c FROM jobs WHERE agent_name IS NOT NULL GROUP BY agent_name`,
+    )
+    .all();
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (row.agent_name) map.set(row.agent_name, row.c);
+  }
+  return map;
 }

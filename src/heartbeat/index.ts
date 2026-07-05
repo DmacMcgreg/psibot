@@ -12,6 +12,7 @@ import {
   updateReminder,
   dismissReminder,
   completeReminder,
+  snoozeReminder,
   updatePendingItem,
   getPendingItemById,
   isTopicMuted,
@@ -343,12 +344,10 @@ export class HeartbeatRunner {
       (item) => item.auto_decision === "deep_research_queued" || item.auto_decision === "quick_research_queued"
     );
 
-    const droppedCount = processed - triaged.length;
-
     return {
       pendingProcessed: processed,
-      triagedCount: triaged.length,
-      droppedCount: Math.max(0, droppedCount),
+      triagedCount: triageResult.totalProcessed - triageResult.dropped,
+      droppedCount: triageResult.dropped,
       topItems,
       autoResearchItems,
     };
@@ -549,14 +548,19 @@ export class HeartbeatRunner {
 
         log.info(`${label} research complete`, { itemId: item.id, title: result.title, noteSaved: !!notePath });
 
-        completions.push({
+        const completion: ResearchCompletionRecord = {
           itemId: item.id,
           title: result.title,
           label,
           notePath,
           summary: result.summary,
           url: item.url ?? null,
-        });
+        };
+        completions.push(completion);
+
+        // Notify the digest topic that research finished (was previously
+        // silent — this is why the pipeline felt like a black hole).
+        await this.notifyResearchComplete(completion);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`${label} research failed`, { itemId: item.id, error: message });
@@ -565,6 +569,52 @@ export class HeartbeatRunner {
     }
 
     return completions;
+  }
+
+  // --- Research-complete notification (1 message per completed item) ---
+  // Sends a short HTML line to the digest topic with the note path, following
+  // the exact send pattern used by phaseSurfacing (thread_id + DM fallback).
+  // Quiet hours are already gated at the tick() level; the topic-mute check
+  // mirrors surfaceBacklog so a muted News topic stays quiet.
+  private async notifyResearchComplete(c: ResearchCompletionRecord): Promise<void> {
+    const bot = this.getBot();
+    if (!bot) return;
+
+    const targetChatIds: (string | number)[] = this.digestChatId
+      ? [this.digestChatId]
+      : this.defaultChatIds;
+    const topicOpts = this.digestChatId && this.digestTopicId
+      ? { message_thread_id: this.digestTopicId }
+      : {};
+
+    if (targetChatIds.length === 0) return;
+
+    // Respect a muted digest topic (same guard as surfaceBacklog).
+    if (this.digestChatId && isTopicMuted(this.digestChatId, this.digestTopicId ?? null)) {
+      return;
+    }
+
+    const title = escapeHtml(c.title || "Untitled");
+    const summary = c.summary ? escapeHtml(truncate(c.summary, 200)) : "";
+    const lines = [
+      `🔬 Research done: <b>${title}</b>${summary ? ` — ${summary}` : ""}`,
+    ];
+    if (c.notePath) {
+      lines.push(`<code>${escapeHtml(c.notePath)}</code>`);
+    }
+    const msg = lines.join("\n");
+
+    for (const chatId of targetChatIds) {
+      try {
+        await bot.api.sendMessage(chatId, msg, { parse_mode: "HTML", ...topicOpts });
+      } catch (err) {
+        log.error("Failed to send research-complete notification", {
+          chatId,
+          itemId: c.itemId,
+          error: String(err),
+        });
+      }
+    }
   }
 
   // --- Phase 3c: Embed unembedded atlas_items via Gemini + sqlite-vec ---
@@ -654,14 +704,21 @@ export class HeartbeatRunner {
   }
 
   private writeTickDailyLog(result: TickResult, completions: ResearchCompletionRecord[]): void {
-    const parts = [
-      `intake=${result.pendingProcessed}`,
-      `triaged=${result.triagedCount}`,
-      `dropped=${result.droppedCount}`,
-      `top=${result.topItems.length}`,
-      `auto-research=${result.autoResearchItems.length}`,
-      `researched-complete=${completions.length}`,
-    ];
+    // Skip logging when nothing happened — avoids spamming daily log with zero-count entries
+    const totalActivity = result.pendingProcessed + result.triagedCount + completions.length;
+    if (totalActivity === 0) return;
+
+    const parts: string[] = [];
+    if (result.pendingProcessed > 0) parts.push(`${result.pendingProcessed} intake`);
+    if (result.triagedCount > 0) parts.push(`${result.triagedCount} triaged`);
+    if (result.droppedCount > 0) parts.push(`${result.droppedCount} dropped`);
+    if (result.topItems.length > 0) parts.push(`${result.topItems.length} surfaced`);
+    if (result.autoResearchItems.length > 0) parts.push(`${result.autoResearchItems.length} queued for research`);
+    if (completions.length > 0) {
+      const titles = completions.map((c) => c.title).slice(0, 3).join(", ");
+      parts.push(`${completions.length} researched (${titles})`);
+    }
+
     const line = `- ${hhmm()} heartbeat: ${parts.join(", ")}`;
     try {
       this.memory.appendDailyLog(line);
@@ -728,7 +785,53 @@ export class HeartbeatRunner {
         remind_count: reminder.remind_count + 1,
         status: "active",
       });
+
+      // Auto-snooze based on urgency tier (time until due_date)
+      // 3+ days out: 4h, 1-2 days: 2h, due today/overdue: 1h, no due_date: 4h
+      const snoozeMs = this.getUrgencySnoozeMs(reminder.due_date, reminder.priority);
+      snoozeReminder(reminder.id, snoozeMs);
+      log.info("Auto-snoozed reminder after send", {
+        id: reminder.id,
+        title: reminder.title,
+        due_date: reminder.due_date,
+        snoozeHours: Math.round(snoozeMs / 3600000),
+      });
     }
+  }
+
+  /** Calculate snooze duration based on how soon the reminder is due.
+   *  Priority 1 = hourly when due/overdue.
+   *  Priority 2 = every 4-12h depending on proximity.
+   *  Priority 3+ = daily or every 2 days — NOT hourly.
+   */
+  private getUrgencySnoozeMs(dueDate: string | null, priority: number): number {
+    const HOUR = 3600_000;
+
+    // Priority 1 = critical/urgent: hourly only for these
+    if (priority === 1) {
+      if (!dueDate) return 4 * HOUR;
+      const due = new Date(dueDate);
+      const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+      return daysUntilDue <= 1 ? 1 * HOUR : 4 * HOUR;
+    }
+
+    // Priority 2 = high but not critical
+    if (priority === 2) {
+      if (!dueDate) return 8 * HOUR;
+      const due = new Date(dueDate);
+      const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+      if (daysUntilDue <= 1) return 4 * HOUR;    // Due/tomorrow: every 4h
+      if (daysUntilDue <= 2) return 8 * HOUR;    // 2 days: every 8h
+      return 12 * HOUR;                           // 3+ days: every 12h
+    }
+
+    // Priority 3-5 = normal/low: daily or less frequent
+    if (!dueDate) return 48 * HOUR;               // No due date: every 2 days
+    const due = new Date(dueDate);
+    const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+    if (daysUntilDue <= 1) return 12 * HOUR;      // Due/tomorrow: every 12h
+    if (daysUntilDue <= 2) return 24 * HOUR;      // 2 days: daily
+    return 48 * HOUR;                              // 3+ days: every 2 days
   }
 }
 

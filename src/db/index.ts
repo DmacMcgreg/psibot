@@ -6,8 +6,14 @@ import { createLogger } from "../shared/logger.ts";
 import { mkdirSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 
-// Use Homebrew SQLite which supports loadable extensions (Apple's doesn't)
-Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+// Use Homebrew SQLite which supports loadable extensions (Apple's doesn't).
+// Idempotent: setCustomSQLite throws if SQLite is already loaded, which can
+// happen when multiple test files (or hot-reload) import this module.
+try {
+  Database.setCustomSQLite("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib");
+} catch {
+  // Already loaded — safe to ignore.
+}
 
 const log = createLogger("db");
 
@@ -30,6 +36,9 @@ export function initDb(): Database {
   _db = new Database(config.DB_PATH);
   _db.exec("PRAGMA journal_mode = WAL");
   _db.exec("PRAGMA foreign_keys = ON");
+  // Wait up to 5s for a write lock instead of throwing "database is locked"
+  // immediately when async paths interleave writes on the single connection.
+  _db.exec("PRAGMA busy_timeout = 5000");
 
   // Load sqlite-vec extension for vector search
   sqliteVec.load(_db);
@@ -51,6 +60,15 @@ export function initDb(): Database {
 
   log.info("Database initialized", { path: config.DB_PATH });
   return _db;
+}
+
+/**
+ * Test-only: inject a pre-built database (e.g. an in-memory DB with migrations
+ * already applied) as the process-wide singleton. Lets co-located *.test.ts
+ * files exercise db.ts without touching the real app database.
+ */
+export function setDbForTesting(db: Database): void {
+  _db = db;
 }
 
 function expandSourceCheckConstraints(db: Database): void {

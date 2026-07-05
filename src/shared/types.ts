@@ -48,6 +48,7 @@ export interface Job {
   agent_name: string | null;
   agent_prompt: string | null;
   subagents: string | null;       // JSON array of subagent names
+  skills: string | null;          // Comma-separated skill slugs inlined into the job prompt
   next_job_id: number | null;
   notify_policy: AgentNotifyPolicy | null; // Job-level override (null = use agent default)
   output_template: string | null;          // Job-level template override

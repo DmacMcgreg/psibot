@@ -24,6 +24,7 @@ import { updateAutonomyFromFeedback } from "../heartbeat/autonomy.ts";
 import type { AutonomyLevelChange } from "../heartbeat/autonomy.ts";
 import type { MemorySystem } from "../memory/index.ts";
 import { getPendingItemById } from "../db/queries.ts";
+import { applyItemAction } from "../triage/actions.ts";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const log = createLogger("telegram:keyboards");
@@ -518,20 +519,9 @@ export function createCallbackHandler(deps: CallbackDeps) {
             .text("Deep Dive", `rds:${id}`);
           await ctx.answerCallbackQuery({ text: "Pick research depth" });
           await ctx.editMessageReplyMarkup({ reply_markup: researchKb }).catch(() => {});
-          // Background: DB updates, NotePlan tag, autonomy feedback
-          const rrItem = getPendingItemById(id);
-          updatePendingItem(id, { status: "archived", auto_decision: "research_requested" });
-          addNoteplanTag(rrItem?.noteplan_path ?? null, "action/research");
-          insertFeedbackLog({ item_id: id, user_action: "research", system_recommendation: "triage" });
-          if (rrItem) {
-            const change = updateAutonomyFromFeedback({
-              signalType: "compound",
-              signalValue: compoundSignalKey(rrItem),
-              systemRecommendation: "triage",
-              userAction: "research",
-            });
-            await surfaceAutonomyChange(change, deps, ctx);
-          }
+          // Background: DB updates, NotePlan tag, feedback + autonomy learning.
+          const rrResult = applyItemAction(id, "research");
+          await surfaceAutonomyChange(rrResult.change, deps, ctx);
           break;
         }
 
@@ -558,19 +548,8 @@ export function createCallbackHandler(deps: CallbackDeps) {
           const id = parseInt(payload, 10);
           await ctx.answerCallbackQuery({ text: "Watching this topic" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-          const rwItem = getPendingItemById(id);
-          updatePendingItem(id, { status: "archived", watch_status: "watching" });
-          addNoteplanTag(rwItem?.noteplan_path ?? null, "action/watch");
-          insertFeedbackLog({ item_id: id, user_action: "watch", system_recommendation: "triage" });
-          if (rwItem) {
-            const change = updateAutonomyFromFeedback({
-              signalType: "compound",
-              signalValue: compoundSignalKey(rwItem),
-              systemRecommendation: "triage",
-              userAction: "watch",
-            });
-            await surfaceAutonomyChange(change, deps, ctx);
-          }
+          const rwResult = applyItemAction(id, "watch");
+          await surfaceAutonomyChange(rwResult.change, deps, ctx);
           break;
         }
 
@@ -592,18 +571,8 @@ export function createCallbackHandler(deps: CallbackDeps) {
           } else {
             await ctx.answerCallbackQuery({ text: "Archived" });
             await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-            updatePendingItem(id, { status: "archived" });
-            addNoteplanTag(rxItem?.noteplan_path ?? null, "action/archive");
-            insertFeedbackLog({ item_id: id, user_action: "archive", system_recommendation: "triage" });
-            if (rxItem) {
-              const change = updateAutonomyFromFeedback({
-                signalType: "compound",
-                signalValue: compoundSignalKey(rxItem),
-                systemRecommendation: "triage",
-                userAction: "archive",
-              });
-              await surfaceAutonomyChange(change, deps, ctx);
-            }
+            const rxResult = applyItemAction(id, "archive");
+            await surfaceAutonomyChange(rxResult.change, deps, ctx);
           }
           break;
         }
@@ -652,18 +621,8 @@ export function createCallbackHandler(deps: CallbackDeps) {
           } else {
             await ctx.answerCallbackQuery({ text: "Dropped" });
             await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-            updatePendingItem(id, { status: "deleted" });
-            addNoteplanTag(rdItem?.noteplan_path ?? null, "action/drop");
-            insertFeedbackLog({ item_id: id, user_action: "drop", system_recommendation: "triage" });
-            if (rdItem) {
-              const change = updateAutonomyFromFeedback({
-                signalType: "compound",
-                signalValue: compoundSignalKey(rdItem),
-                systemRecommendation: "triage",
-                userAction: "drop",
-              });
-              await surfaceAutonomyChange(change, deps, ctx);
-            }
+            const rdResult = applyItemAction(id, "drop");
+            await surfaceAutonomyChange(rdResult.change, deps, ctx);
           }
           break;
         }
@@ -691,6 +650,33 @@ export function createCallbackHandler(deps: CallbackDeps) {
             });
             await surfaceAutonomyChange(change, deps, ctx);
           }
+          break;
+        }
+
+        case "dv": {
+          // YouTube discovery candidate feedback. payload = "<sub>:<candidateId>"
+          // where sub is 'drop' (dismiss this discovery). Used to let the user
+          // prune discoveries and feed the learning loop.
+          const sepIdx = payload.indexOf(":");
+          const sub = sepIdx >= 0 ? payload.slice(0, sepIdx) : payload;
+          const candidateId = parseInt(sepIdx >= 0 ? payload.slice(sepIdx + 1) : payload, 10);
+          const { updateCandidate } = await import("../discovery/db.ts");
+          const { insertFeedbackLog } = await import("../db/queries.ts");
+
+          if (sub === "drop") {
+            updateCandidate(candidateId, { status: "dismissed" });
+            await ctx.answerCallbackQuery({ text: "Dismissed — won't suggest again" });
+            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          } else {
+            await ctx.answerCallbackQuery({ text: "Done" });
+            await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          }
+          insertFeedbackLog({
+            content_type: "youtube_discovery",
+            source: "telegram",
+            user_action: sub,
+            signal_snapshot: JSON.stringify({ candidateId }),
+          });
           break;
         }
 

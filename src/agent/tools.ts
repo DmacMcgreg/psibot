@@ -31,6 +31,7 @@ import {
   getReminderBySourceId,
   getActiveReminders,
   completeReminder,
+  snoozeReminder,
   muteTopic,
   unmuteTopic,
   getMutedTopics,
@@ -62,7 +63,7 @@ import {
   synthesizeMonthly,
 } from "../atlas/synthesize.ts";
 import { listSkills, readSkill, validateSkillName, ensureSkillsDir } from "../skills/index.ts";
-import { bumpView, bumpUse, getRecord as getSkillUsage } from "../skills/usage.ts";
+import { bumpView, bumpUse, getRecord as getSkillUsage, recordVerdict, setExportApproved } from "../skills/usage.ts";
 import {
   createSkill,
   editSkill,
@@ -76,6 +77,45 @@ import { searchSessions } from "../sessions/search.ts";
 
 const log = createLogger("tools");
 
+/** Calculate snooze duration based on how soon a reminder is due.
+ *  - Priority 1 (super urgent): always 1h
+ *  - Due today/overdue or due tomorrow: 1h
+ *  - Due in 2 days: 2h
+ *  - Due in 3+ days or no due date: 4h
+ *  - Priority 1 due/today: 1h (only hourly tier)
+ *  - Priority 2: 4-12h depending on proximity
+ *  - Priority 3+: 12-48h, daily or every 2 days
+ */
+function getUrgencySnoozeMs(dueDate: string | null, priority: number): number {
+  const HOUR = 3600_000;
+
+  // Priority 1 = critical/urgent: hourly only for these
+  if (priority === 1) {
+    if (!dueDate) return 4 * HOUR;
+    const due = new Date(dueDate);
+    const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+    return daysUntilDue <= 1 ? 1 * HOUR : 4 * HOUR;
+  }
+
+  // Priority 2 = high but not critical
+  if (priority === 2) {
+    if (!dueDate) return 8 * HOUR;
+    const due = new Date(dueDate);
+    const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+    if (daysUntilDue <= 1) return 4 * HOUR;    // Due/tomorrow: every 4h
+    if (daysUntilDue <= 2) return 8 * HOUR;    // 2 days: every 8h
+    return 12 * HOUR;                           // 3+ days: every 12h
+  }
+
+  // Priority 3-5 = normal/low: daily or less frequent
+  if (!dueDate) return 48 * HOUR;               // No due date: every 2 days
+  const due = new Date(dueDate);
+  const daysUntilDue = (due.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+  if (daysUntilDue <= 1) return 12 * HOUR;      // Due/tomorrow: every 12h
+  if (daysUntilDue <= 2) return 24 * HOUR;      // 2 days: daily
+  return 48 * HOUR;                              // 3+ days: every 2 days
+}
+
 export interface ToolDeps {
   memory: MemorySystem;
   reloadScheduler: () => void;
@@ -85,6 +125,8 @@ export interface ToolDeps {
   groupChatIds: number[];
   psibotDir: string;
   scheduleRestart: () => void;
+  /** Late-binding discovery runner; present when DISCOVERY_ENABLED. */
+  getDiscoveryRunner?: () => import("../discovery/index.ts").DiscoveryRunner | null;
 }
 
 export function createAgentTools(deps: ToolDeps) {
@@ -362,10 +404,10 @@ export function createAgentTools(deps: ToolDeps) {
 
       tool(
         "skill_manage",
-        "Create, edit, or archive a skill in the skill library. Actions: create (new SKILL.md), edit (full rewrite), patch (append a section), write_file / remove_file (manage references/, templates/, scripts/), delete (archive — recoverable, NEVER hard-deleted). Skills created inside the background self-improvement review fork are marked agent-created and become eligible for autonomous curator management; skills you create from foreground turns belong to the user and the curator never touches them.",
+        "Create, edit, or archive a skill in the skill library. Actions: create (new SKILL.md), edit (full rewrite), patch (append a section), write_file / remove_file (manage references/, templates/, scripts/), delete (archive — recoverable, NEVER hard-deleted), pin/unpin (pinned skills never decay and get periodic verification), verdict (record helped/neutral/misled after a run that loaded the skill), approve_export / revoke_export (allow syncing to ~/.claude/skills where Claude Code sessions and the MCP hub pick it up). Skills created inside the background self-improvement review fork are marked agent-created and become eligible for autonomous curator management; skills you create from foreground turns belong to the user and the curator never touches them.",
         {
           action: z
-            .enum(["create", "edit", "patch", "write_file", "remove_file", "delete", "pin", "unpin"])
+            .enum(["create", "edit", "patch", "write_file", "remove_file", "delete", "pin", "unpin", "verdict", "approve_export", "revoke_export"])
             .describe("Mutation to perform."),
           name: z.string().describe("Skill name (slug, lowercase-with-hyphens)."),
           content: z
@@ -402,6 +444,12 @@ export function createAgentTools(deps: ToolDeps) {
             .optional()
             .describe(
               'For delete: REQUIRED. Pass an umbrella skill name when this skill is being merged into another, or empty string "" for true pruning. Drives downstream cron-job skill-reference migration.'
+            ),
+          verdict: z
+            .enum(["helped", "neutral", "misled"])
+            .optional()
+            .describe(
+              "For verdict: outcome of a run that loaded this skill. 'helped' = the procedure matched what worked; 'neutral' = loaded but didn't matter; 'misled' = the skill's procedure was wrong or sent the run down a bad path."
             ),
         },
         async (args) => {
@@ -491,6 +539,21 @@ export function createAgentTools(deps: ToolDeps) {
               result = setPinnedFlag({ name: args.name, pinned: true });
             } else if (action === "unpin") {
               result = setPinnedFlag({ name: args.name, pinned: false });
+            } else if (action === "verdict") {
+              if (!args.verdict) {
+                return {
+                  content: [{ type: "text" as const, text: "verdict requires `verdict` (helped|neutral|misled)" }],
+                  isError: true,
+                };
+              }
+              recordVerdict(args.name, args.verdict);
+              result = { success: true, message: `recorded '${args.verdict}' verdict for '${args.name}'` };
+            } else if (action === "approve_export") {
+              setExportApproved(args.name, true);
+              result = { success: true, message: `approved '${args.name}' for export to ~/.claude/skills (synced on next curator pass)` };
+            } else if (action === "revoke_export") {
+              setExportApproved(args.name, false);
+              result = { success: true, message: `revoked export approval for '${args.name}' (exported copy removed on next curator pass)` };
             } else {
               return {
                 content: [{ type: "text" as const, text: `unknown action: ${action}` }],
@@ -581,7 +644,7 @@ export function createAgentTools(deps: ToolDeps) {
 
       tool(
         "memory_search",
-        "Search across all knowledge files for a query. Returns matching snippets with file paths.",
+        "Search agent-context knowledge files only (identity, user context, tools, per-agent memory — NOT daily logs/research/trading/scans, which live in Atlas). Returns matching snippets with file paths. Use knowledge_search(scope:'both') if you're not sure which index has what, or atlas_search for anything beyond hand-maintained knowledge/ markdown.",
         {
           query: z.string().describe("Search query"),
         },
@@ -682,7 +745,7 @@ export function createAgentTools(deps: ToolDeps) {
       // --- Atlas (unified knowledge index) ---
       tool(
         "atlas_search",
-        "Primary recall tool. Hybrid FTS + vector-KNN search across the unified Atlas index (pending items, YouTube summaries, trading signals, research notes, scan archive, daily logs). Use this before answering any 'what did I save about X', 'remember when', or recall-style question. Prefer this over memory_search for anything beyond the hand-maintained knowledge/ markdown files.",
+        "Primary recall tool. Hybrid FTS + vector-KNN search across the unified Atlas index (pending items, YouTube summaries, trading signals, research notes, scan archive, daily logs) — this is the ONLY index for that content, memory_entries no longer duplicates it. Use this before answering any 'what did I save about X', 'remember when', or recall-style question. Prefer this over memory_search for anything beyond agent-context knowledge/ files. Use knowledge_search(scope:'both') instead if you want memory + library combined in one call.",
         {
           query: z.string().describe("Natural-language or keyword query — e.g. 'claude agent sdk', 'AAPL insider buys', 'obsidian plugin'. FTS operators (AND, OR, NEAR, \"phrase\") are allowed; unsafe tokens are auto-quoted."),
           kind: z
@@ -842,6 +905,64 @@ export function createAgentTools(deps: ToolDeps) {
         },
       ),
 
+      tool(
+        "knowledge_search",
+        "Unified recall wrapper — searches Memory (agent-context: identity/user/tools/per-agent notes) and/or Library (Atlas: everything captured or produced — inbox, YouTube, research, trading signals, daily logs, scans) so you don't have to pick between memory_search and atlas_search up front. Defaults to searching both and labeling each section. Use atlas_search directly if you need kind/since/entity filtering; use memory_search directly for a memory-only lookup.",
+        {
+          query: z.string().describe("Natural-language or keyword query."),
+          scope: z
+            .enum(["memory", "library", "both"])
+            .optional()
+            .describe("'memory' = agent-context files only. 'library' = Atlas content index only. 'both' (default) = search both and label sections."),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(50)
+            .optional()
+            .describe("Max results per scope (default 10)."),
+        },
+        async (args) => {
+          const scope = args.scope ?? "both";
+          const limit = args.limit ?? 10;
+          const sections: string[] = [];
+
+          if (scope === "memory" || scope === "both") {
+            const results = memory.search(args.query).slice(0, limit);
+            const body = results.length
+              ? results.map((r) => `**${r.path}** - ${r.title}\n${r.snippet}`).join("\n\n")
+              : "No results.";
+            sections.push(`## Memory (agent-context)\n\n${body}`);
+          }
+
+          if (scope === "library" || scope === "both") {
+            try {
+              const results = await hybridSearch(args.query, { limit });
+              const body = results.length
+                ? results
+                    .map((r) => {
+                      const bodySnippet = (r.body ?? "").slice(0, 240).replace(/\s+/g, " ").trim();
+                      const url = r.url ? ` ${r.url}` : "";
+                      return [
+                        `[${r.kind}#${r.id}] ${r.title}${url}`,
+                        `  captured ${r.captured_at}  score=${r.score.toFixed(3)}`,
+                        bodySnippet ? `  ${bodySnippet}` : "",
+                      ]
+                        .filter(Boolean)
+                        .join("\n");
+                    })
+                    .join("\n\n")
+                : "No results.";
+              sections.push(`## Library (Atlas)\n\n${body}`);
+            } catch (err) {
+              sections.push(`## Library (Atlas)\n\nSearch failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
+          return { content: [{ type: "text" as const, text: sections.join("\n\n") }] };
+        },
+      ),
+
       // --- Job tools ---
       tool(
         "job_create",
@@ -855,6 +976,7 @@ export function createAgentTools(deps: ToolDeps) {
           max_budget_usd: z.number().optional().describe("Maximum cost in USD per run (default: 1.0)"),
           use_browser: z.boolean().optional().describe("Whether the job can use browser automation (default: false)"),
           model: z.string().optional().describe("Claude model to use for this job (e.g. 'claude-sonnet-4-5-20250929'). Defaults to DEFAULT_MODEL if not set."),
+          skills: z.string().optional().describe("Comma-separated skill slugs (from skills_list) whose full bodies are inlined into the job prompt on every run — use when a skill's procedure governs this job."),
         },
         async (args) => {
           const job = createJob({
@@ -866,6 +988,7 @@ export function createAgentTools(deps: ToolDeps) {
             max_budget_usd: args.max_budget_usd,
             use_browser: args.use_browser,
             model: args.model ?? null,
+            skills: args.skills ?? null,
           });
           reloadScheduler();
           return {
@@ -923,7 +1046,8 @@ Type: ${job.type}
 Schedule: ${job.schedule ?? job.run_at ?? "none"}
 Budget: $${job.max_budget_usd}
 Model: ${job.model ?? "(default)"}
-Browser: ${job.use_browser ? "yes" : "no"}${pauseSection}
+Browser: ${job.use_browser ? "yes" : "no"}
+Skills: ${job.skills ?? "(none)"}${pauseSection}
 Prompt: ${job.prompt}
 
 Recent runs:
@@ -944,6 +1068,7 @@ ${runsText}`;
           max_budget_usd: z.number().optional().describe("New budget limit"),
           use_browser: z.boolean().optional().describe("Enable/disable browser"),
           model: z.string().optional().describe("Claude model to use (e.g. 'claude-sonnet-4-5-20250929')"),
+          skills: z.string().optional().describe("Comma-separated skill slugs inlined into the job prompt on every run (empty string to clear)"),
           status: z.enum(["enabled", "disabled"]).optional().describe("Enable or disable the job"),
         },
         async (args) => {
@@ -1941,6 +2066,9 @@ ${runsText}`;
       ),
 
       // --- Reminder tools ---
+      // Urgency-based snooze: determines how long to wait between reminder pings
+      // Priority 1 = super urgent (1h), else based on days until due_date
+      // 3+ days: 4h, 1-2 days: 2h, due today/overdue: 1h, no due_date + priority 2: 2h, else: 4h
       tool(
         "create_reminder",
         "Create a reminder that will be sent to the user via Telegram with action buttons (PAID/SKIP/SNOOZE/MORE). Use this for bills, follow-ups, and items needing user acknowledgment. Pass source_id when the reminder tracks an external item (e.g. 'apple-rem:<id>', 'gcal:<event_id>', 'gmail:<msg_id>', or a synthetic 'bill:<vendor>:<due_date>') — this enables cross-day dedup and back-sync when the user taps PAID.",
@@ -1951,6 +2079,7 @@ ${runsText}`;
           priority: z.number().min(1).max(5).optional().describe("Priority 1-5, default 3"),
           max_reminds: z.number().optional().describe("Max reminder attempts before auto-dismiss, default 5"),
           source_id: z.string().optional().describe("Stable external identifier for dedup (e.g. 'apple-rem:0xABCD', 'gcal:evt_123', 'bill:hydro:2026-04-27'). If a reminder with the same source_id already exists, this call is a no-op."),
+          due_date: z.string().optional().describe("ISO 8601 date when this item is due (e.g. '2026-06-01'). Controls reminder frequency: P1 due/today = 1h, P2 = 4-12h tiered, P3+ = 12-48h tiered. Only P1 items get hourly reminders."),
         },
         async (args) => {
           try {
@@ -1991,10 +2120,17 @@ ${runsText}`;
                 });
               }
             }
+
+            // Auto-snooze after initial send based on urgency tier
+            // Priority 1 = 1h, no due_date/3+ days = 4h, 1-2 days = 2h, today = 1h
+            const snoozeMs = getUrgencySnoozeMs(reminder.due_date, reminder.priority);
+            snoozeReminder(reminder.id, snoozeMs);
+
+            const snoozeHours = Math.round(snoozeMs / 3600000);
             return {
               content: [{
                 type: "text" as const,
-                text: `Reminder created (ID: ${reminder.id}). Sent to Telegram with action buttons.`,
+                text: `Reminder created (ID: ${reminder.id}). Sent to Telegram with action buttons. Next reminder in ${snoozeHours}h.`,
               }],
             };
           } catch (err) {

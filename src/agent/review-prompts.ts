@@ -100,6 +100,14 @@ export const SKILL_REVIEW_PROMPT = (
   "are'; skills capture 'how to do this class of task for this " +
   "user'. When they complain about how you handled a task, the " +
   "skill that governs that task needs to carry the lesson.\n\n" +
+  "OUTCOME VERDICTS (always do this first, it takes seconds): for " +
+  "EACH skill that was loaded via skill_view during the session, " +
+  "record a verdict with skill_manage action=verdict verdict=helped|" +
+  "neutral|misled. 'helped' = its procedure matched what actually " +
+  "worked; 'neutral' = loaded but didn't matter; 'misled' = it was " +
+  "wrong or sent the run down a bad path (then ALSO patch it). " +
+  "Verdicts drive the curator's quality signal — a skill that is " +
+  "repeatedly misleading gets flagged for rewrite regardless of usage.\n\n" +
   "If you notice two existing skills that overlap, note it in your " +
   "reply — the background curator handles consolidation at scale.\n\n" +
   "'Nothing to save.' is a real option but should NOT be the " +
@@ -156,6 +164,10 @@ export const COMBINED_REVIEW_PROMPT = (
   "what the current situation and state of your operations are'; " +
   "skills say 'how to do this class of task for this user'. Both " +
   "should carry user-preference lessons when relevant.\n\n" +
+  "OUTCOME VERDICTS: for each skill loaded via skill_view this " +
+  "session, record skill_manage action=verdict verdict=helped|" +
+  "neutral|misled ('misled' → also patch it). This is the curator's " +
+  "quality signal.\n\n" +
   "If you notice overlapping existing skills, mention it — the " +
   "background curator handles consolidation.\n\n" +
   "Act on whichever of the two dimensions has real signal. If " +

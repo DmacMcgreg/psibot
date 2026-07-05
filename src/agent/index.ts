@@ -138,6 +138,7 @@ export class AgentService {
           getBot: this.deps.getBot,
           defaultChatIds: this.deps.defaultChatIds,
           keepAlive: () => this._keepAlive?.(),
+          getDiscoveryRunner: this.deps.getDiscoveryRunner,
         }),
         "trading-bot": createTradingMcpServer(),
       } as Record<string, ReturnType<typeof createAgentTools>["server"]>,

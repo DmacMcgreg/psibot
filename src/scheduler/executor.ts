@@ -15,10 +15,42 @@ import { PLIST_LABEL } from "../cli/paths.ts";
 import { decideNotify } from "../agent/notify-policy.ts";
 import { applyOutputTemplate } from "../agent/output-template.ts";
 import { tryPublishFromText } from "../agent/agent-run-publisher.ts";
+import { readSkill } from "../skills/index.ts";
+import { bumpUse, markExposed } from "../skills/usage.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
 import type { Bot, InlineKeyboard } from "grammy";
 
 const log = createLogger("scheduler:executor");
+
+/**
+ * Inline the full bodies of a job's pinned skills (jobs.skills, comma-
+ * separated slugs) ahead of the job prompt. Deterministic injection at the
+ * job seam — the job agent doesn't need to discover anything. Counts as a
+ * real `use` and stamps first exposure. A missing skill logs and is skipped;
+ * a job must never fail on skill plumbing.
+ */
+function buildSkillPreamble(job: Job): string {
+  if (!job.skills) return "";
+  const names = job.skills.split(",").map((s) => s.trim()).filter(Boolean);
+  if (names.length === 0) return "";
+  const sections: string[] = [];
+  for (const name of names) {
+    try {
+      const skill = readSkill(name);
+      if (!skill) {
+        log.warn("Job references missing skill", { jobId: job.id, skill: name });
+        continue;
+      }
+      bumpUse(name);
+      sections.push(`### Skill: ${name}\n\n${skill.body.trim()}`);
+    } catch (e) {
+      log.warn("Skill injection failed", { jobId: job.id, skill: name, error: String(e) });
+    }
+  }
+  if (sections.length === 0) return "";
+  markExposed(names);
+  return `## Procedural skills for this job\n\nFollow these established procedures where they apply:\n\n${sections.join("\n\n---\n\n")}\n\n---\n\n`;
+}
 
 /** Cooldown per job to prevent diagnostic loops (15 min) */
 const DIAG_COOLDOWN_MS = 15 * 60 * 1000;
@@ -88,7 +120,7 @@ export class JobExecutor {
       // Inject current date/time so job agents always know when they're running
       const now = new Date();
       const localTime = now.toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
-      const jobPrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n${job.prompt}`;
+      const jobPrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n${buildSkillPreamble(job)}${job.prompt}`;
 
       // Backend precedence: job.backend > agent.backend > global default.
       const agentForBackend = job.agent_name ? getAgentBySlug(job.agent_name) : null;
@@ -247,7 +279,7 @@ export class JobExecutor {
     try {
       const now = new Date();
       const localTime = now.toLocaleString("en-US", { timeZone: "America/Toronto", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
-      const pipelinePrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n## Previous Job Output\n\n${previousResult}\n\n---\n\n${job.prompt}`;
+      const pipelinePrompt = `[Current time: ${localTime} ET | UTC: ${now.toISOString()}]\n\n${buildSkillPreamble(job)}## Previous Job Output\n\n${previousResult}\n\n---\n\n${job.prompt}`;
 
       const allowedTools = job.allowed_tools
         ? job.allowed_tools.split(",").map((t) => t.trim())
@@ -385,8 +417,8 @@ INSTRUCTIONS:
         prompt,
         source: "job",
         sourceId: `diag:${jobId}`,
-        model: "claude-opus-4-6",
-        backend: "claude",
+        model: undefined,
+        backend: undefined,
       });
     } catch (err) {
       log.error("Diagnostic agent failed", { jobId, error: String(err) });

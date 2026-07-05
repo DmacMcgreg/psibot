@@ -38,10 +38,11 @@ export interface YoutubeDeps {
   getBot: () => Bot | null;
   defaultChatIds: number[];
   keepAlive: () => void;
+  getDiscoveryRunner?: () => import("../discovery/index.ts").DiscoveryRunner | null;
 }
 
 export function createYoutubeTools(deps: YoutubeDeps) {
-  const { getBot, defaultChatIds, keepAlive } = deps;
+  const { getBot, defaultChatIds, keepAlive, getDiscoveryRunner } = deps;
 
   async function notifyTelegram(text: string): Promise<void> {
     keepAlive();
@@ -692,6 +693,133 @@ EXPLORATION STRATEGIES:
               content: [{ type: "text" as const, text: `Graph rebuild failed: ${message}` }],
               isError: true,
             };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_discover",
+        `Run a proactive YouTube discovery cycle NOW. This is an AUTONOMOUS action — it does everything itself and posts a digest to Telegram. Do NOT ask the user for confirmation or what to do; just call it and report the result.
+
+It fans out from the user's watch history: polls channel RSS feeds, runs budgeted topic-keyword searches, scores candidates against the user interest profile, FULLY PROCESSES the top picks (transcript -> analyze -> knowledge graph) without asking, mines news from recent videos, and surfaces a digest to Telegram.
+
+This is the PRIMARY tool for any request like "find me new videos", "what's new on YouTube", "discover videos", "get a YouTube news digest", or "what should I watch". It takes no parameters. Do not use youtube_search for these requests — that only searches the user's existing library; youtube_discover finds NEW videos from outside the library.`,
+        {},
+        async () => {
+          const runner = getDiscoveryRunner?.();
+          if (!runner) {
+            return {
+              content: [{ type: "text" as const, text: "Discovery runner is not enabled (set DISCOVERY_ENABLED=true)." }],
+              isError: true,
+            };
+          }
+          try {
+            const stats = await runner.runOnce();
+            const lines = [
+              `Discovery cycle complete:`,
+              `  Channels polled: ${stats.channelsPolled}`,
+              `  Searches run: ${stats.searchesRun} (${stats.quotaUnitsUsed} quota units)`,
+              `  New candidates: ${stats.candidatesFound}`,
+              `  Videos fully processed: ${stats.processed}`,
+              `  Surfaced to Telegram: ${stats.surfaced}`,
+            ];
+            if (stats.error) lines.push(`  Note: ${stats.error}`);
+            return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: [{ type: "text" as const, text: `Discovery run failed: ${message}` }], isError: true };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_discoveries",
+        `List recent discovery candidates and recent runs. Shows what the proactive discovery system has found and processed.
+- status filter: 'candidate' (unscored/awaiting), 'processed', 'surfaced', 'rejected'
+- With no status, shows the most recent runs with their stats.`,
+        {
+          status: z.string().optional().describe("Filter candidates by status: candidate | processed | surfaced | rejected"),
+          limit: z.number().optional().describe("Max results (default 15)"),
+        },
+        async (args) => {
+          try {
+            const { getCandidatesByStatus, getRecentRuns } = await import("../discovery/db.ts");
+            if (!args.status) {
+              const runs = getRecentRuns(args.limit ?? 10);
+              if (runs.length === 0) {
+                return { content: [{ type: "text" as const, text: "No discovery runs yet." }] };
+              }
+              const lines = runs.map((r) =>
+                `- ${r.started_at}: ${r.processed} processed, ${r.surfaced} surfaced, ${r.candidates_found} candidates, ${r.searches_run} searches`
+              );
+              return { content: [{ type: "text" as const, text: `Recent discovery runs:\n\n${lines.join("\n")}` }] };
+            }
+            const candidates = getCandidatesByStatus(args.status as "candidate" | "processed" | "surfaced" | "rejected", args.limit ?? 15);
+            if (candidates.length === 0) {
+              return { content: [{ type: "text" as const, text: `No '${args.status}' discovery candidates.` }] };
+            }
+            const lines = candidates.map((c) =>
+              `- [${c.score?.toFixed(3) ?? "?"}] "${c.title ?? c.video_id}" [${c.source}] -> ${c.status}`
+            );
+            return { content: [{ type: "text" as const, text: `${candidates.length} '${args.status}' candidates:\n\n${lines.join("\n")}` }] };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: [{ type: "text" as const, text: `Discovery list failed: ${message}` }], isError: true };
+          }
+        }
+      ),
+
+      tool(
+        "youtube_interest_profile",
+        `Inspect or rebuild the proactive-discovery user interest profile. The profile weights the user's knowledge-graph topics by recency and is used to score discovery candidates.
+- No args: show the current top-weighted interest topics.
+- rebuild=true: recompute the profile from the latest watch history + topic graph.`,
+        {
+          rebuild: z.boolean().optional().describe("Recompute the interest profile from scratch"),
+          limit: z.number().optional().describe("How many top topics to show (default 20)"),
+        },
+        async (args) => {
+          try {
+            const { buildInterestProfile } = await import("../discovery/profile.ts");
+            const { getInterestWeights, getInterestProfileSize } = await import("../discovery/db.ts");
+            const { getDb } = await import("../db/index.ts");
+
+            if (args.rebuild) {
+              const result = await buildInterestProfile();
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `Interest profile rebuilt: ${result.topicsKept} topics kept (of ${result.topicsConsidered} considered). Centroid ${result.centroidRecomputed ? "recomputed" : "unchanged"}.`,
+                }],
+              };
+            }
+
+            const size = getInterestProfileSize();
+            const weights = getInterestWeights().slice(0, args.limit ?? 20);
+            if (weights.length === 0) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: "Interest profile is empty. Run youtube_interest_profile with rebuild=true to build it.",
+                }],
+              };
+            }
+            const db = getDb();
+            const lines = weights.map((w) => {
+              const name = db.prepare<{ display_name: string }, [number]>(
+                `SELECT display_name FROM youtube_topics WHERE id = ?`,
+              ).get(w.topic_id)?.display_name ?? `topic ${w.topic_id}`;
+              return `- ${name} (weight ${w.weight.toFixed(3)})`;
+            });
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Interest profile (${size} topics, top ${weights.length}):\n\n${lines.join("\n")}`,
+              }],
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: [{ type: "text" as const, text: `Profile query failed: ${message}` }], isError: true };
           }
         }
       ),

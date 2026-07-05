@@ -2,7 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { getConfig } from "../config.ts";
+import { getConfig, getBackendEnv } from "../config.ts";
 import {
   getPendingItems,
   updatePendingItem,
@@ -426,8 +426,9 @@ async function queryClaude(prompt: string): Promise<string> {
   for await (const msg of query({
     prompt,
     options: {
-      model: "claude-sonnet-4-5-20250929",
+      model: getConfig().DEFAULT_BACKEND === "glm" ? getConfig().GLM_SONNET_MODEL : "claude-sonnet-4-5-20250929",
       maxTurns: 1,
+      ...(getBackendEnv() ? { env: getBackendEnv() } : {}),
       permissionMode: "bypassPermissions",
     },
   })) {

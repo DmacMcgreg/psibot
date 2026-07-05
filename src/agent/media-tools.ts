@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createLogger } from "../shared/logger.ts";
 
@@ -14,6 +14,17 @@ const STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3";
 const STT_CMD = "mlx_audio.stt.generate";
 const TTS_CMD = "edge-tts";
 const TTS_VOICE = "en-GB-SoniaNeural";
+
+const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_AUTH_CANDIDATES = [
+  process.env.CODEX_HOME ? join(process.env.CODEX_HOME, "auth.json") : null,
+  process.env.CHATGPT_LOCAL_HOME ? join(process.env.CHATGPT_LOCAL_HOME, "auth.json") : null,
+  join(process.env.HOME ?? "", ".codex", "auth.json"),
+  join(process.env.HOME ?? "", ".chatgpt-local", "auth.json"),
+].filter(Boolean) as string[];
+
+const OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 const MIME_TYPES: Record<string, string> = {
   png: "image/png",
@@ -50,7 +61,6 @@ function loadGeminiApiKey(): string {
 }
 
 let cachedGeminiKey: string | null = null;
-let cachedOpenaiKey: string | null = null;
 
 function getGeminiApiKey(): string {
   if (!cachedGeminiKey) {
@@ -59,29 +69,142 @@ function getGeminiApiKey(): string {
   return cachedGeminiKey;
 }
 
-function getOpenaiApiKey(): string {
-  if (!cachedOpenaiKey) {
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) throw new Error("No OpenAI API key found. Set OPENAI_API_KEY env var.");
-    cachedOpenaiKey = key;
+// --- Codex OAuth Auth ---
+
+type CodexAuth = {
+  accessToken: string;
+  accountId: string;
+  refreshToken: string;
+  authFilePath: string;
+};
+
+let cachedCodexAuth: CodexAuth | null = null;
+let lastRefreshTime = 0;
+
+function findAuthFile(): string | null {
+  for (const candidate of CODEX_AUTH_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
   }
-  return cachedOpenaiKey;
+  return null;
 }
 
+function parseJwtExp(token: string): number {
+  try {
+    const payload = token.split(".")[1];
+    const padded = payload + "=".repeat(4 - (payload.length % 4));
+    const claims = JSON.parse(Buffer.from(padded, "base64url").toString());
+    return claims.exp ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function refreshAccessToken(refreshToken: string): Promise<{ access_token: string; refresh_token: string } | null> {
+  try {
+    const response = await fetch(OAUTH_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: OAUTH_CLIENT_ID,
+        scope: "openid profile email offline_access",
+      }),
+    });
+    if (!response.ok) {
+      log.error("OAuth token refresh failed", { status: response.status });
+      return null;
+    }
+    const data = (await response.json()) as { access_token: string; refresh_token: string };
+    return data;
+  } catch (err) {
+    log.error("OAuth token refresh error", { error: String(err) });
+    return null;
+  }
+}
+
+async function loadCodexAuth(): Promise<CodexAuth | null> {
+  const now = Math.floor(Date.now() / 1000);
+
+  // Return cached if token not expired (5 min buffer)
+  if (cachedCodexAuth) {
+    const exp = parseJwtExp(cachedCodexAuth.accessToken);
+    if (exp > now + 300 && Date.now() - lastRefreshTime < 55 * 60 * 1000) {
+      return cachedCodexAuth;
+    }
+  }
+
+  const authFilePath = findAuthFile();
+  if (!authFilePath) {
+    log.error("No Codex auth file found", { candidates: CODEX_AUTH_CANDIDATES });
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(authFilePath, "utf-8");
+    const data = JSON.parse(raw) as {
+      tokens: { access_token: string; refresh_token: string; account_id: string };
+    };
+
+    let accessToken = data.tokens.access_token;
+    let refreshToken = data.tokens.refresh_token;
+    const accountId = data.tokens.account_id;
+
+    // Check if token needs refresh
+    const exp = parseJwtExp(accessToken);
+    if (exp <= now + 300) {
+      log.info("Codex access token expired or expiring, refreshing...");
+      const refreshed = await refreshAccessToken(refreshToken);
+      if (refreshed) {
+        accessToken = refreshed.access_token;
+        refreshToken = refreshed.refresh_token;
+        // Write back to auth file
+        data.tokens.access_token = accessToken;
+        data.tokens.refresh_token = refreshToken;
+        writeFileSync(authFilePath, JSON.stringify(data, null, 2));
+        log.info("Codex auth tokens refreshed and saved");
+      } else {
+        log.error("Failed to refresh Codex auth token");
+        return null;
+      }
+    }
+
+    cachedCodexAuth = { accessToken, accountId, refreshToken, authFilePath };
+    lastRefreshTime = Date.now();
+    return cachedCodexAuth;
+  } catch (err) {
+    log.error("Failed to load Codex auth", { error: String(err), path: authFilePath });
+    return null;
+  }
+}
+
+// --- Image Generation ---
+
+// Codex OAuth image_generation tool uses the Responses API with gpt-5.2
+// which has the image_generation tool built in. This is FREE via ChatGPT account.
+const CODEX_IMAGE_SIZES: Record<string, string> = {
+  "1:1": "1024x1024",
+  "4:5": "1024x1280",
+  "3:4": "768x1024",
+  "2:3": "768x1152",
+  "9:16": "720x1280",
+  "5:4": "1280x1024",
+  "4:3": "1024x768",
+  "3:2": "1152x768",
+  "16:9": "1280x720",
+};
+
 // gpt-image-2 accepts any size if all constraints are met:
-// - max edge ≤ 3840, both edges multiples of 16, long:short ≤ 3:1,
-// - 655,360 ≤ total pixels ≤ 8,294,400.
-// These picks target ~2K (3–4M pixels) and satisfy every constraint.
+// - max edge <= 3840, both edges multiples of 16, long:short <= 3:1,
+// - 655,360 <= total pixels <= 8,294,400.
 const OPENAI_SIZE_BY_RATIO: Record<string, string> = {
   "1:1": "2048x2048",
-  // Portrait
   "4:5": "1600x2000",
   "3:4": "1536x2048",
   "2:3": "1536x2304",
   "5:8": "1440x2304",
   "9:16": "1440x2560",
   "9:21": "1152x2688",
-  // Landscape
   "5:4": "2000x1600",
   "4:3": "2048x1536",
   "3:2": "2304x1536",
@@ -110,13 +233,124 @@ type ToolResult = {
   isError?: boolean;
 };
 
+async function generateWithCodexOAuth(args: ImageGenArgs, outputPath: string): Promise<ToolResult> {
+  const auth = await loadCodexAuth();
+  if (!auth) {
+    return {
+      content: [{ type: "text" as const, text: "Codex OAuth auth not available. Run 'npx @openai/codex login' to authenticate." }],
+      isError: true,
+    };
+  }
+
+  const quality: ImageQuality = args.quality ?? "auto";
+  const size = args.aspect_ratio ? (CODEX_IMAGE_SIZES[args.aspect_ratio] ?? "auto") : "auto";
+
+  log.info("Generating image via Codex OAuth (free)", {
+    prompt: args.prompt.slice(0, 100),
+    quality,
+    size,
+  });
+
+  // Build the image_generation tool config
+  const imageGenTool: Record<string, unknown> = { type: "image_generation" };
+  if (quality !== "auto") (imageGenTool as Record<string, unknown>).quality = quality;
+  if (size !== "auto") (imageGenTool as Record<string, unknown>).size = size;
+
+  const requestBody = {
+    model: "gpt-5.2",
+    instructions: "Generate the requested image using the image_generation tool. Do not output any text.",
+    input: [{ role: "user", content: args.prompt }],
+    tools: [imageGenTool],
+    store: false,
+    stream: true,
+  };
+
+  const response = await fetch(CODEX_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${auth.accessToken}`,
+      "chatgpt-account-id": auth.accountId,
+      "OpenAI-Beta": "responses=experimental",
+      "Content-Type": "application/json",
+      "User-Agent": "codex-cli/0.77.0",
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    log.error("Codex OAuth image error", { status: response.status, error: errorText.slice(0, 500) });
+
+    // If 401/403, invalidate cache so next attempt re-reads auth
+    if (response.status === 401 || response.status === 403) {
+      cachedCodexAuth = null;
+    }
+
+    return {
+      content: [{ type: "text" as const, text: `Codex OAuth image generation failed: ${response.status} - ${errorText.slice(0, 300)}` }],
+      isError: true,
+    };
+  }
+
+  // Parse SSE stream to extract image
+  const text = await response.text();
+  const lines = text.split("\n");
+  let imageB64: string | null = null;
+
+  for (const line of lines) {
+    if (!line.startsWith("data: ")) continue;
+    const eventData = line.slice(6);
+    try {
+      const event = JSON.parse(eventData) as {
+        type?: string;
+        item?: { type?: string; result?: string };
+      };
+
+      // The image comes in response.output_item.done with type=image_generation_call
+      if (
+        event.type === "response.output_item.done" &&
+        event.item?.type === "image_generation_call" &&
+        event.item?.result
+      ) {
+        imageB64 = event.item.result;
+        break;
+      }
+    } catch {
+      // Skip non-JSON lines
+    }
+  }
+
+  if (!imageB64) {
+    log.error("Codex OAuth: no image in response stream");
+    return {
+      content: [{ type: "text" as const, text: "Image generation completed but no image data was returned." }],
+      isError: true,
+    };
+  }
+
+  const imageBuffer = Buffer.from(imageB64, "base64");
+  await Bun.write(outputPath, imageBuffer);
+
+  log.info("Image generated (codex-oauth, free)", { outputPath, sizeBytes: imageBuffer.length });
+  return {
+    content: [{ type: "text" as const, text: `Image saved to: ${outputPath}` }],
+  };
+}
+
 async function generateWithOpenAI(args: ImageGenArgs, outputPath: string): Promise<ToolResult> {
-  const apiKey = getOpenaiApiKey();
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      content: [{ type: "text" as const, text: "No OPENAI_API_KEY set. Cannot use paid OpenAI API for image edits." }],
+      isError: true,
+    };
+  }
+
   const size = aspectRatioToOpenaiSize(args.aspect_ratio);
   const quality: ImageQuality = args.quality ?? "auto";
   const hasInputImages = args.image_paths && args.image_paths.length > 0;
 
-  log.info("Generating image via OpenAI", {
+  log.info("Generating image via OpenAI API (paid)", {
     prompt: args.prompt.slice(0, 100),
     inputImages: args.image_paths?.length ?? 0,
     size,
@@ -190,7 +424,7 @@ async function generateWithOpenAI(args: ImageGenArgs, outputPath: string): Promi
   const imageBuffer = Buffer.from(b64, "base64");
   await Bun.write(outputPath, imageBuffer);
 
-  log.info("Image generated (openai)", { outputPath, sizeBytes: imageBuffer.length });
+  log.info("Image generated (openai-paid)", { outputPath, sizeBytes: imageBuffer.length });
   return {
     content: [{ type: "text" as const, text: `Image saved to: ${outputPath}` }],
   };
@@ -284,10 +518,10 @@ export function createMediaTools() {
     tools: [
       tool(
         "image_generate",
-        "Generate or edit images. Defaults to OpenAI gpt-image-2. Set provider='gemini' to use Gemini 3 Pro (gemini-3-pro-image-preview) — only switch when the user explicitly asks for Gemini or gemini-3-pro. Returns the file path to the saved PNG image. To edit or use existing images as reference/inspiration, provide their file paths via image_paths.",
+        "Generate or edit images. Defaults to Codex OAuth (FREE, uses ChatGPT account via gpt-5.2 + image_generation tool). For image editing with input images, uses paid OpenAI API (gpt-image-2). Set provider='gemini' to use Gemini 3 Pro. Returns the file path to the saved PNG image.",
         {
           prompt: z.string().describe("Text prompt describing the image to generate or the edit to apply"),
-          image_paths: z.array(z.string()).optional().describe("Absolute paths to input images for editing or inspiration. Sent alongside the prompt."),
+          image_paths: z.array(z.string()).optional().describe("Absolute paths to input images for editing or inspiration. When provided, uses paid OpenAI API (edits endpoint)."),
           aspect_ratio: z
             .enum([
               "1:1",
@@ -306,26 +540,34 @@ export function createMediaTools() {
             ])
             .optional()
             .describe(
-              "Aspect ratio. OpenAI gpt-image-2 renders each ratio at ~2K (e.g. 16:9 → 2560x1440, 9:16 → 1440x2560, 21:9 → 2688x1152, 1:1 → 2048x2048). Gemini supports the same set natively."
+              "Aspect ratio for the generated image."
             ),
           quality: z
             .enum(["low", "medium", "high", "auto"])
             .optional()
             .describe(
-              "Rendering quality. 'low' is fastest/cheapest, 'high' is slowest/best, 'auto' lets the model choose. Default: 'auto'. Applies to OpenAI; ignored by Gemini."
+              "Rendering quality. 'low' is fastest, 'high' is best. Default: 'auto'."
             ),
-          provider: z.enum(["openai", "gemini"]).optional().describe("Image model provider. Defaults to 'openai' (gpt-image-2). Use 'gemini' only when the user explicitly requests gemini-3-pro."),
+          provider: z.enum(["openai", "gemini"]).optional().describe("Image model provider. Defaults to Codex OAuth (free). Set 'openai' for paid API (higher res, edits), 'gemini' for Gemini 3 Pro."),
         },
         async (args) => {
           ensureDir(IMAGES_DIR);
-          const provider = args.provider ?? "openai";
           const timestamp = Date.now();
           const outputPath = join(IMAGES_DIR, `${timestamp}.png`);
+          const hasInputImages = args.image_paths && args.image_paths.length > 0;
 
-          if (provider === "gemini") {
+          // Route: gemini if explicitly requested
+          if (args.provider === "gemini") {
             return generateWithGemini(args, outputPath);
           }
-          return generateWithOpenAI(args, outputPath);
+
+          // Route: paid OpenAI if explicitly requested OR if input images provided (edits)
+          if (args.provider === "openai" || hasInputImages) {
+            return generateWithOpenAI(args, outputPath);
+          }
+
+          // Default: Codex OAuth (free)
+          return generateWithCodexOAuth(args, outputPath);
         }
       ),
 

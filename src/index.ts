@@ -7,6 +7,8 @@ import { JobExecutor } from "./scheduler/executor.ts";
 import { Scheduler } from "./scheduler/index.ts";
 import { HeartbeatRunner } from "./heartbeat/index.ts";
 import { SynthesisRunner } from "./atlas/runner.ts";
+import { DiscoveryRunner } from "./discovery/index.ts";
+import { DigestRunner } from "./digest/index.ts";
 import { createWebApp } from "./web/index.ts";
 import { createTelegramBot } from "./telegram/index.ts";
 import { startWebhookServer, stopWebhookServer } from "./telegram/webhook.ts";
@@ -35,6 +37,7 @@ async function main() {
   // agent needs scheduler callbacks + bot reference, scheduler needs agent
   let scheduler: Scheduler;
   let bot: Bot;
+  let discovery: DiscoveryRunner | null = null;
   const agent = new AgentService({
     memory,
     reloadScheduler: () => scheduler.reload(),
@@ -44,6 +47,7 @@ async function main() {
     groupChatIds: config.TELEGRAM_GROUP_CHAT_IDS,
     psibotDir: config.PSIBOT_DIR,
     scheduleRestart: () => agent.scheduleRestart(),
+    getDiscoveryRunner: () => discovery,
   });
   const executor = new JobExecutor(agent);
   scheduler = new Scheduler(executor);
@@ -133,10 +137,34 @@ async function main() {
   synthesis.start();
   log.info("Atlas synthesis runner started");
 
+  // Start weekly digest runner (reuses the same group-chat / News-topic config)
+  const digest = new DigestRunner({
+    getBot: () => bot ?? null,
+    defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
+    digestChatId: groupChatId,
+    digestTopicId: 49, // News topic
+  });
+  digest.start();
+  log.info("Weekly digest runner started");
+
+  // Start proactive YouTube discovery runner (RSS fan-out + scoring + processing + news digest)
+  if (config.DISCOVERY_ENABLED) {
+    discovery = new DiscoveryRunner({
+      getBot: () => bot ?? null,
+      defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
+      groupChatId,
+      topicId: config.DISCOVERY_NEWS_TOPIC_ID || undefined,
+    });
+    discovery.start();
+    log.info("Discovery runner started", { intervalHours: config.DISCOVERY_INTERVAL_HOURS });
+  }
+
   // Graceful shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
 
+    discovery?.stop();
+    digest.stop();
     synthesis.stop();
     heartbeat?.stop();
     scheduler.stop();
