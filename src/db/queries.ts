@@ -1194,6 +1194,24 @@ export function getDueReminders(): Reminder[] {
     .all();
 }
 
+/**
+ * Sweep active/snoozed reminders that have already hit their remind cap.
+ * getDueReminders() deliberately excludes these rows (remind_count < max_reminds),
+ * so checkDueReminders()'s per-row dismiss branch never sees them — without this
+ * sweep, over-cap reminders go permanently inert instead of being dismissed.
+ * Returns the number of rows dismissed.
+ */
+export function dismissOverCapReminders(): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `UPDATE reminders SET status = 'dismissed'
+       WHERE status IN ('active', 'snoozed') AND remind_count >= max_reminds`
+    )
+    .run();
+  return result.changes;
+}
+
 // --- Themes ---
 
 export function createTheme(params: {
@@ -1710,4 +1728,10 @@ export function countJobsByAgent(): Map<string, number> {
     if (row.agent_name) map.set(row.agent_name, row.c);
   }
   return map;
+}
+
+/** Fetch a single job_runs row by id, or null if it doesn't exist (e.g. pruned). */
+export function getJobRun(id: number): JobRun | null {
+  const db = getDb();
+  return db.prepare<JobRun, [number]>(`SELECT * FROM job_runs WHERE id = ?`).get(id) ?? null;
 }

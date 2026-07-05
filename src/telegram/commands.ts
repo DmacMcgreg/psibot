@@ -126,6 +126,16 @@ async function editAgentMd2(ctx: Context, chatId: number, messageId: number, tex
   await ctx.api.editMessageText(chatId, messageId, markdownToTelegramV2(text), { ...MD2, ...opts });
 }
 
+/**
+ * Clear any inline keyboard left on a message (e.g. the Cancel button once a
+ * run finishes or errors). editMessageText's reply_markup param, if omitted,
+ * leaves the existing keyboard unchanged — so this must be called explicitly
+ * after the final edit rather than assumed to happen automatically.
+ */
+async function clearReplyMarkup(ctx: Context, chatId: number, messageId: number): Promise<void> {
+  await ctx.api.editMessageReplyMarkup(chatId, messageId, {}).catch(() => {});
+}
+
 interface CommandDeps {
   agent: AgentService;
   memory: MemorySystem;
@@ -136,7 +146,7 @@ interface CommandDeps {
 
 export function registerCommands(deps: CommandDeps) {
   const { agent, memory, scheduler, state, taskQueue } = deps;
-  const { resetChats, bootedChats, resumeOverrides, modelOverrides, activeRuns } = state;
+  const { resetChats, bootedChats, resumeOverrides, modelOverrides } = state;
 
   // --- Inbound message coalescing ---
   // Telegram delivers a long paste as several message:text updates and a photo
@@ -296,8 +306,12 @@ export function registerCommands(deps: CommandDeps) {
     const model = modelOverrides.get(sKey);
     const ctxChat = chatContext(ctx);
 
-    // Topic-based backend routing (e.g., GLM topic -> glm backend)
-    const topicBackend = TOPIC_BACKEND_MAP[ctx.message?.message_thread_id ?? 0];
+    // Topic-based backend routing (e.g., GLM topic -> glm backend). Falls back to
+    // the callback-query message's thread id since ctx.message is undefined for
+    // button-triggered runs (mirrors sessionKey()/chatContext() above).
+    const topicBackend = TOPIC_BACKEND_MAP[
+      ctx.message?.message_thread_id ?? ctx.callbackQuery?.message?.message_thread_id ?? 0
+    ];
 
     // Fire-and-forget: enqueue the agent run and return immediately
     const taskId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -318,7 +332,7 @@ export function registerCommands(deps: CommandDeps) {
             useBrowser: true,
             ...(model ? { model } : {}),
             ...(topicBackend ? { backend: topicBackend, backendOnly: true } : {}),
-            onRunStart: (runId) => activeRuns.set(sKey, runId),
+            onRunStart: (runId) => state.setActiveRun(sKey, thinkingMsg.message_id, runId),
             onToolUse: (toolName, input, subagent) => {
               if (!config.VERBOSE_FEEDBACK) return;
               toolLines.push(formatToolLine(toolName, input, subagent));
@@ -341,8 +355,8 @@ export function registerCommands(deps: CommandDeps) {
           const response = `${toolsBlock}${modelTag}${result.result}\n\n${meta}`;
           const chunks = splitMessage(response);
 
-          // Final edit omits reply_markup, which removes the Cancel button.
           await editAgentMd2(ctx, chatId, thinkingMsg.message_id, chunks[0]);
+          await clearReplyMarkup(ctx, chatId, thinkingMsg.message_id);
           for (let i = 1; i < chunks.length; i++) {
             await replyAgentMd2(ctx, chunks[i]);
           }
@@ -354,8 +368,9 @@ export function registerCommands(deps: CommandDeps) {
           await editMd2(ctx, chatId, thinkingMsg.message_id,
             `Error: ${err instanceof Error ? err.message : String(err)}`
           );
+          await clearReplyMarkup(ctx, chatId, thinkingMsg.message_id);
         } finally {
-          activeRuns.delete(sKey);
+          state.deleteActiveRun(sKey, thinkingMsg.message_id);
         }
       },
     });
@@ -797,7 +812,11 @@ export function registerCommands(deps: CommandDeps) {
       const sessionId = getLatestSessionId("telegram", sKey) ?? undefined;
       const prompt = `The user sent a voice message. The audio file is at: ${localPath}\n\nPlease transcribe it using the audio_transcribe tool, then respond to whatever they said.`;
 
-      const voiceTopicBackend = TOPIC_BACKEND_MAP[ctx.message?.message_thread_id ?? 0];
+      // Falls back to the callback-query message's thread id since ctx.message is
+      // undefined for button-triggered runs (mirrors sessionKey()/chatContext()).
+      const voiceTopicBackend = TOPIC_BACKEND_MAP[
+        ctx.message?.message_thread_id ?? ctx.callbackQuery?.message?.message_thread_id ?? 0
+      ];
       const result = await agent.run({
         prompt,
         source: "telegram",
@@ -805,7 +824,7 @@ export function registerCommands(deps: CommandDeps) {
         sessionId,
         chatContext: chatContext(ctx),
         useBrowser: false,
-        onRunStart: (runId) => activeRuns.set(sKey, runId),
+        onRunStart: (runId) => state.setActiveRun(sKey, thinkingMsg.message_id, runId),
         ...(voiceTopicBackend ? { backend: voiceTopicBackend, backendOnly: true } : {}),
       });
 
@@ -813,8 +832,8 @@ export function registerCommands(deps: CommandDeps) {
       const responseText = `${result.result}\n\n${meta}`;
       const chunks = splitMessage(responseText);
 
-      // Final edit omits reply_markup, which removes the Cancel button.
       await editAgentMd2(ctx, ctx.chat!.id, thinkingMsg.message_id, chunks[0]);
+      await clearReplyMarkup(ctx, ctx.chat!.id, thinkingMsg.message_id);
       for (let i = 1; i < chunks.length; i++) {
         await replyAgentMd2(ctx, chunks[i]);
       }
@@ -827,8 +846,9 @@ export function registerCommands(deps: CommandDeps) {
       await editMd2(ctx, ctx.chat!.id, thinkingMsg.message_id,
         `Voice message error: ${err instanceof Error ? err.message : String(err)}`
       );
+      await clearReplyMarkup(ctx, ctx.chat!.id, thinkingMsg.message_id);
     } finally {
-      activeRuns.delete(sKey);
+      state.deleteActiveRun(sKey, thinkingMsg.message_id);
     }
   }
 

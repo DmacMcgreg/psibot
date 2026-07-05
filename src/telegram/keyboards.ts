@@ -15,57 +15,16 @@ import {
   completeReminder,
   dismissReminder,
   snoozeReminder,
-  updatePendingItem,
-  insertFeedbackLog,
+  getJobRun,
 } from "../db/queries.ts";
 import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
-import { updateAutonomyFromFeedback } from "../heartbeat/autonomy.ts";
 import type { AutonomyLevelChange } from "../heartbeat/autonomy.ts";
 import type { MemorySystem } from "../memory/index.ts";
 import { getPendingItemById } from "../db/queries.ts";
 import { applyItemAction } from "../triage/actions.ts";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const log = createLogger("telegram:keyboards");
-
-/** Build a compound signal key from an item's triage data for autonomy learning. */
-function compoundSignalKey(item: { platform: string | null; profile: string | null; value_type: string | null }): string {
-  const platform = item.platform ?? "unknown";
-  const profile = item.profile ?? "*";
-  const valueType = item.value_type ?? "unknown";
-  return `${platform}:${profile}:${valueType}`;
-}
-
-/** Update a tag in a NotePlan note's YAML frontmatter. */
-function addNoteplanTag(noteplanPath: string | null, tag: string): void {
-  if (!noteplanPath || !existsSync(noteplanPath)) return;
-  try {
-    const content = readFileSync(noteplanPath, "utf-8");
-    if (!content.startsWith("---")) return;
-    const endIdx = content.indexOf("---", 3);
-    if (endIdx === -1) return;
-    const frontmatter = content.slice(0, endIdx + 3);
-    const body = content.slice(endIdx + 3);
-
-    // Check if tag already exists
-    if (frontmatter.includes(`- ${tag}`)) return;
-
-    // Insert tag after existing tags
-    const tagsMatch = frontmatter.match(/^tags:\n((?:\s+-\s+.+\n)*)/m);
-    if (tagsMatch) {
-      const insertPos = frontmatter.indexOf(tagsMatch[0]) + tagsMatch[0].length;
-      const updated = frontmatter.slice(0, insertPos) + `  - ${tag}\n` + frontmatter.slice(insertPos);
-      writeFileSync(noteplanPath, updated + body, "utf-8");
-    } else {
-      // No tags section — add one before closing ---
-      const updated = frontmatter.slice(0, endIdx) + `tags:\n  - ${tag}\n` + frontmatter.slice(endIdx);
-      writeFileSync(noteplanPath, updated + body, "utf-8");
-    }
-  } catch (err) {
-    log.error("Failed to update NotePlan tag", { noteplanPath, tag, error: String(err) });
-  }
-}
 
 const MD2 = { parse_mode: "MarkdownV2" as const };
 
@@ -138,12 +97,6 @@ export function briefingActionKeyboard(reminderId: number): InlineKeyboard {
     .text("24h", `bz:${reminderId}:24`)
     .row()
     .text("MORE", `bm:${reminderId}`);
-}
-
-export function approvalKeyboard(reminderId: number): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("APPROVE", `ba:${reminderId}`)
-    .text("REJECT", `br:${reminderId}`);
 }
 
 /**
@@ -282,15 +235,18 @@ export function createCallbackHandler(deps: CallbackDeps) {
     try {
       switch (action) {
         case "cn": {
-          // Cancel: interrupt the in-progress run for this chat/topic
-          const runId = state.activeRuns.get(sKey);
+          // Cancel: interrupt the run tied to *this* Cancel button's message,
+          // not just "whatever is active in this chat/topic" — multiple runs
+          // can overlap in the same session (TaskQueue maxConcurrency > 1).
+          const cnMsgId = ctx.callbackQuery?.message?.message_id;
+          const runId = cnMsgId != null ? state.getActiveRun(sKey, cnMsgId) : undefined;
           if (!runId) {
             await ctx.answerCallbackQuery({ text: "Nothing to cancel" });
             await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
             return;
           }
           await agent.interrupt(runId);
-          state.activeRuns.delete(sKey);
+          state.deleteActiveRun(sKey, cnMsgId!);
           await ctx.answerCallbackQuery({ text: "Cancelling..." });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
@@ -492,25 +448,6 @@ export function createCallbackHandler(deps: CallbackDeps) {
           break;
         }
 
-        case "ba": {
-          // APPROVE research/action
-          const id = parseInt(payload, 10);
-          completeReminder(id);
-          await ctx.answerCallbackQuery({ text: "Approved" });
-          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-          break;
-        }
-
-        case "br": {
-          // REJECT
-          const id = parseInt(payload, 10);
-          dismissReminder(id);
-          await ctx.answerCallbackQuery({ text: "Rejected" });
-          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-          break;
-        }
-
-
         case "rr": {
           // Research — swap buttons immediately, background the rest
           const id = parseInt(payload, 10);
@@ -583,23 +520,8 @@ export function createCallbackHandler(deps: CallbackDeps) {
           const id = parseInt(idStr, 10);
           await ctx.answerCallbackQuery({ text: "Archived" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-          const rxrItem = getPendingItemById(id);
-          updatePendingItem(id, { status: "archived" });
-          addNoteplanTag(rxrItem?.noteplan_path ?? null, "action/archive");
-          insertFeedbackLog({
-            item_id: id,
-            user_action: `archive:${reason}`,
-            system_recommendation: "triage",
-          });
-          if (rxrItem) {
-            const change = updateAutonomyFromFeedback({
-              signalType: "compound",
-              signalValue: compoundSignalKey(rxrItem),
-              systemRecommendation: "triage",
-              userAction: `archive:${reason}`,
-            });
-            await surfaceAutonomyChange(change, deps, ctx);
-          }
+          const rxrResult = applyItemAction(id, "archive", reason);
+          await surfaceAutonomyChange(rxrResult.change, deps, ctx);
           break;
         }
 
@@ -633,23 +555,8 @@ export function createCallbackHandler(deps: CallbackDeps) {
           const id = parseInt(idStr, 10);
           await ctx.answerCallbackQuery({ text: "Dropped" });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-          const rdrItem = getPendingItemById(id);
-          updatePendingItem(id, { status: "deleted" });
-          addNoteplanTag(rdrItem?.noteplan_path ?? null, "action/drop");
-          insertFeedbackLog({
-            item_id: id,
-            user_action: `drop:${reason}`,
-            system_recommendation: "triage",
-          });
-          if (rdrItem) {
-            const change = updateAutonomyFromFeedback({
-              signalType: "compound",
-              signalValue: compoundSignalKey(rdrItem),
-              systemRecommendation: "triage",
-              userAction: `drop:${reason}`,
-            });
-            await surfaceAutonomyChange(change, deps, ctx);
-          }
+          const rdrResult = applyItemAction(id, "drop", reason);
+          await surfaceAutonomyChange(rdrResult.change, deps, ctx);
           break;
         }
 
@@ -683,8 +590,14 @@ export function createCallbackHandler(deps: CallbackDeps) {
         case "bf": {
           // Brief section drill-down: payload = "jobRunId:section"
           const sepIdx = payload.indexOf(":");
+          const bfJobRunId = parseInt(sepIdx >= 0 ? payload.slice(0, sepIdx) : payload, 10);
           const section = sepIdx >= 0 ? payload.slice(sepIdx + 1) : payload;
-          const briefMsg = ctx.callbackQuery?.message?.text ?? "";
+          // Prefer the full stored job_run result over the message text: on a
+          // brief split across multiple Telegram messages, the keyboard only
+          // lands on the LAST chunk, so the message text alone is a truncated
+          // tail of the real brief. Fall back to it only if the run row is gone.
+          const bfRun = Number.isFinite(bfJobRunId) ? getJobRun(bfJobRunId) : null;
+          const briefMsg = bfRun?.result ?? ctx.callbackQuery?.message?.text ?? "";
 
           const sectionLabels: Record<string, string> = {
             markets: "Markets",
@@ -712,8 +625,12 @@ export function createCallbackHandler(deps: CallbackDeps) {
         }
 
         case "bfr": {
-          // Brief reply — start a general conversation about the brief
-          const briefText = ctx.callbackQuery?.message?.text ?? "";
+          // Brief reply — start a general conversation about the brief.
+          // payload = jobRunId. See "bf" above for why we prefer the stored
+          // result over the message text (split-message truncation).
+          const bfrJobRunId = parseInt(payload, 10);
+          const bfrRun = Number.isFinite(bfrJobRunId) ? getJobRun(bfrJobRunId) : null;
+          const briefText = bfrRun?.result ?? ctx.callbackQuery?.message?.text ?? "";
           await ctx.answerCallbackQuery({ text: "Starting conversation..." });
 
           state.resetChats.add(sKey);

@@ -122,21 +122,30 @@ const ACTIONS: Record<
 /**
  * Apply one of the four terminal actions to a triaged item.
  *
+ * `reason` is an optional short slug (e.g. "outdated", "low_quality") captured
+ * by a second reason-picker keyboard for high-priority items — it's folded
+ * into the logged `user_action` as `"<action>:<reason>"` (matching the DB
+ * value the autonomy learner and feedback log already expect) but does not
+ * change which DB patch or NotePlan tag is applied. Both Telegram (rxr/rdr)
+ * and, in future, the Mini App's reason-capture flow call this with it.
+ *
  * Idempotent from the caller's perspective: if the item no longer exists it
  * returns `{ ok: false }` rather than throwing. On success the DB is patched,
  * the NotePlan note tagged, a feedback_log row inserted, and autonomy learning
  * updated; any resulting autonomy level change is returned on `change`.
  */
-export function applyItemAction(itemId: number, action: ItemAction): ApplyItemActionResult {
+export function applyItemAction(itemId: number, action: ItemAction, reason?: string): ApplyItemActionResult {
   const spec = ACTIONS[action];
   const item: PendingItem | null = getPendingItemById(itemId);
   if (!item) {
     return { ok: false, message: "Item not found", change: null };
   }
 
+  const userAction = reason ? `${action}:${reason}` : action;
+
   updatePendingItem(itemId, spec.patch);
   addNoteplanTag(item.noteplan_path ?? null, spec.tag);
-  insertFeedbackLog({ item_id: itemId, user_action: action, system_recommendation: "triage" });
+  insertFeedbackLog({ item_id: itemId, user_action: userAction, system_recommendation: "triage" });
 
   let change: AutonomyLevelChange | null = null;
   try {
@@ -144,10 +153,10 @@ export function applyItemAction(itemId: number, action: ItemAction): ApplyItemAc
       signalType: "compound",
       signalValue: compoundSignalKey(item),
       systemRecommendation: "triage",
-      userAction: action,
+      userAction,
     });
   } catch (err) {
-    log.error("Autonomy update failed", { itemId, action, error: String(err) });
+    log.error("Autonomy update failed", { itemId, action, reason, error: String(err) });
   }
 
   return { ok: true, message: spec.message, change };
