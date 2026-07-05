@@ -197,7 +197,13 @@ export class AgentService {
     const config = getConfig();
 
     // Explicit user escalation takes precedence over the default GLM routing.
-    if (options.prompt && AgentService.OPUS_ESCALATION_MARKER.test(options.prompt)) {
+    // Gated to user-facing sources: a job/heartbeat prompt that happens to say
+    // "think hard" must not override its configured model/backend.
+    if (
+      options.prompt &&
+      AgentService.REVIEW_ELIGIBLE_SOURCES.has(options.source) &&
+      AgentService.OPUS_ESCALATION_MARKER.test(options.prompt)
+    ) {
       return [
         { backend: "claude", model: AgentService.OPUS_ESCALATION_MODEL, attempt: 1 },
         { backend: "claude", model: AgentService.OPUS_ESCALATION_MODEL, attempt: 2 },
