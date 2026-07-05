@@ -5,8 +5,11 @@
  * writes via tmp file + rename.
  *
  * Three counters per skill (view / use / patch) bumped from instrumented call
- * sites. State machine drives the curator: active → stale (30d idle) →
- * archived (90d idle). Pinned skills bypass auto-transitions entirely.
+ * sites, plus a capped append-only `events[]` log tagged with the actor
+ * (workflow / maintenance / hub) — maintenance activity carries zero weight
+ * in the freshness score so the curator can't keep dead skills alive by
+ * looking at them. The curator recomputes score + HOT/COLD tier each tick;
+ * pinned skills never decay but get a periodic verification pass instead.
  *
  * Critical safety rail: only skills with `created_by === "agent"` are eligible
  * for autonomous curator management. The provenance context (skills/provenance.ts)
@@ -19,13 +22,41 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLogger } from "../shared/logger.ts";
 import { skillsDir, ensureSkillsDir, listSkills } from "./index.ts";
-import type { SkillState, SkillUsageRecord } from "./types.ts";
+import { isBackgroundReview } from "./provenance.ts";
+import type {
+  SkillActor,
+  SkillEvent,
+  SkillEventKind,
+  SkillExportRecord,
+  SkillState,
+  SkillTier,
+  SkillUsageRecord,
+} from "./types.ts";
 
 const log = createLogger("skills.usage");
 
 const STATE_ACTIVE: SkillState = "active";
 const STATE_ARCHIVED: SkillState = "archived";
 const VALID_STATES = new Set<SkillState>(["active", "stale", "archived"]);
+
+/** Cap on the per-skill append-only event log. Oldest events fall off. */
+const MAX_EVENTS = 200;
+
+/**
+ * Resolve the actor for a usage event from the write-origin provenance
+ * context. Curator + background-review runs are wrapped in
+ * `withWriteOriginAsync(BACKGROUND_REVIEW, ...)`, so their skill_view /
+ * skill_manage activity is automatically tagged "maintenance" — no tool
+ * parameter for the model to forget. Everything else is real consumption.
+ */
+function currentActor(): SkillActor {
+  return isBackgroundReview() ? "maintenance" : "workflow";
+}
+
+function appendEvent(rec: SkillUsageRecord, kind: SkillEventKind, actor: SkillActor, at?: string): void {
+  rec.events.push({ kind, at: at ?? nowIso(), actor });
+  if (rec.events.length > MAX_EVENTS) rec.events.splice(0, rec.events.length - MAX_EVENTS);
+}
 
 function usageFile(): string {
   return join(skillsDir(), ".usage.json");
@@ -48,7 +79,28 @@ function emptyRecord(): SkillUsageRecord {
     state: STATE_ACTIVE,
     pinned: false,
     archived_at: null,
+    events: [],
+    verdicts: { helped: 0, neutral: 0, misled: 0 },
+    first_exposed_at: null,
+    last_verified_at: null,
+    needs_review: false,
+    tier: "cold",
+    score: 0,
+    export_approved: false,
+    exported: null,
   };
+}
+
+/**
+ * Merge a possibly pre-v2 raw record onto the full shape, deep-merging the
+ * nested objects a shallow spread would clobber.
+ */
+function hydrateRecord(raw: Partial<SkillUsageRecord>): SkillUsageRecord {
+  const base = emptyRecord();
+  const rec: SkillUsageRecord = { ...base, ...raw };
+  rec.events = Array.isArray(raw.events) ? raw.events : [];
+  rec.verdicts = { ...base.verdicts, ...(raw.verdicts ?? {}) };
+  return rec;
 }
 
 export function loadUsage(): Record<string, SkillUsageRecord> {
@@ -61,7 +113,7 @@ export function loadUsage(): Record<string, SkillUsageRecord> {
     const out: Record<string, SkillUsageRecord> = {};
     for (const [k, v] of Object.entries(parsed)) {
       if (v && typeof v === "object" && !Array.isArray(v)) {
-        out[k] = { ...emptyRecord(), ...(v as Partial<SkillUsageRecord>) };
+        out[k] = hydrateRecord(v as Partial<SkillUsageRecord>);
       }
     }
     return out;
@@ -89,7 +141,7 @@ export function getRecord(name: string): SkillUsageRecord {
   const data = loadUsage();
   const rec = data[name];
   if (!rec) return emptyRecord();
-  return { ...emptyRecord(), ...rec };
+  return hydrateRecord(rec);
 }
 
 /**
@@ -113,23 +165,105 @@ function mutate(name: string, fn: (rec: SkillUsageRecord) => void): void {
 }
 
 export function bumpView(name: string): void {
+  const actor = currentActor();
   mutate(name, (r) => {
     r.view_count = (r.view_count ?? 0) + 1;
     r.last_viewed_at = nowIso();
+    appendEvent(r, "view", actor);
   });
 }
 
 export function bumpUse(name: string): void {
+  const actor = currentActor();
   mutate(name, (r) => {
     r.use_count = (r.use_count ?? 0) + 1;
     r.last_used_at = nowIso();
+    appendEvent(r, "use", actor);
   });
 }
 
 export function bumpPatch(name: string): void {
+  const actor = currentActor();
   mutate(name, (r) => {
     r.patch_count = (r.patch_count ?? 0) + 1;
     r.last_patched_at = nowIso();
+    appendEvent(r, "patch", actor);
+  });
+}
+
+/**
+ * Record a cross-harness use observed in the hub's telemetry store.
+ * `at` is the span timestamp, not "now" — freshness must reflect when the
+ * skill was actually used.
+ */
+export function recordHubUse(name: string, at: string): void {
+  mutate(name, (r) => {
+    r.use_count = (r.use_count ?? 0) + 1;
+    if (!r.last_used_at || at > r.last_used_at) r.last_used_at = at;
+    appendEvent(r, "use", "hub", at);
+  });
+}
+
+/** Background-review outcome verdict for a run that loaded this skill. */
+export function recordVerdict(name: string, verdict: "helped" | "neutral" | "misled"): void {
+  mutate(name, (r) => {
+    r.verdicts[verdict] = (r.verdicts[verdict] ?? 0) + 1;
+  });
+}
+
+/**
+ * Stamp first exposure (system-prompt listing or job injection). Only the
+ * first call writes; afterwards it's a cheap read + no-op, safe to call on
+ * every prompt build.
+ */
+export function markExposed(names: string[]): void {
+  if (names.length === 0) return;
+  try {
+    const data = loadUsage();
+    let dirty = false;
+    const ts = nowIso();
+    for (const name of names) {
+      const rec = data[name] ?? emptyRecord();
+      if (rec.first_exposed_at) continue;
+      rec.first_exposed_at = ts;
+      data[name] = rec;
+      dirty = true;
+    }
+    if (dirty) saveUsage(data);
+  } catch (e) {
+    log.debug("markExposed failed", { error: String(e) });
+  }
+}
+
+export function setTierAndScore(name: string, tier: SkillTier, score: number): void {
+  mutate(name, (r) => {
+    r.tier = tier;
+    r.score = Math.round(score * 1000) / 1000;
+  });
+}
+
+export function setNeedsReview(name: string, needsReview: boolean): void {
+  mutate(name, (r) => {
+    r.needs_review = needsReview;
+    if (!needsReview) r.last_verified_at = nowIso();
+  });
+}
+
+export function markVerified(name: string): void {
+  mutate(name, (r) => {
+    r.last_verified_at = nowIso();
+  });
+}
+
+export function setExportApproved(name: string, approved: boolean): void {
+  mutate(name, (r) => {
+    r.export_approved = approved;
+  });
+}
+
+export function setExported(name: string, exported: SkillExportRecord | null): void {
+  mutate(name, (r) => {
+    r.exported = exported;
   });
 }
 
@@ -182,13 +316,20 @@ export function isAgentCreated(name: string): boolean {
  * one if the sidecar entry is missing).
  */
 export function agentCreatedReport(): Array<{ name: string; record: SkillUsageRecord }> {
+  return allSkillsReport().filter(({ record }) => record.created_by === "agent");
+}
+
+/**
+ * Like agentCreatedReport but covering ALL on-disk skills — hand-authored
+ * ones included. The lifecycle (scoring, tiers, verification, export) covers
+ * everything; only destructive auto-archival stays agent-created-only.
+ */
+export function allSkillsReport(): Array<{ name: string; record: SkillUsageRecord }> {
   const usage = loadUsage();
   const onDisk = listSkills();
   const out: Array<{ name: string; record: SkillUsageRecord }> = [];
   for (const s of onDisk) {
-    const rec = usage[s.name] ?? emptyRecord();
-    if (rec.created_by !== "agent") continue;
-    out.push({ name: s.name, record: rec });
+    out.push({ name: s.name, record: usage[s.name] ? hydrateRecord(usage[s.name]) : emptyRecord() });
   }
   return out;
 }

@@ -2,15 +2,21 @@
  * Autonomous skill curator — periodic consolidation pass over agent-created
  * skills. Mirrors Hermes' `agent/curator.py`.
  *
- * Two phases per run:
- *   A. applyAutomaticTransitions — pure logic, no LLM. State machine over
- *      activity timestamps: active → stale @ 30d → archived @ 90d. Pinned
- *      skills bypass everything.
- *   B. LLM consolidation — forks an AIAgent on Sonnet with the verbatim
- *      Hermes CURATOR_REVIEW_PROMPT. Renders the candidate list, lets the
- *      fork call skill_manage to merge / archive / patch / write_file. Parses
- *      the structured YAML output and writes a per-run report under
- *      data/curator-reports/{ts}/.
+ * Phases per run:
+ *   A0. syncHubSignal — read-only ingest of cross-harness skill usage from
+ *       local-mcp-hub's telemetry store (fail-soft; see hub-signal.ts).
+ *   A.  applyAutomaticTransitions — pure logic, no LLM. Freshness score +
+ *       HOT/COLD tiers + stale/archive transitions (see transitions.ts).
+ *       Pinned skills never decay.
+ *   A2. runVerificationPass — mechanical checks on due pinned skills
+ *       (missing paths/commands → needs_review; see verify.ts).
+ *   B.  LLM consolidation — forks an AIAgent on Sonnet with the verbatim
+ *       Hermes CURATOR_REVIEW_PROMPT plus verification findings. Renders the
+ *       candidate list, lets the fork call skill_manage to merge / archive /
+ *       patch / write_file. Parses the structured YAML output and writes a
+ *       per-run report under data/curator-reports/{ts}/.
+ *   C.  runExportPass — one-way sync of approved skills to ~/.claude/skills
+ *       (the hub seam; see export.ts), tombstoning archived/revoked ones.
  *
  * Trigger: `maybeRunCurator(agent, { idleForSeconds })` is wired into the
  * heartbeat tick. Gates: enabled + not paused + interval elapsed + idle
@@ -32,6 +38,9 @@ import { agentCreatedReport } from "../skills/usage.ts";
 import { withWriteOriginAsync, BACKGROUND_REVIEW } from "../skills/provenance.ts";
 import { CURATOR_REVIEW_PROMPT, CURATOR_DRY_RUN_BANNER } from "./prompts.ts";
 import { applyAutomaticTransitions, type TransitionCounts } from "./transitions.ts";
+import { runVerificationPass, type VerifyFinding } from "./verify.ts";
+import { runExportPass, type ExportReport } from "./export.ts";
+import { syncHubSignal, type HubSignalReport } from "./hub-signal.ts";
 import { loadState, saveState, shouldRunNow, isPaused } from "./state.ts";
 
 const log = createLogger("curator");
@@ -42,6 +51,9 @@ export interface CuratorRunResult {
   startedAt: string;
   durationMs: number;
   autoTransitions: TransitionCounts;
+  hubSignal: HubSignalReport;
+  verifyFindings: VerifyFinding[];
+  exportReport: ExportReport;
   llmSummary: string;
   consolidations: ConsolidationEntry[];
   prunings: PruningEntry[];
@@ -109,10 +121,20 @@ export async function runCuratorReview(
   const start = new Date();
   const dryRun = !!opts.dryRun;
 
-  // Phase A — pure-logic transitions.
+  // Phase A0 — ingest cross-harness usage from the hub telemetry store
+  // BEFORE transitions, so hub activity counts toward this pass's scores.
+  // Read-only + fail-soft; dry-run skips it (it writes use events).
+  const hubSignal: HubSignalReport = dryRun
+    ? { available: false, reason: "dry-run", matchedSkills: [] }
+    : syncHubSignal();
+
+  // Phase A — pure-logic transitions (score, tiers, stale/archive).
   const autoTransitions: TransitionCounts = dryRun
-    ? { checked: agentCreatedReport().length, marked_stale: 0, archived: 0, reactivated: 0 }
+    ? { checked: agentCreatedReport().length, marked_stale: 0, archived: 0, reactivated: 0, hot: 0 }
     : applyAutomaticTransitions(start);
+
+  // Phase A2 — pinned-skill verification (mechanical checks, staggered).
+  const verifyFindings: VerifyFinding[] = dryRun ? [] : runVerificationPass(start);
 
   const autoSummary = formatAutoSummary(autoTransitions);
   opts.onSummary?.(`curator: ${dryRun ? "dry-run " : ""}${autoSummary}`);
@@ -135,12 +157,14 @@ export async function runCuratorReview(
   let llmError: string | null = null;
   let llmFinalText = "";
 
+  const verifyText = renderVerifyFindings(verifyFindings);
+
   if (candidates.skillsCount > 0) {
     try {
       const cfg = getConfig();
       const prompt = dryRun
-        ? `${CURATOR_DRY_RUN_BANNER}\n\n${CURATOR_REVIEW_PROMPT}\n\n${candidates.text}`
-        : `${CURATOR_REVIEW_PROMPT}\n\n${candidates.text}`;
+        ? `${CURATOR_DRY_RUN_BANNER}\n\n${CURATOR_REVIEW_PROMPT}\n\n${candidates.text}${verifyText}`
+        : `${CURATOR_REVIEW_PROMPT}\n\n${candidates.text}${verifyText}`;
 
       const result = await withWriteOriginAsync(BACKGROUND_REVIEW, () =>
         agent.run({
@@ -171,8 +195,24 @@ export async function runCuratorReview(
     }
   }
 
+  // Phase C — export pass, after consolidation settles so we don't sync a
+  // skill Phase B is about to merge away.
+  const exportReport: ExportReport = dryRun
+    ? { exported: [], tombstoned: [], candidates: [], skipped: [] }
+    : runExportPass();
+
   const elapsed = Date.now() - start.getTime();
-  const finalSummary = `${dryRun ? "dry-run " : ""}auto: ${autoSummary}; llm: ${llmSummary}`;
+  const extras: string[] = [];
+  if (hubSignal.matchedSkills.length > 0) {
+    extras.push(`hub: ${hubSignal.matchedSkills.map((m) => `${m.name}×${m.uses}`).join(", ")}`);
+  }
+  const flagged = verifyFindings.filter((f) => !f.ok);
+  if (flagged.length > 0) extras.push(`needs review: ${flagged.map((f) => f.name).join(", ")}`);
+  if (exportReport.exported.length > 0) extras.push(`exported: ${exportReport.exported.join(", ")}`);
+  if (exportReport.candidates.length > 0) {
+    extras.push(`export candidates awaiting approval: ${exportReport.candidates.join(", ")} (say "approve export of <name>")`);
+  }
+  const finalSummary = `${dryRun ? "dry-run " : ""}auto: ${autoSummary}; llm: ${llmSummary}${extras.length > 0 ? `; ${extras.join("; ")}` : ""}`;
   opts.onSummary?.(`curator: ${finalSummary}`);
 
   // Write per-run report.
@@ -183,6 +223,9 @@ export async function runCuratorReview(
       elapsedMs: elapsed,
       autoTransitions,
       autoSummary,
+      hubSignal,
+      verifyFindings,
+      exportReport,
       llmSummary,
       llmFinalText,
       llmError,
@@ -208,6 +251,9 @@ export async function runCuratorReview(
     startedAt: start.toISOString(),
     durationMs: elapsed,
     autoTransitions,
+    hubSignal,
+    verifyFindings,
+    exportReport,
     llmSummary,
     consolidations,
     prunings,
@@ -219,10 +265,35 @@ export async function runCuratorReview(
 
 function formatAutoSummary(c: TransitionCounts): string {
   const parts: string[] = [];
+  if (c.hot) parts.push(`${c.hot} hot`);
   if (c.marked_stale) parts.push(`${c.marked_stale} marked stale`);
   if (c.archived) parts.push(`${c.archived} archived`);
   if (c.reactivated) parts.push(`${c.reactivated} reactivated`);
   return parts.length > 0 ? parts.join(", ") : "no changes";
+}
+
+/**
+ * Render mechanical verification findings for the Phase B prompt so the LLM
+ * can patch (agent-created) or flag (user-authored) out-of-date procedures.
+ */
+function renderVerifyFindings(findings: VerifyFinding[]): string {
+  const flagged = findings.filter((f) => !f.ok);
+  if (flagged.length === 0) return "";
+  const lines = [
+    "",
+    "",
+    "## Pinned-skill verification findings",
+    "",
+    "Mechanical checks found possibly-broken references in these pinned skills. For agent-created ones, view the skill and patch or confirm; for user-authored ones, note it in your summary only:",
+    "",
+  ];
+  for (const f of flagged) {
+    const bits: string[] = [];
+    if (f.missingPaths.length > 0) bits.push(`missing paths: ${f.missingPaths.join(", ")}`);
+    if (f.missingCommands.length > 0) bits.push(`missing commands: ${f.missingCommands.join(", ")}`);
+    lines.push(`- **${f.name}** — ${bits.join("; ")}`);
+  }
+  return lines.join("\n");
 }
 
 interface RenderedCandidates {
@@ -244,7 +315,7 @@ function renderCandidateList(): RenderedCandidates {
   const lines: string[] = [
     "## Candidate skills",
     "",
-    "Format: `name | description | use_count/view_count/patch_count | state | pinned | last_activity`",
+    "Format: `name | description | use/view/patch | score | tier | state | pinned | verdicts | last_activity`",
     "",
   ];
   for (const { name, record } of report) {
@@ -252,8 +323,9 @@ function renderCandidateList(): RenderedCandidates {
     const desc = disk?.description ?? "(missing on disk — orphan record)";
     const last =
       record.last_used_at ?? record.last_patched_at ?? record.last_viewed_at ?? record.created_at;
+    const v = record.verdicts;
     lines.push(
-      `- **${name}** | ${desc} | use=${record.use_count} view=${record.view_count} patch=${record.patch_count} | ${record.state} | pinned=${record.pinned} | ${last}`,
+      `- **${name}** | ${desc} | use=${record.use_count} view=${record.view_count} patch=${record.patch_count} | score=${record.score} | ${record.tier} | ${record.state} | pinned=${record.pinned} | helped=${v.helped} misled=${v.misled} | ${last}`,
     );
   }
   return { text: lines.join("\n"), skillsCount: report.length };
@@ -360,6 +432,9 @@ interface ReportInputs {
   elapsedMs: number;
   autoTransitions: TransitionCounts;
   autoSummary: string;
+  hubSignal: HubSignalReport;
+  verifyFindings: VerifyFinding[];
+  exportReport: ExportReport;
   llmSummary: string;
   llmFinalText: string;
   llmError: string | null;
@@ -383,15 +458,37 @@ function writeRunReport(r: ReportInputs): string {
     `- candidates: ${r.candidatesCount}`,
     `- cost: $${r.costUsd.toFixed(4)}`,
     "",
-    "## Phase A — automatic transitions",
+    "## Phase A — lifecycle",
     "",
-    `${r.autoSummary} (checked ${r.autoTransitions.checked}, stale ${r.autoTransitions.marked_stale}, archived ${r.autoTransitions.archived}, reactivated ${r.autoTransitions.reactivated})`,
+    `${r.autoSummary} (checked ${r.autoTransitions.checked}, hot ${r.autoTransitions.hot}, stale ${r.autoTransitions.marked_stale}, archived ${r.autoTransitions.archived}, reactivated ${r.autoTransitions.reactivated})`,
+    "",
+    `Hub signal: ${r.hubSignal.available ? (r.hubSignal.matchedSkills.length > 0 ? r.hubSignal.matchedSkills.map((m) => `${m.name}×${m.uses}`).join(", ") : "available, no new usage") : `unavailable (${r.hubSignal.reason})`}`,
     "",
     "## Phase B — LLM consolidation",
     "",
     `Summary: ${r.llmSummary}`,
     "",
   ];
+
+  if (r.verifyFindings.length > 0) {
+    md.push("### Pinned verification", "");
+    for (const f of r.verifyFindings) {
+      md.push(
+        f.ok
+          ? `- **${f.name}** — ok`
+          : `- **${f.name}** — NEEDS REVIEW (${[...f.missingPaths, ...f.missingCommands].join(", ")})`,
+      );
+    }
+    md.push("");
+  }
+  if (r.exportReport.exported.length + r.exportReport.tombstoned.length + r.exportReport.candidates.length + r.exportReport.skipped.length > 0) {
+    md.push("### Export (~/.claude/skills seam)", "");
+    if (r.exportReport.exported.length > 0) md.push(`- synced: ${r.exportReport.exported.join(", ")}`);
+    if (r.exportReport.tombstoned.length > 0) md.push(`- tombstoned: ${r.exportReport.tombstoned.join(", ")}`);
+    if (r.exportReport.candidates.length > 0) md.push(`- awaiting approval: ${r.exportReport.candidates.join(", ")}`);
+    for (const s of r.exportReport.skipped) md.push(`- skipped ${s.name}: ${s.reason}`);
+    md.push("");
+  }
 
   if (r.consolidations.length > 0) {
     md.push("### Consolidations", "");
@@ -429,6 +526,9 @@ function writeRunReport(r: ReportInputs): string {
         candidates_count: r.candidatesCount,
         auto_transitions: r.autoTransitions,
         auto_summary: r.autoSummary,
+        hub_signal: r.hubSignal,
+        verify_findings: r.verifyFindings,
+        export_report: r.exportReport,
         llm_summary: r.llmSummary,
         consolidations: r.consolidations,
         prunings: r.prunings,

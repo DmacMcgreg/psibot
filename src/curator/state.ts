@@ -23,6 +23,8 @@ export interface CuratorState {
   lastReportPath: string | null;
   paused: boolean;
   runCount: number;
+  /** Hub telemetry sync cursor — epoch ms of the newest span already ingested. */
+  hubSyncTs: number;
 }
 
 function defaultState(): CuratorState {
@@ -33,6 +35,7 @@ function defaultState(): CuratorState {
     lastReportPath: null,
     paused: false,
     runCount: 0,
+    hubSyncTs: 0,
   };
 }
 

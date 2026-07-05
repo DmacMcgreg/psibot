@@ -15,6 +15,47 @@
 export const SKILL_STATES = ["active", "stale", "archived"] as const;
 export type SkillState = typeof SKILL_STATES[number];
 
+/**
+ * Exposure tier — same vocabulary as local-mcp-hub (HOT / COLD / HIDDEN).
+ * HOT skills are listed by name+description in the system prompt; COLD are
+ * searchable via skills_list only. Archived skills are the HIDDEN analog.
+ */
+export const SKILL_TIERS = ["hot", "cold"] as const;
+export type SkillTier = typeof SKILL_TIERS[number];
+
+/**
+ * Who caused a usage event. "workflow" is real consumption (foreground agent
+ * runs, jobs); "maintenance" is the curator/background-review touching a
+ * skill to maintain it; "hub" is cross-harness usage read from the hub's
+ * telemetry store. Maintenance events carry ZERO weight in the freshness
+ * score — otherwise the maintainer resets the decay clock it enforces.
+ */
+export type SkillActor = "workflow" | "maintenance" | "hub";
+
+export type SkillEventKind = "use" | "view" | "patch";
+
+export interface SkillEvent {
+  kind: SkillEventKind;
+  at: string;
+  actor: SkillActor;
+}
+
+/** Outcome verdicts recorded by the background review after a run that loaded the skill. */
+export interface SkillVerdicts {
+  helped: number;
+  neutral: number;
+  misled: number;
+}
+
+/** Manifest entry for a skill exported to ~/.claude/skills (the hub seam). */
+export interface SkillExportRecord {
+  /** Directory name used in ~/.claude/skills (differs from name on collision). */
+  as: string;
+  exported_at: string;
+  /** Freshness score at export time (provenance metadata for the hub). */
+  score: number;
+}
+
 export interface SkillFrontmatter {
   name: string;
   description: string;
@@ -57,4 +98,30 @@ export interface SkillUsageRecord {
   state: SkillState;
   pinned: boolean;
   archived_at: string | null;
+  /**
+   * Append-only event log (capped — oldest dropped). Feeds the freshness
+   * score. Pre-v2 records have no events; the score falls back to the
+   * legacy count+timestamp fields for those.
+   */
+  events: SkillEvent[];
+  /** Outcome verdicts from the background review (helped/neutral/misled). */
+  verdicts: SkillVerdicts;
+  /**
+   * First time this skill was actually surfaced (prompt listing or job
+   * injection). Decay/archival idle time anchors here, NOT at created_at —
+   * a skill that was never discoverable can't be "unused".
+   */
+  first_exposed_at: string | null;
+  /** Last pinned-skill verification pass (mechanical + LLM checks). */
+  last_verified_at: string | null;
+  /** Set by the verification pass when a skill's procedure looks out of date. */
+  needs_review: boolean;
+  /** Current exposure tier (recomputed each curator tick). */
+  tier: SkillTier;
+  /** Cached freshness score from the last curator tick (for dashboards/reports). */
+  score: number;
+  /** David approved exporting this skill to ~/.claude/skills. */
+  export_approved: boolean;
+  /** Present iff currently exported to ~/.claude/skills. */
+  exported: SkillExportRecord | null;
 }
