@@ -4,6 +4,7 @@ data/
 knowledge/*
 !knowledge/trading/
 .env
+.env.ha
 .env.*.swp
 .env.swp
 *.swp
@@ -55,3 +56,7 @@ scripts/portfolio_update.py
 .vibe/
 .windsurf/
 .zencoder/
+
+# Deferred CLAUDE.md staging (claudemd-deferred-update skill)
+.claudemd-pending/
+.claudemd-backups/
