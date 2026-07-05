@@ -140,4 +140,31 @@ describe("latestRealActivity", () => {
     const r = rec({ events: [{ kind: "view", at: daysAgo(1), actor: "maintenance" }] });
     expect(latestRealActivity(r)).toBeNull();
   });
+
+  test("skill-1: anchors to legacy last_used_at when events are maintenance-only " +
+    "(same regression class as computeScore — events.length > 0 must not hide legacy usage)", () => {
+    const r = rec({
+      use_count: 2,
+      last_used_at: daysAgo(52),
+      patch_count: 42,
+      last_patched_at: daysAgo(52),
+      events: [
+        { kind: "patch", at: daysAgo(1), actor: "maintenance" },
+        { kind: "view", at: daysAgo(0), actor: "maintenance" },
+      ],
+    });
+    // Before the fix, events.length > 0 switched to the event-only branch,
+    // and with all events maintenance-only latestRealActivity returned null —
+    // ignoring the real legacy usage and mis-anchoring the idle clock.
+    expect(latestRealActivity(r)?.toISOString()).toBe(daysAgo(52));
+  });
+
+  test("takes the max when a real event is newer than legacy timestamps", () => {
+    const r = rec({
+      use_count: 5,
+      last_used_at: daysAgo(60),
+      events: [{ kind: "use", at: daysAgo(5), actor: "workflow" }],
+    });
+    expect(latestRealActivity(r)?.toISOString()).toBe(daysAgo(5));
+  });
 });

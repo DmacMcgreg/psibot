@@ -138,18 +138,20 @@ export function computeScore(rec: SkillUsageRecord, opts: ScoreOptions): number 
  * Latest REAL activity (workflow/hub events; legacy fallback includes all
  * timestamps since pre-v2 data can't distinguish actors). Used for the
  * idle-time archival check — exposure-anchored by the caller.
+ *
+ * Same bug class as the fixed computeScore: the old branch switched entirely
+ * to events[] when non-empty, so a record whose events were all maintenance-
+ * only returned null and ignored real legacy last_*_at timestamps — mis-
+ * anchoring the stale/archive idle clock. Consider BOTH the newest non-
+ * maintenance event AND the legacy counter timestamps, take the max.
  */
 export function latestRealActivity(rec: SkillUsageRecord): Date | null {
-  if (rec.events.length > 0) {
-    let best = 0;
-    for (const ev of rec.events) {
-      if (ev.actor === "maintenance") continue;
-      const t = Date.parse(ev.at);
-      if (!isNaN(t) && t > best) best = t;
-    }
-    return best > 0 ? new Date(best) : null;
-  }
   let best = 0;
+  for (const ev of rec.events) {
+    if (ev.actor === "maintenance") continue;
+    const t = Date.parse(ev.at);
+    if (!isNaN(t) && t > best) best = t;
+  }
   for (const c of [rec.last_used_at, rec.last_patched_at, rec.last_viewed_at]) {
     if (!c) continue;
     const t = Date.parse(c);

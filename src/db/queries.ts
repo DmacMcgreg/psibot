@@ -75,7 +75,7 @@ export function getMessagesBySession(sessionId: string): ChatMessage[] {
   const db = getDb();
   return db
     .prepare<ChatMessage, [string]>(
-      `SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC`
+      `SELECT * FROM chat_messages WHERE session_id = ? AND source != 'review' ORDER BY created_at ASC`
     )
     .all(sessionId);
 }

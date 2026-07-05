@@ -73,10 +73,10 @@ export function searchSessions(
       .prepare<{ session_id: string; hit_count: number; total_messages: number }, [string, number]>(
         `SELECT cm.session_id AS session_id,
                 COUNT(*) AS hit_count,
-                (SELECT COUNT(*) FROM chat_messages WHERE session_id = cm.session_id) AS total_messages
+                (SELECT COUNT(*) FROM chat_messages WHERE session_id = cm.session_id AND source != 'review') AS total_messages
          FROM chat_messages_fts f
          JOIN chat_messages cm ON cm.id = f.rowid
-         WHERE chat_messages_fts MATCH ?
+         WHERE chat_messages_fts MATCH ? AND cm.source != 'review'
          GROUP BY cm.session_id
          ORDER BY hit_count DESC
          LIMIT ?`,
@@ -93,7 +93,7 @@ export function searchSessions(
     const messages = db
       .prepare<MessageRow, [string]>(
         `SELECT id, session_id, role, content, source, created_at
-         FROM chat_messages WHERE session_id = ?
+         FROM chat_messages WHERE session_id = ? AND source != 'review'
          ORDER BY created_at ASC, id ASC`,
       )
       .all(hit.session_id);
@@ -225,9 +225,9 @@ function searchSessionsViaLike(query: string, maxSessions: number): SessionHit[]
     .prepare<{ session_id: string; hit_count: number; total_messages: number }, [string, number]>(
       `SELECT session_id,
               COUNT(*) AS hit_count,
-              (SELECT COUNT(*) FROM chat_messages cm2 WHERE cm2.session_id = chat_messages.session_id) AS total_messages
+              (SELECT COUNT(*) FROM chat_messages cm2 WHERE cm2.session_id = chat_messages.session_id AND cm2.source != 'review') AS total_messages
        FROM chat_messages
-       WHERE content LIKE ? ESCAPE '\\'
+       WHERE content LIKE ? ESCAPE '\\' AND source != 'review'
        GROUP BY session_id
        ORDER BY hit_count DESC
        LIMIT ?`,
@@ -238,7 +238,7 @@ function searchSessionsViaLike(query: string, maxSessions: number): SessionHit[]
   for (const hit of hitRows) {
     const messages = db
       .prepare<MessageRow, [string]>(
-        `SELECT id, session_id, role, content, source, created_at FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, id ASC`,
+        `SELECT id, session_id, role, content, source, created_at FROM chat_messages WHERE session_id = ? AND source != 'review' ORDER BY created_at ASC, id ASC`,
       )
       .all(hit.session_id);
     if (messages.length === 0) continue;
