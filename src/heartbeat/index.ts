@@ -1,6 +1,9 @@
 import { Cron } from "croner";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createLogger } from "../shared/logger.ts";
 import {
   getPendingItems,
@@ -16,7 +19,10 @@ import {
   updatePendingItem,
   getPendingItemById,
   isTopicMuted,
+  getFleetState,
+  setFleetState,
 } from "../db/queries.ts";
+import { getConfig } from "../config.ts";
 import { getUrgencySnoozeMs } from "../shared/reminder-snooze.ts";
 import { triageAllPending } from "../triage/index.ts";
 import { preliminaryResearch, deepResearch, createResearchNote } from "../research/index.ts";
@@ -37,9 +43,40 @@ import type { AgentService } from "../agent/index.ts";
 import { maybeRunCurator } from "../curator/index.ts";
 import { tmaLink } from "../telegram/format.ts";
 import { markExportNudged, exportNudgeId } from "../skills/usage.ts";
+import { readAlertedEventBatchSince, readLatestSnapshot } from "./fleet-reader.ts";
 
 const log = createLogger("heartbeat");
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
+const HUB_DOCTOR_CLEANUP_TIMEOUT_MS = 1_000;
+const HUB_KICKSTART_TIMEOUT_MS = 5_000;
+const PROCESS_REAP_TIMEOUT_MS = 1_000;
+
+class OperationTimeoutError extends Error {}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new OperationTimeoutError(`${operation} timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number, fallback: T, operation: string): Promise<T> {
+  try {
+    return await withTimeout(promise, timeoutMs, operation);
+  } catch {
+    return fallback;
+  }
+}
 
 function hhmm(d = new Date()): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -53,6 +90,7 @@ interface OrchestratorState {
 
 interface OrchestratorConfig {
   intervalMinutes: number;
+  fleetPreludeIntervalMinutes: number;
   quietStart: number;
   quietEnd: number;
 }
@@ -91,6 +129,7 @@ interface ResearchCompletionRecord {
 
 export class HeartbeatRunner {
   private cron: Cron | null = null;
+  private fleetPreludeCron: Cron | null = null;
   private getBot: () => Bot | null;
   private defaultChatIds: number[];
   private digestChatId?: string;
@@ -100,6 +139,9 @@ export class HeartbeatRunner {
   private statePath: string;
   private memory: MemorySystem;
   private agent?: AgentService;
+  private fleetStaleStreak = 0;
+  private hubDeathAlerted = false;
+  private sourceLostAlerted = false;
   /**
    * Timestamp of the last observed agent activity. The curator's idle gate
    * is `now - lastAgentActiveAt`. We bump this forward whenever the agent
@@ -121,20 +163,50 @@ export class HeartbeatRunner {
 
   start(): void {
     const pattern = `*/${this.config.intervalMinutes} * * * *`;
-    log.info("Starting heartbeat orchestrator", { pattern, config: this.config });
+    const fleetPreludePattern = `*/${this.config.fleetPreludeIntervalMinutes} * * * *`;
+    log.info("Starting heartbeat orchestrator", { pattern, fleetPreludePattern, config: this.config });
 
     this.cron = new Cron(pattern, () => {
       this.tick().catch((err) => {
         log.error("Heartbeat tick failed", { error: String(err) });
       });
     });
+
+    this.fleetPreludeCron = new Cron(fleetPreludePattern, () => {
+      this.fleetPreludeTick().catch((err) => {
+        log.error("Fleet prelude tick failed", { error: String(err) });
+      });
+    });
   }
 
   stop(): void {
+    let stopped = false;
     if (this.cron) {
       this.cron.stop();
       this.cron = null;
+      stopped = true;
+    }
+    if (this.fleetPreludeCron) {
+      this.fleetPreludeCron.stop();
+      this.fleetPreludeCron = null;
+      stopped = true;
+    }
+    if (stopped) {
       log.info("Heartbeat orchestrator stopped");
+    }
+  }
+
+  private async fleetPreludeTick(): Promise<void> {
+    if (this.running) {
+      log.info("Fleet prelude skipped (heartbeat already running)");
+      return;
+    }
+
+    this.running = true;
+    try {
+      await this.runFleetPrelude();
+    } finally {
+      this.running = false;
     }
   }
 
@@ -168,27 +240,30 @@ export class HeartbeatRunner {
       return;
     }
 
-    if (this.isQuietHours()) {
-      log.info("Heartbeat skipped (quiet hours)");
-      return;
-    }
-
     this.running = true;
-    const state = this.readState();
-
     try {
-      // --- Phase 1: Intake ---
-      const result = await this.phaseIntake();
+      await this.runFleetPrelude();
 
-      // --- Phase 3: Inbox Watcher ---
-      try {
-        const inboxActions = scanInbox();
-        if (inboxActions.length > 0) {
-          log.info("Inbox watcher processed", { count: inboxActions.length });
-        }
-      } catch (err) {
-        log.error("Inbox watcher failed", { error: String(err) });
+      if (this.isQuietHours()) {
+        log.info("Heartbeat skipped (quiet hours)");
+        return;
       }
+
+      const state = this.readState();
+
+      // --- Phase 1: Intake ---
+      try {
+        const result = await this.phaseIntake();
+
+        // --- Phase 3: Inbox Watcher ---
+        try {
+          const inboxActions = scanInbox();
+          if (inboxActions.length > 0) {
+            log.info("Inbox watcher processed", { count: inboxActions.length });
+          }
+        } catch (err) {
+          log.error("Inbox watcher failed", { error: String(err) });
+        }
 
       // --- Phase 3b: Theme Clustering ---
       try {
@@ -261,9 +336,9 @@ export class HeartbeatRunner {
       });
 
       this.writeTickDailyLog(result, researchCompletions);
-    } catch (err) {
-      log.error("Heartbeat orchestrator error", { error: String(err) });
-    }
+      } catch (err) {
+        log.error("Heartbeat orchestrator error", { error: String(err) });
+      }
 
     // Check due reminders (runs even if pipeline fails)
     try {
@@ -291,7 +366,247 @@ export class HeartbeatRunner {
       }).catch((err) => log.warn("Curator tick failed", { error: String(err) }));
     }
 
-    this.running = false;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async runFleetPrelude(): Promise<void> {
+    try {
+      await this.phaseFleetAlerts();
+    } catch (err) {
+      log.error("Fleet alerts phase failed", { error: String(err) });
+    }
+
+    try {
+      await this.phaseFleetStaleness();
+    } catch (err) {
+      log.error("Fleet staleness phase failed", { error: String(err) });
+    }
+  }
+
+  private async phaseFleetAlerts(): Promise<void> {
+    const watermarkStr = getFleetState("fleet_event_watermark");
+    const parsedWatermark = watermarkStr === null ? 0 : Number(watermarkStr);
+    const watermark = Number.isSafeInteger(parsedWatermark) && parsedWatermark >= 0
+      ? parsedWatermark
+      : 0;
+    if (watermarkStr !== null && watermark === 0 && parsedWatermark !== 0) {
+      log.warn("Invalid fleet event watermark; using 0", { watermark: watermarkStr });
+    }
+    const batch = readAlertedEventBatchSince(watermark, 50);
+    const { events } = batch;
+    if (events.length === 0) {
+      if (batch.maxScannedId > watermark) {
+        setFleetState("fleet_event_watermark", String(batch.maxScannedId));
+      }
+      return;
+    }
+
+    if (this.defaultChatIds.length === 0) {
+      log.warn("Fleet alerts pending but no destination chats configured");
+      return;
+    }
+
+    const bot = this.getBot();
+    if (!bot) {
+      log.warn("Fleet alerts pending but bot unavailable");
+      return;
+    }
+
+    for (const event of events) {
+      const entity = escapeHtml(event.entity);
+      const detail = escapeHtml(event.detail);
+      let message: string;
+
+      if (event.kind === "transition" && event.toState === "down") {
+        message = `🔴 <b>${entity}</b> DOWN — ${detail}`;
+      } else if (event.kind === "transition" && event.fromState === "down" && event.toState === "up") {
+        message = `✅ <b>${entity}</b> recovered — ${detail}`;
+      } else if (event.kind === "transition" && event.toState === "flapping") {
+        message = `⚠️ <b>${entity}</b> flapping — ${detail}`;
+      } else {
+        message = `ℹ️ <b>${entity}</b> ${escapeHtml(event.kind)}: ${detail}`;
+      }
+
+      for (const chatId of this.defaultChatIds) {
+        try {
+          await bot.api.sendMessage(chatId, message, { parse_mode: "HTML" });
+        } catch (err) {
+          log.error("Failed to send fleet alert", { chatId, eventId: event.id, error: String(err) });
+        }
+      }
+    }
+
+    setFleetState("fleet_event_watermark", String(batch.maxScannedId));
+  }
+
+  private async phaseFleetStaleness(): Promise<void> {
+    const config = getConfig();
+    const everSeen = getFleetState("fleet_snapshot_last_seen_ms") !== null;
+    const snapshot = readLatestSnapshot();
+
+    if (snapshot === null) {
+      this.fleetStaleStreak = 0;
+      if (!everSeen) return;
+
+      if (!this.sourceLostAlerted) {
+        await this.sendFleetStatusAlert(
+          "⚠️ hub-core fleet.db unreadable — previously-seen snapshot source is now missing/corrupt",
+          "source-lost",
+        );
+        this.sourceLostAlerted = true;
+      }
+      return;
+    }
+
+    setFleetState("fleet_snapshot_last_seen_ms", String(snapshot.generatedAtMs));
+
+    const pollIntervalMs = snapshot.pollIntervalMs || config.FLEET_POLL_MS_FALLBACK;
+    const ageMs = Date.now() - snapshot.generatedAtMs;
+    const threshold = config.FLEET_STALE_FACTOR * pollIntervalMs;
+
+    if (ageMs <= threshold) {
+      if (this.hubDeathAlerted) {
+        await this.sendFleetStatusAlert("✅ hub-core snapshot fresh again", "recovery");
+      }
+      this.hubDeathAlerted = false;
+      this.sourceLostAlerted = false;
+      this.fleetStaleStreak = 0;
+      return;
+    }
+
+    this.fleetStaleStreak++;
+    if (this.fleetStaleStreak < config.FLEET_STALE_CONSECUTIVE) return;
+    if (this.hubDeathAlerted) return;
+
+    const hubAlive = await this.confirmHubDoctor(config.FLEET_HUB_DOCTOR_TIMEOUT_MS);
+    if (hubAlive) {
+      log.warn("Fleet snapshot stale but hub_doctor succeeded", { ageMs, threshold });
+      this.fleetStaleStreak = 0;
+      return;
+    }
+
+    const kickstart = await this.kickstartHubCore();
+    const kickstartStatus = kickstart?.exitCode === 0
+      ? "✓"
+      : kickstart
+        ? `(exit ${kickstart.exitCode})`
+        : "(failed to start)";
+    await this.sendFleetStatusAlert(
+      `🔴 hub-core silent for ~${Math.round(ageMs / 1000)}s (confirmed via failed hub_doctor ping). Ran: launchctl kickstart -k com.dmac.hub-core ${kickstartStatus}`,
+      "confirmed-death",
+    );
+    this.hubDeathAlerted = true;
+  }
+
+  private async confirmHubDoctor(timeoutMs: number): Promise<boolean> {
+    const config = getConfig();
+    const hubEdgeBin = config.HUB_EDGE_BIN.startsWith("~")
+      ? join(homedir(), config.HUB_EDGE_BIN.slice(1))
+      : config.HUB_EDGE_BIN;
+    let client: Client | null = null;
+    let transport: StdioClientTransport | null = null;
+
+    try {
+      const stdioTransport = new StdioClientTransport({
+        command: hubEdgeBin,
+        args: ["--client", "other"],
+      });
+      transport = stdioTransport;
+      const doctorClient = new Client({ name: "psibot-fleet-staleness", version: "0.1.0" });
+      client = doctorClient;
+
+      const doctor = (async (): Promise<void> => {
+        await doctorClient.connect(stdioTransport);
+        await doctorClient.callTool({ name: "hub_doctor", arguments: {} });
+      })();
+      await withTimeout(doctor, timeoutMs, "hub_doctor");
+      return true;
+    } catch (err) {
+      log.warn("hub_doctor confirm failed", { error: String(err) });
+      return false;
+    } finally {
+      const transportPid = transport?.pid ?? null;
+      const cleanup = client?.close() ?? transport?.close();
+      if (cleanup) {
+        try {
+          await withTimeout(cleanup, HUB_DOCTOR_CLEANUP_TIMEOUT_MS, "hub_doctor cleanup");
+        } catch (err) {
+          log.warn("hub_doctor cleanup exceeded bound", { pid: transportPid, error: String(err) });
+          if (transportPid !== null) {
+            try {
+              process.kill(transportPid, "SIGKILL");
+            } catch (killError) {
+              log.debug("hub_doctor SIGKILL fallback failed", {
+                pid: transportPid,
+                error: String(killError),
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private async kickstartHubCore(
+    timeoutMs = HUB_KICKSTART_TIMEOUT_MS,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string } | null> {
+    try {
+      const proc = Bun.spawn(["launchctl", "kickstart", "-k", "com.dmac.hub-core"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdoutPromise = new Response(proc.stdout).text();
+      const stderrPromise = new Response(proc.stderr).text();
+      const completion = Promise.all([proc.exited, stdoutPromise, stderrPromise]);
+
+      try {
+        const [exitCode, stdout, stderr] = await withTimeout(completion, timeoutMs, "hub-core kickstart");
+        log.info("hub-core kickstart attempted", { exitCode, stdout, stderr });
+        return { exitCode, stdout, stderr };
+      } catch (err) {
+        if (proc.exitCode === null) {
+          try {
+            proc.kill("SIGKILL");
+          } catch (killError) {
+            log.error("hub-core kickstart SIGKILL failed", { error: String(killError) });
+          }
+        }
+
+        const [exitCode, stdout, stderr] = await Promise.all([
+          settleWithin(proc.exited, PROCESS_REAP_TIMEOUT_MS, proc.exitCode ?? 124, "kickstart reap"),
+          settleWithin(stdoutPromise, PROCESS_REAP_TIMEOUT_MS, "", "kickstart stdout drain"),
+          settleWithin(stderrPromise, PROCESS_REAP_TIMEOUT_MS, "", "kickstart stderr drain"),
+        ]);
+        log.error("hub-core kickstart failed or timed out", {
+          exitCode,
+          stdout,
+          stderr,
+          error: String(err),
+        });
+        return { exitCode, stdout, stderr };
+      }
+    } catch (err) {
+      log.error("hub-core kickstart failed", { error: String(err) });
+      return null;
+    }
+  }
+
+  private async sendFleetStatusAlert(message: string, kind: string): Promise<void> {
+    const bot = this.getBot();
+    if (!bot) {
+      log.warn("Fleet status alert pending but bot unavailable", { kind });
+      return;
+    }
+
+    for (const chatId of this.defaultChatIds) {
+      try {
+        await bot.api.sendMessage(chatId, message, { parse_mode: "HTML" });
+      } catch (err) {
+        log.error("Failed to send fleet status alert", { chatId, kind, error: String(err) });
+      }
+    }
   }
 
   private async phaseIntake(): Promise<TickResult> {

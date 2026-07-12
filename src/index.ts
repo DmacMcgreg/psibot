@@ -110,6 +110,7 @@ async function main() {
       agent,
       config: {
         intervalMinutes: config.HEARTBEAT_INTERVAL_MINUTES,
+        fleetPreludeIntervalMinutes: config.FLEET_PRELUDE_INTERVAL_MINUTES,
         quietStart: config.HEARTBEAT_QUIET_START,
         quietEnd: config.HEARTBEAT_QUIET_END,
       },
@@ -117,6 +118,7 @@ async function main() {
     heartbeat.start();
     log.info("Heartbeat system started", {
       intervalMinutes: config.HEARTBEAT_INTERVAL_MINUTES,
+      fleetPreludeIntervalMinutes: config.FLEET_PRELUDE_INTERVAL_MINUTES,
       quietHours: `${config.HEARTBEAT_QUIET_START}:00-${config.HEARTBEAT_QUIET_END}:00`,
     });
   }

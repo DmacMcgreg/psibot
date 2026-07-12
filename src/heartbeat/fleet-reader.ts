@@ -52,6 +52,8 @@ export interface FleetSnapshot {
 }
 
 const READER_SCHEMA_VERSION = 1;
+const EVENT_SCAN_PAGE_SIZE = 50;
+const MAX_EVENT_SCAN_ROWS = 500;
 
 let logger: Logger | undefined;
 let wasMissing = true;
@@ -90,51 +92,114 @@ function parseVerbs(value: unknown): string[] {
 }
 
 interface FleetEventRow {
-  id: number;
-  ts: number;
-  entity: string;
-  kind: FleetEvent["kind"];
+  id: unknown;
+  ts: unknown;
+  entity: unknown;
+  kind: unknown;
   fromState: string | null;
   toState: string | null;
   reasonClass: FleetEvent["reasonClass"] | null;
   fingerprint: string | null;
   alerted: number;
-  verbs: string;
-  detail: string;
+  verbs: unknown;
+  detail: unknown;
 }
 
-export function readAlertedEventsSince(watermark: number, limit = 100): FleetEvent[] {
+function isFleetEventKind(value: unknown): value is FleetEvent["kind"] {
+  return value === "transition" || value === "verb" || value === "proposal" || value === "threshold";
+}
+
+function parseFleetEventRow(row: FleetEventRow): FleetEvent | null {
+  const invalidFields: string[] = [];
+  if (typeof row.id !== "number" || !Number.isSafeInteger(row.id) || row.id < 0) invalidFields.push("id");
+  if (typeof row.ts !== "number" || !Number.isSafeInteger(row.ts) || row.ts < 0) invalidFields.push("ts");
+  if (typeof row.entity !== "string") invalidFields.push("entity");
+  if (!isFleetEventKind(row.kind)) invalidFields.push("kind");
+  if (typeof row.detail !== "string") invalidFields.push("detail");
+  const verbs = parseVerbs(row.verbs);
+
+  if (invalidFields.length > 0 || typeof row.id !== "number" ||
+      typeof row.ts !== "number" || typeof row.entity !== "string" ||
+      !isFleetEventKind(row.kind) || typeof row.detail !== "string") {
+    log().warn("Skipping malformed fleet event row", {
+      eventId: typeof row.id === "number" || typeof row.id === "string" ? row.id : null,
+      invalidFields,
+    });
+    return null;
+  }
+
+  return {
+    id: row.id,
+    ts: row.ts,
+    entity: row.entity,
+    kind: row.kind,
+    ...(row.fromState === null ? {} : { fromState: row.fromState }),
+    ...(row.toState === null ? {} : { toState: row.toState }),
+    ...(row.reasonClass === null ? {} : { reasonClass: row.reasonClass }),
+    ...(row.fingerprint === null ? {} : { fingerprint: row.fingerprint }),
+    alerted: row.alerted === 1 ? 1 : 0,
+    verbs,
+    detail: row.detail,
+  };
+}
+
+export interface FleetEventBatch {
+  events: FleetEvent[];
+  maxScannedId: number;
+}
+
+export function readAlertedEventBatchSince(watermark: number, limit = 100): FleetEventBatch {
+  const safeWatermark = Number.isSafeInteger(watermark) && watermark >= 0 ? watermark : 0;
+  const deliverableLimit = Number.isSafeInteger(limit) && limit > 0
+    ? Math.min(limit, MAX_EVENT_SCAN_ROWS)
+    : 0;
+  const batch: FleetEventBatch = { events: [], maxScannedId: safeWatermark };
+  if (deliverableLimit === 0) return batch;
+
   const db = openFleetDbReadOnly();
-  if (!db) return [];
+  if (!db) return batch;
 
   try {
-    const rows = db
-      .prepare<FleetEventRow, [number, number]>(
-        `SELECT id, ts, entity_id AS entity, kind, from_state AS fromState,
-                to_state AS toState, reason_class AS reasonClass, fingerprint,
-                alerted, verbs, detail
-           FROM events
-          WHERE alerted = 1 AND id > ?
-          ORDER BY id ASC LIMIT ?`,
-      )
-      .all(watermark, limit);
+    const statement = db.prepare<FleetEventRow, [number, number]>(
+      `SELECT id, ts, entity_id AS entity, kind, from_state AS fromState,
+              to_state AS toState, reason_class AS reasonClass, fingerprint,
+              alerted, verbs, detail
+         FROM events
+        WHERE alerted = 1 AND id > ?
+        ORDER BY id ASC LIMIT ?`,
+    );
+    let scannedRows = 0;
 
-    return rows.map((row) => ({
-      id: row.id,
-      ts: row.ts,
-      entity: row.entity,
-      kind: row.kind,
-      ...(row.fromState === null ? {} : { fromState: row.fromState }),
-      ...(row.toState === null ? {} : { toState: row.toState }),
-      ...(row.reasonClass === null ? {} : { reasonClass: row.reasonClass }),
-      ...(row.fingerprint === null ? {} : { fingerprint: row.fingerprint }),
-      alerted: row.alerted === 1 ? 1 : 0,
-      verbs: parseVerbs(row.verbs),
-      detail: row.detail,
-    }));
+    while (batch.events.length < deliverableLimit && scannedRows < MAX_EVENT_SCAN_ROWS) {
+      const pageLimit = Math.min(EVENT_SCAN_PAGE_SIZE, MAX_EVENT_SCAN_ROWS - scannedRows);
+      const rows = statement.all(batch.maxScannedId, pageLimit);
+      if (rows.length === 0) break;
+
+      const pageStartId = batch.maxScannedId;
+      for (const row of rows) {
+        scannedRows++;
+        const rowId = typeof row.id === "number" && Number.isSafeInteger(row.id) && row.id >= 0
+          ? row.id
+          : null;
+        const event = parseFleetEventRow(row);
+        if (rowId === null) continue;
+
+        batch.maxScannedId = rowId;
+        if (event) batch.events.push(event);
+        if (batch.events.length === deliverableLimit) break;
+      }
+
+      if (batch.events.length === deliverableLimit) break;
+      if (batch.maxScannedId === pageStartId) {
+        log().warn("Fleet event scan halted because a page had no safe cursor IDs", { scannedRows });
+        break;
+      }
+      if (rows.length < pageLimit) break;
+    }
+    return batch;
   } catch (error) {
     log().warn("fleet event query failed", { error: String(error) });
-    return [];
+    return batch;
   } finally {
     try {
       db.close();
@@ -142,6 +207,10 @@ export function readAlertedEventsSince(watermark: number, limit = 100): FleetEve
       log().debug("fleet reader close failed", { error: String(error) });
     }
   }
+}
+
+export function readAlertedEventsSince(watermark: number, limit = 100): FleetEvent[] {
+  return readAlertedEventBatchSince(watermark, limit).events;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
