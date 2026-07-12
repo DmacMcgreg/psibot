@@ -33,6 +33,24 @@ import type {
   AgentBackend,
 } from "../shared/types.ts";
 
+// --- Fleet State ---
+
+export function getFleetState(key: string): string | null {
+  const row = getDb()
+    .prepare<{ value: string }, [string]>(`SELECT value FROM fleet_state WHERE key = ?`)
+    .get(key);
+  return row?.value ?? null;
+}
+
+export function setFleetState(key: string, value: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO fleet_state (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    )
+    .run(key, value);
+}
+
 // --- Chat Messages ---
 
 export function insertChatMessage(params: {

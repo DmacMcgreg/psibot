@@ -665,4 +665,10 @@ export const MIGRATIONS = [
   // bodies are inlined into the job prompt by the executor — deterministic
   // injection at the job seam, no discovery needed.
   `ALTER TABLE jobs ADD COLUMN skills TEXT`,
+
+  // Small key/value store for persisted fleet-integration run state.
+  `CREATE TABLE IF NOT EXISTS fleet_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
 ];

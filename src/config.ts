@@ -41,6 +41,11 @@ const envSchema = z.object({
     .default("30")
     .transform(Number)
     .pipe(z.number().int().positive()),
+  FLEET_PRELUDE_INTERVAL_MINUTES: z
+    .string()
+    .default("3")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
   HEARTBEAT_QUIET_START: z
     .string()
     .default("23")
@@ -56,6 +61,29 @@ const envSchema = z.object({
     .default("0.50")
     .transform(Number)
     .pipe(z.number().positive()),
+  HUB_FLEET_DB: z
+    .string()
+    .default(join(process.env.HOME ?? "/tmp", ".config/hub/fleet.db")),
+  FLEET_POLL_MS_FALLBACK: z
+    .string()
+    .default("15000")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  FLEET_STALE_FACTOR: z
+    .string()
+    .default("2.5")
+    .transform(Number)
+    .pipe(z.number().positive()),
+  FLEET_STALE_CONSECUTIVE: z
+    .string()
+    .default("3")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
+  FLEET_HUB_DOCTOR_TIMEOUT_MS: z
+    .string()
+    .default("5000")
+    .transform(Number)
+    .pipe(z.number().int().positive()),
   PSIBOT_DIR: z
     .string()
     .default(join(process.env.HOME ?? "/tmp", ".psibot")),
