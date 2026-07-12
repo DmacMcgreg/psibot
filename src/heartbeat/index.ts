@@ -43,7 +43,11 @@ import type { AgentService } from "../agent/index.ts";
 import { maybeRunCurator } from "../curator/index.ts";
 import { tmaLink } from "../telegram/format.ts";
 import { markExportNudged, exportNudgeId } from "../skills/usage.ts";
-import { readAlertedEventBatchSince, readLatestSnapshot } from "./fleet-reader.ts";
+import {
+  readAlertedEventBatchSince,
+  readLatestSnapshot,
+  type FleetSnapshot,
+} from "./fleet-reader.ts";
 
 const log = createLogger("heartbeat");
 const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
@@ -102,6 +106,7 @@ interface OrchestratorDeps {
   digestTopicId?: number;
   config: OrchestratorConfig;
   memory: MemorySystem;
+  now?: () => number;
   /**
    * Optional agent reference. When provided, the heartbeat will call
    * `maybeRunCurator` once per tick. Without it, the autonomous skill
@@ -127,6 +132,29 @@ interface ResearchCompletionRecord {
   url: string | null;
 }
 
+/**
+ * Render only the Fleet facts that E2 can state honestly from its cached
+ * read-only snapshot. A missing snapshot remains invisible to the digest.
+ */
+export function buildFleetDigestLines(snapshot: FleetSnapshot | null): string[] {
+  if (snapshot === null) return [];
+
+  const notUp = snapshot.entities.filter((entity) => entity.alertState !== "up");
+  const total = snapshot.entities.length;
+  const fleetLine = notUp.length === 0
+    ? `Fleet: ${total}/${total} up`
+    : `Fleet: ${notUp.length} of ${total} not up (${notUp.map((entity) => escapeHtml(entity.id)).join(", ")})`;
+  const lines = [fleetLine];
+
+  if (snapshot.approvals.pending > 0) {
+    lines.push(`Approvals pending: ${snapshot.approvals.pending}`);
+  }
+
+  // Pool/quota is intentionally not rendered here: E2-T05 does not own that
+  // surface, and an absent or future value must not become a guessed claim.
+  return lines;
+}
+
 export class HeartbeatRunner {
   private cron: Cron | null = null;
   private fleetPreludeCron: Cron | null = null;
@@ -139,6 +167,8 @@ export class HeartbeatRunner {
   private statePath: string;
   private memory: MemorySystem;
   private agent?: AgentService;
+  private now: () => number;
+  private lastFleetPreludeSlot: number | null = null;
   private fleetStaleStreak = 0;
   private hubDeathAlerted = false;
   private sourceLostAlerted = false;
@@ -158,6 +188,7 @@ export class HeartbeatRunner {
     this.config = deps.config;
     this.memory = deps.memory;
     this.agent = deps.agent;
+    this.now = deps.now ?? (() => Date.now());
     this.statePath = join(KNOWLEDGE_DIR, "orchestrator-state.json");
   }
 
@@ -372,6 +403,16 @@ export class HeartbeatRunner {
   }
 
   private async runFleetPrelude(): Promise<void> {
+    // E2 §5.1 keeps this prelude in the regular tick; ADR-0042 also gives it
+    // a dedicated schedule. Collapse both callback paths into one cadence slot.
+    const slotMs = this.config.fleetPreludeIntervalMinutes * 60_000;
+    const slot = Math.floor(this.now() / slotMs);
+    if (this.lastFleetPreludeSlot === slot) {
+      log.info("Fleet prelude skipped (cadence slot already processed)", { slot });
+      return;
+    }
+    this.lastFleetPreludeSlot = slot;
+
     try {
       await this.phaseFleetAlerts();
     } catch (err) {
@@ -692,6 +733,8 @@ export class HeartbeatRunner {
       `<b>Inbox Digest</b>`,
       `${result.triagedCount} triaged | ${result.droppedCount} dropped`,
     ];
+
+    headerLines.push(...buildFleetDigestLines(readLatestSnapshot()));
 
     if (result.autoResearchItems.length > 0) {
       const names = result.autoResearchItems
