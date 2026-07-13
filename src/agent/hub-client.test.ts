@@ -80,6 +80,7 @@ mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
 
 const {
   createHubCall,
+  decideProposal,
   HubCallOutcomeUnknownError,
   hubCall,
 } = await import("./hub-client.ts");
@@ -127,6 +128,45 @@ beforeEach(() => {
 });
 
 describe("E3-T08 deterministic hub client", () => {
+  test("decideProposal sends the exact typed fleet_propose_decide envelope", async () => {
+    const calls: unknown[] = [];
+    const args = {
+      proposalId: "proposal0001",
+      decision: "approve" as const,
+      principal: { projectId: "telegram:4242" },
+      confirmToken: "confirm-token",
+    };
+    await expect(decideProposal(args, async (name, receivedArgs) => {
+      calls.push([name, receivedArgs]);
+      return { ok: true, status: "executed", detail: "done" };
+    })).resolves.toEqual({ ok: true, status: "executed", detail: "done" });
+    expect(calls).toEqual([["fleet_propose_decide", args]]);
+  });
+
+  test("decideProposal rejects contradictory, extra, or callback-unsafe response envelopes", async () => {
+    const proposalId = "proposal0001";
+    const token = "a2a1c0d2-6a7d-4dde-a54c-57f7d862f117";
+    const invalidReplies: unknown[] = [
+      { ok: true, status: "executed", extra: true },
+      { ok: true, status: "executed", error: "contradiction" },
+      { ok: false, error: "failed", status: "pending" },
+      { needsConfirm: true, token, ttlSec: 59, proposalId },
+      { needsConfirm: true, token: "", ttlSec: 60, proposalId },
+      { needsConfirm: true, token: "t".repeat(64), ttlSec: 60, proposalId },
+      { needsConfirm: true, token, ttlSec: 60, proposalId: "short" },
+      { needsConfirm: true, token, ttlSec: 60, proposalId: "wrongproposal" },
+      { needsConfirm: true, token, ttlSec: 60, proposalId, ok: false, error: "contradiction" },
+    ];
+
+    for (const reply of invalidReplies) {
+      await expect(decideProposal({
+        proposalId,
+        decision: "approve",
+        principal: { projectId: "telegram:4242" },
+      }, async () => reply)).rejects.toThrow("unexpected fleet proposal decision result");
+    }
+  });
+
   test("uses one short-lived hub_call envelope with the exact fleet_verb args", async () => {
     const args = { entity: "hub-core", verb: "restart", args: { source: "telegram" } };
 

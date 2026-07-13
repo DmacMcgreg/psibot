@@ -5,7 +5,12 @@ import { HubCallOutcomeUnknownError, type HubCall } from "../agent/hub-client.ts
 import type { MemorySystem } from "../memory/index.ts";
 import type { Scheduler } from "../scheduler/index.ts";
 import type { ChatState } from "./state.ts";
-import { createCallbackHandler } from "./keyboards.ts";
+import {
+  createCallbackHandler,
+  fleetProposalConfirmKeyboard,
+  fleetProposalKeyboard,
+  parseFleetProposalCallback,
+} from "./keyboards.ts";
 
 type FleetReply =
   | { ok: true; detail?: string }
@@ -25,6 +30,7 @@ function makeContext(data: string, messageId = 1): CallbackHarness {
   const markups: unknown[] = [];
 
   const ctx = {
+    from: { id: 4242 },
     chat: { id: 101 },
     callbackQuery: {
       data,
@@ -36,8 +42,9 @@ function makeContext(data: string, messageId = 1): CallbackHarness {
     answerCallbackQuery: async (options?: Record<string, unknown>) => {
       answers.push(options);
     },
-    editMessageText: async (text: string) => {
+    editMessageText: async (text: string, options?: { reply_markup?: unknown }) => {
       texts.push(text);
+      if (options?.reply_markup !== undefined) markups.push(options.reply_markup);
     },
     editMessageReplyMarkup: async (options?: { reply_markup?: unknown }) => {
       markups.push(options?.reply_markup);
@@ -265,5 +272,142 @@ describe("E3-T08 fleet Telegram callbacks", () => {
     await handler(confirmed.ctx);
     expect(calls).toEqual([["fleet_verb", { entity: "hub-core", verb: "silence" }]]);
     expect(confirmed.texts).toEqual(["Confirmation expired — re-trigger from the original alert."]);
+  });
+});
+
+describe("E8-T14 fleet proposal callbacks", () => {
+  const proposalId = "p".repeat(22);
+  const token = "a2a1c0d2-6a7d-4dde-a54c-57f7d862f117";
+
+  test("builds byte-bounded callbacks and parses fp by its last colon without colliding with fc", () => {
+    expect(fleetProposalKeyboard(proposalId).inline_keyboard).toEqual([[
+      { text: "Approve", callback_data: `fp:${proposalId}:a` },
+      { text: "Reject", callback_data: `fp:${proposalId}:r` },
+    ]]);
+    const confirmData = `fpc:${proposalId}:${token}`;
+    expect(new TextEncoder().encode(confirmData).byteLength).toBe(63);
+    expect(fleetProposalConfirmKeyboard(proposalId, token).inline_keyboard).toEqual([[
+      { text: "Confirm", callback_data: confirmData },
+      { text: "Cancel", callback_data: `fpx:${proposalId}` },
+    ]]);
+    expect(parseFleetProposalCallback(`fp:${proposalId}:a`)).toEqual({
+      kind: "decision",
+      proposalId,
+      decision: "approve",
+    });
+    expect(parseFleetProposalCallback(`fp:${proposalId}:r`)).toEqual({
+      kind: "decision",
+      proposalId,
+      decision: "reject",
+    });
+    expect(parseFleetProposalCallback(`fc:${token}`)).toBeNull();
+    expect(parseFleetProposalCallback(`fpx:${proposalId}`)).toEqual({ kind: "cancel", proposalId });
+  });
+
+  test("threads the authenticated Telegram principal through the exact approve envelope", async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const handler = makeHandler(async (name, args) => {
+      calls.push([name, args]);
+      return { ok: true, status: "executed", detail: `done <"safely"> & 'verified'` };
+    });
+    const harness = makeContext(`fp:${proposalId}:a`, 40);
+
+    await handler(harness.ctx);
+
+    expect(calls).toEqual([["fleet_propose_decide", {
+      proposalId,
+      decision: "approve",
+      principal: { projectId: "telegram:4242" },
+    }]]);
+    expect(harness.texts).toEqual([
+      `✓ Proposal <code>${proposalId}</code> is <b>executed</b> — done &lt;&quot;safely&quot;&gt; &amp; &#39;verified&#39;`,
+    ]);
+    expect(harness.markups).toEqual([undefined]);
+  });
+
+  test("binds proposal and token on confirmation re-entry", async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const handler = makeHandler(async (name, args) => {
+      calls.push([name, args]);
+      if (args.confirmToken === token) return { ok: true, status: "executed" };
+      return { needsConfirm: true, token, ttlSec: 60, proposalId };
+    });
+    const initial = makeContext(`fp:${proposalId}:a`, 41);
+    await handler(initial.ctx);
+    expect((initial.markups[0] as { inline_keyboard: unknown }).inline_keyboard).toEqual([[
+      { text: "Confirm", callback_data: `fpc:${proposalId}:${token}` },
+      { text: "Cancel", callback_data: `fpx:${proposalId}` },
+    ]]);
+
+    await handler(makeContext(`fpc:${proposalId}:${token}`, 41).ctx);
+    expect(calls).toEqual([
+      ["fleet_propose_decide", { proposalId, decision: "approve", principal: { projectId: "telegram:4242" } }],
+      ["fleet_propose_decide", {
+        proposalId,
+        decision: "approve",
+        principal: { projectId: "telegram:4242" },
+        confirmToken: token,
+      }],
+    ]);
+  });
+
+  test("keeps outcome-unknown proposal decisions non-retryable", async () => {
+    const calls: unknown[] = [];
+    const handler = makeHandler(async (...args) => {
+      calls.push(args);
+      throw new HubCallOutcomeUnknownError();
+    });
+    const first = makeContext(`fp:${proposalId}:r`, 42);
+    const retry = makeContext(`fp:${proposalId}:r`, 42);
+    await handler(first.ctx);
+    await handler(retry.ctx);
+    expect(calls).toHaveLength(1);
+    expect(retry.answers).toEqual([{ text: "Retry disabled: outcome unknown" }]);
+  });
+
+  test("keeps initial controls on a recoverable decision failure", async () => {
+    const handler = makeHandler(async () => {
+      throw new Error("hub unavailable before dispatch");
+    });
+    const harness = makeContext(`fp:${proposalId}:a`, 43);
+    await handler(harness.ctx);
+
+    expect(harness.texts).toEqual(["✗ Proposal decision failed. Try again after hub recovery."]);
+    expect((harness.markups[0] as { inline_keyboard: unknown }).inline_keyboard).toEqual([[
+      { text: "Approve", callback_data: `fp:${proposalId}:a` },
+      { text: "Reject", callback_data: `fp:${proposalId}:r` },
+    ]]);
+  });
+
+  test("keeps initial controls on a structured proposal failure", async () => {
+    const handler = makeHandler(async () => ({
+      ok: false,
+      error: `still <pending> & "retry" 'later'`,
+    }));
+    const harness = makeContext(`fp:${proposalId}:r`, 45);
+    await handler(harness.ctx);
+
+    expect(harness.texts).toEqual([
+      "✗ Proposal failed: still &lt;pending&gt; &amp; &quot;retry&quot; &#39;later&#39;",
+    ]);
+    expect((harness.markups[0] as { inline_keyboard: unknown }).inline_keyboard).toEqual([[
+      { text: "Approve", callback_data: `fp:${proposalId}:a` },
+      { text: "Reject", callback_data: `fp:${proposalId}:r` },
+    ]]);
+  });
+
+  test("proposal-bound cancel edits terminal state and never calls the hub", async () => {
+    const calls: unknown[] = [];
+    const handler = makeHandler(async (...args) => {
+      calls.push(args);
+      return { ok: true, status: "executed" };
+    });
+    const harness = makeContext(`fpx:${proposalId}`, 44);
+    await handler(harness.ctx);
+
+    expect(calls).toEqual([]);
+    expect(harness.answers).toEqual([{ text: "Cancelled" }]);
+    expect(harness.texts).toEqual([`Cancelled proposal <code>${proposalId}</code>.`]);
+    expect(harness.markups).toEqual([undefined]);
   });
 });

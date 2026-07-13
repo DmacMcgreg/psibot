@@ -51,6 +51,16 @@ export interface FleetSnapshot {
   pollErrors: string[];
 }
 
+export interface FleetProposal {
+  id: string;
+  ts: number;
+  entity: string;
+  verb: string;
+  args: string | null;
+  rationale: string;
+  status: "pending";
+}
+
 const READER_SCHEMA_VERSION = 1;
 const EVENT_SCAN_PAGE_SIZE = 50;
 const MAX_EVENT_SCAN_ROWS = 500;
@@ -211,6 +221,76 @@ export function readAlertedEventBatchSince(watermark: number, limit = 100): Flee
 
 export function readAlertedEventsSince(watermark: number, limit = 100): FleetEvent[] {
   return readAlertedEventBatchSince(watermark, limit).events;
+}
+
+interface FleetProposalRow {
+  id: unknown;
+  ts: unknown;
+  entity: unknown;
+  verb: unknown;
+  args: unknown;
+  rationale: unknown;
+  status: unknown;
+}
+
+const FLEET_PROPOSAL_TTL_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Read live pending proposals from a fresh read-only handle. This surface is
+ * deliberately query-only; proposal decisions always go through hub-edge.
+ */
+export function readPendingFleetProposals(
+  nowMs = Date.now(),
+  openDb: typeof openFleetDbReadOnly = openFleetDbReadOnly,
+): FleetProposal[] {
+  const db = openDb();
+  if (!db) return [];
+
+  try {
+    const rows = db.prepare<FleetProposalRow, [number]>(
+      `SELECT id, ts, entity_id AS entity, verb, args, rationale, status
+         FROM proposals
+        WHERE status = 'pending' AND ts > ?
+        ORDER BY ts ASC, id ASC`,
+    ).all(nowMs - FLEET_PROPOSAL_TTL_MS);
+
+    const proposals: FleetProposal[] = [];
+    for (const row of rows) {
+      if (
+        typeof row.id !== "string" ||
+        typeof row.ts !== "number" || !Number.isSafeInteger(row.ts) || row.ts < 0 ||
+        typeof row.entity !== "string" ||
+        typeof row.verb !== "string" ||
+        (row.args !== null && typeof row.args !== "string") ||
+        typeof row.rationale !== "string" ||
+        row.status !== "pending"
+      ) {
+        log().warn("Skipping malformed fleet proposal row", {
+          proposalId: typeof row.id === "string" ? row.id : null,
+        });
+        continue;
+      }
+      proposals.push({
+        id: row.id,
+        ts: row.ts,
+        entity: row.entity,
+        verb: row.verb,
+        args: row.args,
+        rationale: row.rationale,
+        status: "pending",
+      });
+    }
+    return proposals;
+  } catch (error) {
+    log().warn("fleet proposal query failed", { error: String(error) });
+    return [];
+  } finally {
+    try {
+      db.close();
+    } catch (error) {
+      log().debug("fleet reader close failed", { error: String(error) });
+    }
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -7,6 +7,8 @@ export class ChatState {
   readonly resumeOverrides = new Map<string, string>();
   /** Per-chat model override - cleared by /model with no args */
   readonly modelOverrides = new Map<string, string>();
+  /** Fleet proposal cards successfully rendered by the heartbeat. */
+  readonly renderedFleetProposalIds = new Set<string>();
   /**
    * Session key -> (thinking-message id -> active agent runId), for the
    * in-progress Cancel button. Keyed per message (not just per session) so

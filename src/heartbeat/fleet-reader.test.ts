@@ -15,8 +15,10 @@ import type { MemorySystem } from "../memory/index.ts";
 import type {
   EntityStatus,
   FleetEvent,
+  FleetProposal,
   FleetSnapshot,
 } from "./fleet-reader.ts";
+import { ChatState } from "../telegram/state.ts";
 import type { HeartbeatRunner as HeartbeatRunnerType } from "./index.ts";
 
 // Keep every external boundary in this test local. The reader still opens a real
@@ -57,12 +59,13 @@ const { MIGRATIONS } = await import("../db/schema.ts");
 const { setDbForTesting } = await import("../db/index.ts");
 const { getFleetState, setFleetState } = await import("../db/queries.ts");
 const { Cron } = await import("croner");
-const { HeartbeatRunner, buildFleetDigestLines } = await import("./index.ts");
+const { HeartbeatRunner, buildFleetDigestLines, buildFleetProposalCard } = await import("./index.ts");
 const {
   openFleetDbReadOnly,
   readAlertedEventBatchSince,
   readAlertedEventsSince,
   readLatestSnapshot,
+  readPendingFleetProposals,
   renderFleetEvent,
 } = await import("./fleet-reader.ts");
 
@@ -87,6 +90,11 @@ const A4_DDL = [
     verbs TEXT NOT NULL DEFAULT '[]',
     detail TEXT NOT NULL DEFAULT ''
   ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS proposals (
+    id TEXT PRIMARY KEY, ts INTEGER NOT NULL,
+    entity_id TEXT NOT NULL, verb TEXT NOT NULL, args TEXT, rationale TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', decided_ts INTEGER
+  ) STRICT`,
 ];
 
 interface KickstartResult {
@@ -107,6 +115,7 @@ interface RunnerTestView {
   fleetPreludeTick(): Promise<void>;
   runFleetPrelude(): Promise<void>;
   phaseFleetAlerts(): Promise<void>;
+  phaseFleetProposals(): Promise<void>;
   phaseFleetStaleness(): Promise<void>;
   isQuietHours(): boolean;
   confirmHubDoctor(timeoutMs: number): Promise<boolean>;
@@ -272,11 +281,15 @@ function makeBot(
 function makeRunner(options: {
   bot?: Bot | null;
   chatIds?: number[];
+  digestChatId?: string;
   now?: () => number;
+  state?: ChatState;
+  readPendingFleetProposals?: (nowMs?: number) => FleetProposal[];
 } = {}): HeartbeatRunnerType {
   return new HeartbeatRunner({
     getBot: () => options.bot ?? null,
     defaultChatIds: options.chatIds ?? [101, 202],
+    digestChatId: options.digestChatId,
     config: {
       intervalMinutes: 30,
       fleetPreludeIntervalMinutes: 3,
@@ -285,6 +298,8 @@ function makeRunner(options: {
     },
     memory: {} as unknown as MemorySystem,
     now: options.now,
+    state: options.state,
+    readPendingFleetProposals: options.readPendingFleetProposals,
   });
 }
 
@@ -552,6 +567,140 @@ describe("E2-T08 fleet.db reader and config harness", () => {
     expect(closedHandles).toHaveLength(3);
     expect(new Set(closedHandles).size).toBe(3);
     expect(closedHandles).not.toContain(fleetWriter);
+  });
+
+  test("reads only live pending proposals and closes fresh handles on success and query failure", () => {
+    prepareFleetDb();
+    const now = 100_000_000;
+    const insert = fleetWriter!.prepare(
+      "INSERT INTO proposals (id, ts, entity_id, verb, args, rationale, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    insert.run("proposal0001", now - 1, "hub<&>", "restart", null, "Recover <now> & safely", "pending");
+    insert.run("proposal0002", now - 24 * 60 * 60 * 1_000, "old", "restart", null, "Expired", "pending");
+    insert.run("proposal0003", now - 2, "done", "restart", null, "Done", "executed");
+
+    const originalClose = Database.prototype.close;
+    let opens = 0;
+    let closes = 0;
+    Database.prototype.close = function observedClose(this: Database): void {
+      closes++;
+      originalClose.call(this);
+    };
+    try {
+      const factory = () => {
+        opens++;
+        return new Database(fleetDbPath, { readonly: true });
+      };
+      expect(readPendingFleetProposals(now, factory)).toEqual([{
+        id: "proposal0001",
+        ts: now - 1,
+        entity: "hub<&>",
+        verb: "restart",
+        args: null,
+        rationale: "Recover <now> & safely",
+        status: "pending",
+      }]);
+      expect(readPendingFleetProposals(now, () => {
+        opens++;
+        return new Database(":memory:");
+      })).toEqual([]);
+    } finally {
+      Database.prototype.close = originalClose;
+    }
+    expect({ opens, closes }).toEqual({ opens: 2, closes: 2 });
+  });
+
+  test("exposes no fleet proposal write method", () => {
+    const readerExports = {
+      openFleetDbReadOnly,
+      readAlertedEventBatchSince,
+      readAlertedEventsSince,
+      readLatestSnapshot,
+      readPendingFleetProposals,
+      renderFleetEvent,
+    };
+    expect(Object.keys(readerExports).filter((name) => /write|update|decide|insert/i.test(name))).toEqual([]);
+  });
+});
+
+describe("E8-T14 proposal cards", () => {
+  const proposal: FleetProposal = {
+    id: "proposal0001",
+    ts: 1,
+    entity: `hub<"quoted">'&`,
+    verb: `restart"'<&>`,
+    args: null,
+    rationale: `Recover "now" & 'safely' <today>`,
+    status: "pending",
+  };
+
+  test("HTML-escapes card fields", () => {
+    const card = buildFleetProposalCard(proposal);
+    expect(card).toContain("<code>hub&lt;&quot;quoted&quot;&gt;&#39;&amp;</code>");
+    expect(card).toContain("<code>restart&quot;&#39;&lt;&amp;&gt;</code>");
+    expect(card).toContain("Recover &quot;now&quot; &amp; &#39;safely&#39; &lt;today&gt;");
+    expect(card).not.toContain(`hub<"quoted">'&`);
+  });
+
+  test("marks only successful sends, retries failures, and deduplicates successes", async () => {
+    const state = new ChatState();
+    const sent: SentMessage[] = [];
+    let shouldFail = true;
+    const runner = makeRunner({
+      chatIds: [101, 202, 303],
+      state,
+      readPendingFleetProposals: () => [proposal],
+      bot: makeBot(async (chatId, text, options) => {
+        sent.push({ chatId, text, options });
+        if (shouldFail) throw new Error("simulated Telegram failure");
+        return {};
+      }),
+    });
+    const view = runnerView(runner);
+
+    await view.phaseFleetProposals();
+    expect(state.renderedFleetProposalIds.has(proposal.id)).toBe(false);
+    shouldFail = false;
+    await view.phaseFleetProposals();
+    expect(state.renderedFleetProposalIds.has(proposal.id)).toBe(true);
+    await view.phaseFleetProposals();
+
+    expect(sent).toHaveLength(2);
+    expect(sent.map(({ chatId }) => chatId)).toEqual([101, 101]);
+    expect(sent[1]?.options).toMatchObject({ parse_mode: "HTML" });
+    expect((sent[1]?.options?.reply_markup as { inline_keyboard: unknown }).inline_keyboard).toEqual([[
+      { text: "Approve", callback_data: "fp:proposal0001:a" },
+      { text: "Reject", callback_data: "fp:proposal0001:r" },
+    ]]);
+  });
+
+  test("chooses exactly one canonical destination even when multiple chats are configured", async () => {
+    const sendToDefaults: Array<string | number> = [];
+    const defaultRunner = makeRunner({
+      chatIds: [101, 202, 303],
+      state: new ChatState(),
+      readPendingFleetProposals: () => [proposal],
+      bot: makeBot(async (chatId) => {
+        sendToDefaults.push(chatId);
+        return {};
+      }),
+    });
+    await runnerView(defaultRunner).phaseFleetProposals();
+    expect(sendToDefaults).toEqual([101]);
+
+    const sendToDigest: Array<string | number> = [];
+    const digestRunner = makeRunner({
+      chatIds: [101, 202, 303],
+      digestChatId: "-500",
+      state: new ChatState(),
+      readPendingFleetProposals: () => [proposal],
+      bot: makeBot(async (chatId) => {
+        sendToDigest.push(chatId);
+        return {};
+      }),
+    });
+    await runnerView(digestRunner).phaseFleetProposals();
+    expect(sendToDigest).toEqual(["-500"]);
   });
 });
 

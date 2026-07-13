@@ -30,7 +30,8 @@ import { scoreSignals } from "./signals.ts";
 import { scanInbox } from "./inbox-watcher.ts";
 import { detectThemes } from "./themes.ts";
 import { InlineKeyboard } from "grammy";
-import { briefingActionKeyboard } from "../telegram/keyboards.ts";
+import { briefingActionKeyboard, fleetProposalKeyboard } from "../telegram/keyboards.ts";
+import { ChatState } from "../telegram/state.ts";
 import type { Bot } from "grammy";
 import type { PendingItem } from "../shared/types.ts";
 import { checkAutonomyRule } from "./autonomy.ts";
@@ -46,7 +47,9 @@ import { markExportNudged, exportNudgeId } from "../skills/usage.ts";
 import {
   readAlertedEventBatchSince,
   readLatestSnapshot,
+  readPendingFleetProposals,
   type FleetEvent,
+  type FleetProposal,
   type FleetSnapshot,
 } from "./fleet-reader.ts";
 
@@ -137,6 +140,9 @@ interface OrchestratorDeps {
   config: OrchestratorConfig;
   memory: MemorySystem;
   now?: () => number;
+  state?: ChatState;
+  /** Test seam; production opens fleet.db read-only for every proposal pass. */
+  readPendingFleetProposals?: (nowMs?: number) => FleetProposal[];
   /**
    * Optional agent reference. When provided, the heartbeat will call
    * `maybeRunCurator` once per tick. Without it, the autonomous skill
@@ -185,6 +191,16 @@ export function buildFleetDigestLines(snapshot: FleetSnapshot | null): string[] 
   return lines;
 }
 
+export function buildFleetProposalCard(proposal: FleetProposal): string {
+  return [
+    "🗳 <b>Fleet proposal</b>",
+    `<b>Entity:</b> <code>${escapeHtml(proposal.entity)}</code>`,
+    `<b>Action:</b> <code>${escapeHtml(proposal.verb)}</code>`,
+    `<b>Why:</b> ${escapeHtml(proposal.rationale)}`,
+    `<b>ID:</b> <code>${escapeHtml(proposal.id)}</code>`,
+  ].join("\n");
+}
+
 export class HeartbeatRunner {
   private cron: Cron | null = null;
   private fleetPreludeCron: Cron | null = null;
@@ -198,6 +214,8 @@ export class HeartbeatRunner {
   private memory: MemorySystem;
   private agent?: AgentService;
   private now: () => number;
+  private telegramState: ChatState;
+  private readPendingProposals: (nowMs?: number) => FleetProposal[];
   private lastFleetPreludeSlot: number | null = null;
   private fleetStaleStreak = 0;
   private hubDeathAlerted = false;
@@ -219,6 +237,8 @@ export class HeartbeatRunner {
     this.memory = deps.memory;
     this.agent = deps.agent;
     this.now = deps.now ?? (() => Date.now());
+    this.telegramState = deps.state ?? new ChatState();
+    this.readPendingProposals = deps.readPendingFleetProposals ?? readPendingFleetProposals;
     this.statePath = join(KNOWLEDGE_DIR, "orchestrator-state.json");
   }
 
@@ -450,9 +470,61 @@ export class HeartbeatRunner {
     }
 
     try {
+      await this.phaseFleetProposals();
+    } catch (err) {
+      log.error("Fleet proposals phase failed", { error: String(err) });
+    }
+
+    try {
       await this.phaseFleetStaleness();
     } catch (err) {
       log.error("Fleet staleness phase failed", { error: String(err) });
+    }
+  }
+
+  private async phaseFleetProposals(): Promise<void> {
+    const proposals = this.readPendingProposals(this.now());
+    const unseen = proposals.filter(({ id }) => !this.telegramState.renderedFleetProposalIds.has(id));
+    if (unseen.length === 0) return;
+
+    const destination: string | number | undefined = this.digestChatId
+      ?? this.defaultChatIds[0];
+    if (destination === undefined) {
+      log.warn("Fleet proposals pending but no destination chats configured");
+      return;
+    }
+    const bot = this.getBot();
+    if (!bot) {
+      log.warn("Fleet proposals pending but bot unavailable");
+      return;
+    }
+
+    for (const proposal of unseen) {
+      let keyboard: InlineKeyboard;
+      try {
+        keyboard = fleetProposalKeyboard(proposal.id);
+      } catch (error) {
+        log.warn("Skipping fleet proposal with unsafe callback id", {
+          proposalId: proposal.id,
+          error: String(error),
+        });
+        continue;
+      }
+
+      try {
+        await bot.api.sendMessage(destination, buildFleetProposalCard(proposal), {
+          parse_mode: "HTML",
+          reply_markup: keyboard,
+          ...(this.digestTopicId ? { message_thread_id: this.digestTopicId } : {}),
+        });
+        this.telegramState.renderedFleetProposalIds.add(proposal.id);
+      } catch (error) {
+        log.error("Failed to send fleet proposal", {
+          chatId: destination,
+          proposalId: proposal.id,
+          error: String(error),
+        });
+      }
     }
   }
 
@@ -1260,7 +1332,9 @@ function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function truncate(text: string, max: number): string {

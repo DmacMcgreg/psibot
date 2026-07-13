@@ -19,7 +19,14 @@ import {
 } from "../db/queries.ts";
 import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
-import { hubCall, isHubCallOutcomeUnknown, type HubCall } from "../agent/hub-client.ts";
+import {
+  decideProposal,
+  hubCall,
+  isHubCallOutcomeUnknown,
+  type DecideProposalArgs,
+  type DecideProposalReply,
+  type HubCall,
+} from "../agent/hub-client.ts";
 import type { AutonomyLevelChange } from "../heartbeat/autonomy.ts";
 import type { MemorySystem } from "../memory/index.ts";
 import { getPendingItemById } from "../db/queries.ts";
@@ -30,6 +37,7 @@ const log = createLogger("telegram:keyboards");
 
 const MD2 = { parse_mode: "MarkdownV2" as const };
 const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
+const FLEET_PROPOSAL_ID_PATTERN = /^[A-Za-z0-9_-]{12,22}$/;
 
 type FleetReply =
   | { ok: true; detail?: string }
@@ -134,6 +142,35 @@ export function briefKeyboard(jobRunId: number): InlineKeyboard {
     .text("Reply", `bfr:${jobRunId}`);
 }
 
+function callbackByteLength(data: string): number {
+  return new TextEncoder().encode(data).byteLength;
+}
+
+function checkedProposalCallback(data: string): string {
+  if (callbackByteLength(data) > TELEGRAM_CALLBACK_DATA_MAX_BYTES) {
+    throw new RangeError("fleet proposal callback data exceeds Telegram's 64-byte limit");
+  }
+  return data;
+}
+
+export function fleetProposalKeyboard(proposalId: string): InlineKeyboard {
+  if (!FLEET_PROPOSAL_ID_PATTERN.test(proposalId)) {
+    throw new Error("invalid fleet proposal id");
+  }
+  return new InlineKeyboard()
+    .text("Approve", checkedProposalCallback(`fp:${proposalId}:a`))
+    .text("Reject", checkedProposalCallback(`fp:${proposalId}:r`));
+}
+
+export function fleetProposalConfirmKeyboard(proposalId: string, token: string): InlineKeyboard {
+  if (!FLEET_PROPOSAL_ID_PATTERN.test(proposalId) || token.length === 0) {
+    throw new Error("invalid fleet proposal confirmation");
+  }
+  return new InlineKeyboard()
+    .text("Confirm", checkedProposalCallback(`fpc:${proposalId}:${token}`))
+    .text("Cancel", checkedProposalCallback(`fpx:${proposalId}`));
+}
+
 // --- Callback Data Parser ---
 
 interface CallbackAction {
@@ -145,6 +182,45 @@ export function parseCallback(data: string): CallbackAction {
   const idx = data.indexOf(":");
   if (idx === -1) return { action: data, payload: "" };
   return { action: data.slice(0, idx), payload: data.slice(idx + 1) };
+}
+
+export type FleetProposalCallback =
+  | { readonly kind: "decision"; readonly proposalId: string; readonly decision: "approve" | "reject" }
+  | { readonly kind: "confirm"; readonly proposalId: string; readonly token: string }
+  | { readonly kind: "cancel"; readonly proposalId: string };
+
+/** Parse proposal callbacks without colliding with the older `fc:<token>` path. */
+export function parseFleetProposalCallback(data: string): FleetProposalCallback | null {
+  if (callbackByteLength(data) > TELEGRAM_CALLBACK_DATA_MAX_BYTES) return null;
+
+  if (data.startsWith("fp:")) {
+    const decisionSeparator = data.lastIndexOf(":");
+    if (decisionSeparator <= 3) return null;
+    const proposalId = data.slice(3, decisionSeparator);
+    const suffix = data.slice(decisionSeparator + 1);
+    if (!FLEET_PROPOSAL_ID_PATTERN.test(proposalId)) return null;
+    if (suffix === "a") return { kind: "decision", proposalId, decision: "approve" };
+    if (suffix === "r") return { kind: "decision", proposalId, decision: "reject" };
+    return null;
+  }
+
+  if (data.startsWith("fpc:")) {
+    const tokenSeparator = data.indexOf(":", 4);
+    if (tokenSeparator <= 4) return null;
+    const proposalId = data.slice(4, tokenSeparator);
+    const token = data.slice(tokenSeparator + 1);
+    if (!FLEET_PROPOSAL_ID_PATTERN.test(proposalId) || token.length === 0) return null;
+    return { kind: "confirm", proposalId, token };
+  }
+
+  if (data.startsWith("fpx:")) {
+    const proposalId = data.slice(4);
+    return FLEET_PROPOSAL_ID_PATTERN.test(proposalId)
+      ? { kind: "cancel", proposalId }
+      : null;
+  }
+
+  return null;
 }
 
 // --- Callback Handler ---
@@ -179,7 +255,7 @@ function callbackMessageKey(ctx: Context): string | undefined {
   return messageId === undefined || chatId === undefined ? undefined : `${chatId}:${messageId}`;
 }
 
-function fleetCallbackKey(ctx: Context, action: "fr" | "fs" | "fc", payload: string): string {
+function fleetCallbackKey(ctx: Context, action: string, payload: string): string {
   return `${callbackMessageKey(ctx) ?? `chat:${ctx.chat?.id ?? "unknown"}`}:${action}:${payload}`;
 }
 
@@ -330,8 +406,119 @@ async function handleFleetCallback(
   }
 }
 
+function proposalResultText(reply: DecideProposalReply, proposalId: string): string {
+  if ("needsConfirm" in reply) return "Confirmation required";
+  if (!reply.ok) return `✗ Proposal failed: ${escapeHtml(reply.error)}`;
+  const detail = reply.detail ? ` — ${escapeHtml(reply.detail)}` : "";
+  return `✓ Proposal <code>${escapeHtml(proposalId)}</code> is <b>${escapeHtml(reply.status)}</b>${detail}`;
+}
+
+async function editProposalMessage(
+  ctx: Context,
+  text: string,
+  keyboard?: InlineKeyboard,
+): Promise<void> {
+  await ctx.editMessageText(text, {
+    parse_mode: "HTML",
+    ...(keyboard === undefined ? {} : { reply_markup: keyboard }),
+  }).catch(() => {});
+  if (keyboard === undefined) {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+  }
+}
+
+async function handleFleetProposalCallback(
+  ctx: Context,
+  callback: FleetProposalCallback,
+  callHub: HubCall,
+  state: FleetCallbackState,
+): Promise<void> {
+  const data = ctx.callbackQuery?.data ?? "";
+  const callbackAction = callback.kind === "decision" ? "fp" : callback.kind === "confirm" ? "fpc" : "fpx";
+  const callbackKey = fleetCallbackKey(ctx, callbackAction, data);
+  if (state.outcomeUnknown.has(callbackKey)) {
+    await ctx.answerCallbackQuery({ text: "Retry disabled: outcome unknown" });
+    await renderFleetOutcomeUnknown(ctx);
+    return;
+  }
+  if (state.inFlight.has(callbackKey)) {
+    await ctx.answerCallbackQuery({ text: "Proposal decision already in progress" });
+    return;
+  }
+
+  if (callback.kind === "cancel") {
+    await ctx.answerCallbackQuery({ text: "Cancelled" });
+    await editProposalMessage(
+      ctx,
+      `Cancelled proposal <code>${escapeHtml(callback.proposalId)}</code>.`,
+    );
+    return;
+  }
+
+  const telegramUserId = ctx.from?.id;
+  if (telegramUserId === undefined) {
+    await ctx.answerCallbackQuery({ text: "Unauthorized proposal decision" });
+    return;
+  }
+
+  const args: DecideProposalArgs = {
+    proposalId: callback.proposalId,
+    decision: callback.kind === "decision" ? callback.decision : "approve",
+    principal: { projectId: `telegram:${telegramUserId}` },
+    ...(callback.kind === "confirm" ? { confirmToken: callback.token } : {}),
+  };
+
+  state.inFlight.add(callbackKey);
+  try {
+    await ctx.answerCallbackQuery({ text: callback.kind === "confirm" ? "Confirming proposal..." : "Recording decision..." });
+    const reply = await decideProposal(args, callHub);
+    if ("needsConfirm" in reply) {
+      if (reply.proposalId !== callback.proposalId) {
+        throw new Error("proposal confirmation did not match request");
+      }
+      const keyboard = fleetProposalConfirmKeyboard(callback.proposalId, reply.token);
+      await editProposalMessage(
+        ctx,
+        `⚠ Proposal <code>${escapeHtml(callback.proposalId)}</code> requires confirmation.`,
+        keyboard,
+      );
+      return;
+    }
+    if (!reply.ok) {
+      const retryKeyboard = callback.kind === "confirm"
+        ? fleetProposalConfirmKeyboard(callback.proposalId, callback.token)
+        : fleetProposalKeyboard(callback.proposalId);
+      await editProposalMessage(ctx, proposalResultText(reply, callback.proposalId), retryKeyboard);
+      return;
+    }
+    await editProposalMessage(ctx, proposalResultText(reply, callback.proposalId));
+  } catch (error) {
+    log.error("Fleet proposal callback failed", { proposalId: callback.proposalId });
+    if (isHubCallOutcomeUnknown(error)) {
+      state.outcomeUnknown.add(callbackKey);
+      await renderFleetOutcomeUnknown(ctx);
+    } else {
+      const retryKeyboard = callback.kind === "confirm"
+        ? fleetProposalConfirmKeyboard(callback.proposalId, callback.token)
+        : fleetProposalKeyboard(callback.proposalId);
+      await editProposalMessage(
+        ctx,
+        "✗ Proposal decision failed. Try again after hub recovery.",
+        retryKeyboard,
+      );
+    }
+  } finally {
+    state.inFlight.delete(callbackKey);
+  }
+}
+
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
@@ -409,6 +596,12 @@ export function createCallbackHandler(deps: CallbackDeps) {
   return async (ctx: Context) => {
     const data = ctx.callbackQuery?.data;
     if (!data) return;
+
+    const proposalCallback = parseFleetProposalCallback(data);
+    if (proposalCallback !== null) {
+      await handleFleetProposalCallback(ctx, proposalCallback, callHub, fleetCallbackState);
+      return;
+    }
 
     const { action, payload } = parseCallback(data);
     const sKey = sessionKey(ctx);

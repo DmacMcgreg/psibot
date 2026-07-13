@@ -25,6 +25,25 @@ interface HubCallOptions {
 /** A short-lived deterministic call made outside an LLM tool-use turn. */
 export type HubCall = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 
+export interface ProposalPrincipal {
+  readonly projectId: string;
+}
+
+export interface DecideProposalArgs {
+  readonly proposalId: string;
+  readonly decision: "approve" | "reject";
+  readonly principal: ProposalPrincipal;
+  readonly confirmToken?: string;
+}
+
+export type DecideProposalReply =
+  | { readonly ok: true; readonly status: "pending" | "approved" | "rejected" | "executed" | "expired"; readonly detail?: string }
+  | { readonly ok: false; readonly error: string }
+  | { readonly needsConfirm: true; readonly token: string; readonly ttlSec: number; readonly proposalId: string };
+
+const PROPOSAL_ID_PATTERN = /^[A-Za-z0-9_-]{12,22}$/;
+const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
+
 /**
  * The request reached tools/call, but no trustworthy mutation result came back.
  * Callers must not retry automatically because fleet_verb may have committed.
@@ -261,7 +280,68 @@ export function createHubCall(options: HubCallOptions = {}): HubCall {
  * Invoke one hub tool through a fresh hub-edge stdio session.
  *
  * fleet_verb is COLD, so the call must go through the always-visible hub_call
- * meta-tool. The Edge's --client other invocation establishes the machine and
- * principal; callers must not add either as mutable tool arguments.
+ * meta-tool. The Edge's --client other invocation establishes the immutable
+ * dispatch principal. Proposal decisions additionally carry the authenticated
+ * Telegram actor as an authorization input; it never replaces dispatch auth.
  */
 export const hubCall: HubCall = createHubCall();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return required.every((key) => Object.hasOwn(value, key)) && keys.every((key) => allowed.has(key));
+}
+
+function isCallbackSafeConfirmation(proposalId: string, token: string): boolean {
+  return PROPOSAL_ID_PATTERN.test(proposalId) && token.length > 0 &&
+    new TextEncoder().encode(`fpc:${proposalId}:${token}`).byteLength <= TELEGRAM_CALLBACK_DATA_MAX_BYTES;
+}
+
+/** Typed proposal-decision call over the existing one-shot hub_call seam. */
+export async function decideProposal(
+  args: DecideProposalArgs,
+  callHub: HubCall = hubCall,
+): Promise<DecideProposalReply> {
+  const reply = await callHub("fleet_propose_decide", { ...args });
+  if (!isRecord(reply)) throw new Error("unexpected fleet proposal decision result");
+
+  if (
+    hasExactKeys(reply, ["ok", "error"]) &&
+    reply.ok === false && typeof reply.error === "string"
+  ) {
+    return { ok: false, error: reply.error };
+  }
+  const validStatuses = new Set(["pending", "approved", "rejected", "executed", "expired"]);
+  if (
+    hasExactKeys(reply, ["ok", "status"], ["detail"]) &&
+    reply.ok === true && typeof reply.status === "string" && validStatuses.has(reply.status) &&
+    (reply.detail === undefined || typeof reply.detail === "string")
+  ) {
+    return {
+      ok: true,
+      status: reply.status as Extract<DecideProposalReply, { ok: true }>["status"],
+      ...(typeof reply.detail === "string" ? { detail: reply.detail } : {}),
+    };
+  }
+  if (
+    hasExactKeys(reply, ["needsConfirm", "token", "ttlSec", "proposalId"]) &&
+    reply.needsConfirm === true &&
+    typeof reply.token === "string" &&
+    reply.ttlSec === 60 &&
+    typeof reply.proposalId === "string" &&
+    reply.proposalId === args.proposalId &&
+    isCallbackSafeConfirmation(reply.proposalId, reply.token)
+  ) {
+    return {
+      needsConfirm: true,
+      token: reply.token,
+      ttlSec: reply.ttlSec,
+      proposalId: reply.proposalId,
+    };
+  }
+  throw new Error("unexpected fleet proposal decision result");
+}
