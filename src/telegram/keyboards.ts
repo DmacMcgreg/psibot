@@ -19,6 +19,7 @@ import {
 } from "../db/queries.ts";
 import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
+import { hubCall, isHubCallOutcomeUnknown, type HubCall } from "../agent/hub-client.ts";
 import type { AutonomyLevelChange } from "../heartbeat/autonomy.ts";
 import type { MemorySystem } from "../memory/index.ts";
 import { getPendingItemById } from "../db/queries.ts";
@@ -28,6 +29,21 @@ import { setExportApproved, resolveExportNudgeId, markExportDeclined, clearExpor
 const log = createLogger("telegram:keyboards");
 
 const MD2 = { parse_mode: "MarkdownV2" as const };
+const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
+
+type FleetReply =
+  | { ok: true; detail?: string }
+  | { ok: false; error?: string }
+  | { needsConfirm: true; token: string; ttlSec: number };
+
+const pendingFleetConfirms = new Map<string, { entity: string; verb: string }>();
+const pendingFleetConfirmTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingFleetConfirmMessages = new Map<string, string>();
+
+interface FleetCallbackState {
+  readonly inFlight: Set<string>;
+  readonly outcomeUnknown: Set<string>;
+}
 
 /** Session key incorporating topic thread ID for isolated sessions per group topic. */
 function sessionKey(ctx: Context): string {
@@ -151,8 +167,167 @@ interface CallbackDeps {
   runAgent: (ctx: Context, prompt: string) => Promise<void>;
   runQuickResearch: (ctx: Context, itemId: number) => Promise<void>;
   runDeepResearch: (ctx: Context, itemId: number) => Promise<void>;
+  /** Test seam; production uses the deterministic short-lived hub client. */
+  hubCall?: HubCall;
   digestChatId?: string;
   digestTopicId?: number;
+}
+
+function callbackMessageKey(ctx: Context): string | undefined {
+  const messageId = ctx.callbackQuery?.message?.message_id;
+  const chatId = ctx.chat?.id;
+  return messageId === undefined || chatId === undefined ? undefined : `${chatId}:${messageId}`;
+}
+
+function fleetCallbackKey(ctx: Context, action: "fr" | "fs" | "fc", payload: string): string {
+  return `${callbackMessageKey(ctx) ?? `chat:${ctx.chat?.id ?? "unknown"}`}:${action}:${payload}`;
+}
+
+const FLEET_OUTCOME_UNKNOWN_TEXT =
+  "⚠ Fleet action outcome unknown — do not retry. Check fleet status or audit before acting again.";
+
+async function renderFleetOutcomeUnknown(ctx: Context): Promise<void> {
+  await ctx.editMessageText(FLEET_OUTCOME_UNKNOWN_TEXT).catch(() => {});
+  await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+}
+
+function clearPendingFleetConfirm(token: string): void {
+  pendingFleetConfirms.delete(token);
+  const timeout = pendingFleetConfirmTimers.get(token);
+  if (timeout !== undefined) clearTimeout(timeout);
+  pendingFleetConfirmTimers.delete(token);
+  for (const [messageKey, pendingToken] of pendingFleetConfirmMessages) {
+    if (pendingToken === token) pendingFleetConfirmMessages.delete(messageKey);
+  }
+}
+
+function rememberPendingFleetConfirm(
+  ctx: Context,
+  token: string,
+  pending: { entity: string; verb: string },
+  ttlSec: number,
+): void {
+  clearPendingFleetConfirm(token);
+  pendingFleetConfirms.set(token, pending);
+  const timeout = setTimeout(() => clearPendingFleetConfirm(token), Math.max(0, ttlSec) * 1_000);
+  pendingFleetConfirmTimers.set(token, timeout);
+  if (typeof timeout === "object" && timeout !== null && "unref" in timeout) {
+    (timeout as { unref(): void }).unref();
+  }
+  const messageKey = callbackMessageKey(ctx);
+  if (messageKey !== undefined) pendingFleetConfirmMessages.set(messageKey, token);
+}
+
+function isFleetOutcome(reply: unknown): reply is Extract<FleetReply, { ok: boolean }> {
+  return typeof reply === "object" && reply !== null && "ok" in reply &&
+    typeof (reply as { ok?: unknown }).ok === "boolean";
+}
+
+function isFleetConfirmation(reply: unknown): reply is Extract<FleetReply, { needsConfirm: true }> {
+  if (typeof reply !== "object" || reply === null || !("needsConfirm" in reply)) return false;
+  const candidate = reply as { needsConfirm?: unknown; token?: unknown; ttlSec?: unknown };
+  return candidate.needsConfirm === true && typeof candidate.token === "string" &&
+    typeof candidate.ttlSec === "number" && Number.isFinite(candidate.ttlSec);
+}
+
+function fleetResultText(
+  reply: Extract<FleetReply, { ok: boolean }>,
+  verb: string,
+  entity: string,
+  failureLabel = verb[0]?.toUpperCase() + verb.slice(1),
+): string {
+  if (reply.ok) {
+    return verb === "silence"
+      ? `🔕 Silenced ${entity} for 2h`
+      : `✓ Restarted ${entity}`;
+  }
+  const error = typeof reply.error === "string" && reply.error ? reply.error : "unknown error";
+  // fleet_verb redacts and caps its structured error before it reaches this UI.
+  return `✗ ${failureLabel} failed: ${error}`;
+}
+
+function isCallbackDataWithinLimit(action: string, payload: string): boolean {
+  return Buffer.byteLength(`${action}:${payload}`, "utf8") <= TELEGRAM_CALLBACK_DATA_MAX_BYTES;
+}
+
+async function handleFleetCallback(
+  ctx: Context,
+  action: "fr" | "fs" | "fc",
+  payload: string,
+  callHub: HubCall,
+  state: FleetCallbackState,
+): Promise<void> {
+  const callbackKey = fleetCallbackKey(ctx, action, payload);
+  if (state.outcomeUnknown.has(callbackKey)) {
+    await ctx.answerCallbackQuery({ text: "Retry disabled: outcome unknown" });
+    await renderFleetOutcomeUnknown(ctx);
+    return;
+  }
+  if (state.inFlight.has(callbackKey)) {
+    if (action === "fc") {
+      await ctx.answerCallbackQuery({ text: "Confirmation expired" });
+      await ctx.editMessageText("Confirmation expired — re-trigger from the original alert.").catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Fleet action already in progress" });
+    return;
+  }
+
+  state.inFlight.add(callbackKey);
+  try {
+    if (action === "fc") {
+      const pending = pendingFleetConfirms.get(payload);
+      if (!pending) {
+        await ctx.answerCallbackQuery({ text: "Confirmation expired" });
+        await ctx.editMessageText("Confirmation expired — re-trigger from the original alert.").catch(() => {});
+        return;
+      }
+
+      // Delete before awaiting the hub so duplicate webhook deliveries cannot replay it.
+      clearPendingFleetConfirm(payload);
+      await ctx.answerCallbackQuery({ text: `Confirming ${pending.entity}...` });
+      const reply = await callHub("fleet_verb", {
+        entity: pending.entity,
+        verb: pending.verb,
+        confirmToken: payload,
+      });
+      if (!isFleetOutcome(reply)) throw new Error("unexpected fleet confirmation result");
+      await ctx.editMessageText(fleetResultText(reply, pending.verb, pending.entity, "Confirm")).catch(() => {});
+      return;
+    }
+
+    const verb = action === "fr" ? "restart" : "silence";
+    await ctx.answerCallbackQuery({
+      text: verb === "restart" ? `Restarting ${payload}...` : `Silencing ${payload}...`,
+    });
+    const reply = await callHub("fleet_verb", { entity: payload, verb });
+    if (isFleetConfirmation(reply)) {
+      if (!isCallbackDataWithinLimit("fc", reply.token)) {
+        await ctx.editMessageText("Confirmation token is too long — re-trigger from the original alert.").catch(() => {});
+        return;
+      }
+      rememberPendingFleetConfirm(ctx, reply.token, { entity: payload, verb }, reply.ttlSec);
+      await ctx.editMessageReplyMarkup({
+        reply_markup: new InlineKeyboard()
+          .text("Confirm", `fc:${reply.token}`)
+          .text("Cancel", "cx"),
+      }).catch(() => {});
+      return;
+    }
+    if (!isFleetOutcome(reply)) throw new Error("unexpected fleet result");
+    await ctx.editMessageText(fleetResultText(reply, verb, payload)).catch(() => {});
+  } catch (error) {
+    // The hub owns structured error redaction. Never surface or log thrown transport text here.
+    log.error("Fleet callback failed", { action, ...(action === "fc" ? {} : { entity: payload }) });
+    if (isHubCallOutcomeUnknown(error)) {
+      state.outcomeUnknown.add(callbackKey);
+      await renderFleetOutcomeUnknown(ctx);
+    } else {
+      await ctx.editMessageText("✗ Fleet action failed. Try again after hub recovery.").catch(() => {});
+    }
+  } finally {
+    state.inFlight.delete(callbackKey);
+  }
 }
 
 function escapeHtml(s: string): string {
@@ -225,6 +400,11 @@ async function surfaceAutonomyChange(
 
 export function createCallbackHandler(deps: CallbackDeps) {
   const { agent, scheduler, state, runAgent } = deps;
+  const callHub = deps.hubCall ?? hubCall;
+  const fleetCallbackState: FleetCallbackState = {
+    inFlight: new Set(),
+    outcomeUnknown: new Set(),
+  };
 
   return async (ctx: Context) => {
     const data = ctx.callbackQuery?.data;
@@ -561,6 +741,13 @@ export function createCallbackHandler(deps: CallbackDeps) {
           break;
         }
 
+        case "fr":
+        case "fs":
+        case "fc": {
+          await handleFleetCallback(ctx, action, payload, callHub, fleetCallbackState);
+          break;
+        }
+
         case "dv": {
           // YouTube discovery candidate feedback. payload = "<sub>:<candidateId>"
           // where sub is 'drop' (dismiss this discovery). Used to let the user
@@ -684,6 +871,14 @@ export function createCallbackHandler(deps: CallbackDeps) {
 
         case "cx": {
           // Cancel / dismiss keyboard
+          const messageKey = callbackMessageKey(ctx);
+          const pendingToken = messageKey === undefined ? undefined : pendingFleetConfirmMessages.get(messageKey);
+          if (pendingToken !== undefined) {
+            clearPendingFleetConfirm(pendingToken);
+            await ctx.answerCallbackQuery({ text: "Cancelled" });
+            await ctx.editMessageText("Cancelled").catch(() => {});
+            break;
+          }
           await ctx.answerCallbackQuery();
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
           break;
