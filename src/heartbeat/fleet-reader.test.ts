@@ -727,6 +727,102 @@ describe("E2-T08 alert rendering, watermark, and retry semantics", () => {
   });
 });
 
+describe("E3-T09 fleet alert keyboard coupling", () => {
+  test("renders restart and silence as the exact supported callback buttons", async () => {
+    prepareFleetDb();
+    insertEvent({
+      id: 30,
+      entity: "hub-core",
+      verbs: '["restart","silence"]',
+    });
+    const sent: SentMessage[] = [];
+    const runner = makeRunner({
+      bot: makeBot(async (chatId, text, options) => {
+        sent.push({ chatId, text, options });
+      }),
+      chatIds: [101],
+    });
+
+    await runnerView(runner).phaseFleetAlerts();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.options).toMatchObject({ parse_mode: "HTML" });
+    expect(sent[0]?.options?.reply_markup).toEqual({
+      inline_keyboard: [[
+        { text: "🔄 Restart", callback_data: "fr:hub-core" },
+        { text: "🔕 Silence", callback_data: "fs:hub-core" },
+      ]],
+    });
+    expect(Buffer.byteLength("fr:hub-core", "utf8")).toBe(11);
+    expect(Buffer.byteLength("fs:hub-core", "utf8")).toBe(11);
+  });
+
+  test("keeps empty verb lists as plain-text fleet alerts", async () => {
+    prepareFleetDb();
+    insertEvent({ id: 31, verbs: "[]" });
+    const sent: SentMessage[] = [];
+    const runner = makeRunner({
+      bot: makeBot(async (chatId, text, options) => {
+        sent.push({ chatId, text, options });
+      }),
+      chatIds: [101],
+    });
+
+    await runnerView(runner).phaseFleetAlerts();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.options).toEqual({ parse_mode: "HTML" });
+  });
+
+  test("skips unknown verb names without guessing a callback code", async () => {
+    prepareFleetDb();
+    insertEvent({ id: 32, verbs: '["stop"]' });
+    const sent: SentMessage[] = [];
+    const runner = makeRunner({
+      bot: makeBot(async (chatId, text, options) => {
+        sent.push({ chatId, text, options });
+      }),
+      chatIds: [101],
+    });
+
+    await runnerView(runner).phaseFleetAlerts();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.options).toEqual({ parse_mode: "HTML" });
+  });
+
+  for (const scenario of [
+    { label: "long ASCII", id: 33, entity: "a".repeat(62), callbackBytes: 65 },
+    { label: "multibyte", id: 34, entity: "界".repeat(21), callbackBytes: 66 },
+  ]) {
+    test(`sends and watermarks ${scenario.label} entity alerts without oversized buttons`, async () => {
+      prepareFleetDb();
+      insertEvent({
+        id: scenario.id,
+        entity: scenario.entity,
+        verbs: '["restart","silence"]',
+      });
+      const sent: SentMessage[] = [];
+      const runner = makeRunner({
+        bot: makeBot(async (chatId, text, options) => {
+          sent.push({ chatId, text, options });
+        }),
+        chatIds: [101],
+      });
+
+      expect(Buffer.byteLength(`fr:${scenario.entity}`, "utf8")).toBe(scenario.callbackBytes);
+      expect(Buffer.byteLength(`fs:${scenario.entity}`, "utf8")).toBe(scenario.callbackBytes);
+
+      await runnerView(runner).phaseFleetAlerts();
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.text).toContain(`<b>${scenario.entity}</b>`);
+      expect(sent[0]?.options).toEqual({ parse_mode: "HTML" });
+      expect(getFleetStateValue("fleet_event_watermark")).toBe(String(scenario.id));
+    });
+  }
+});
+
 function getFleetStateValue(key: string): string | null {
   return getFleetState(key);
 }

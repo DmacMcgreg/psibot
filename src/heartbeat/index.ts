@@ -46,6 +46,7 @@ import { markExportNudged, exportNudgeId } from "../skills/usage.ts";
 import {
   readAlertedEventBatchSince,
   readLatestSnapshot,
+  type FleetEvent,
   type FleetSnapshot,
 } from "./fleet-reader.ts";
 
@@ -54,6 +55,7 @@ const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
 const HUB_DOCTOR_CLEANUP_TIMEOUT_MS = 1_000;
 const HUB_KICKSTART_TIMEOUT_MS = 5_000;
 const PROCESS_REAP_TIMEOUT_MS = 1_000;
+const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
 
 class OperationTimeoutError extends Error {}
 
@@ -80,6 +82,34 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs: number, fallback:
   } catch {
     return fallback;
   }
+}
+
+function fleetCallbackData(action: "fr" | "fs", entity: string): string | undefined {
+  const callbackData = `${action}:${entity}`;
+  return Buffer.byteLength(callbackData, "utf8") <= TELEGRAM_CALLBACK_DATA_MAX_BYTES
+    ? callbackData
+    : undefined;
+}
+
+function keyboardForEvent(event: Pick<FleetEvent, "entity" | "verbs">): InlineKeyboard | undefined {
+  const keyboard = new InlineKeyboard();
+  let hasButtons = false;
+  for (const verb of event.verbs) {
+    if (verb === "restart") {
+      const callbackData = fleetCallbackData("fr", event.entity);
+      if (callbackData !== undefined) {
+        keyboard.text("🔄 Restart", callbackData);
+        hasButtons = true;
+      }
+    } else if (verb === "silence") {
+      const callbackData = fleetCallbackData("fs", event.entity);
+      if (callbackData !== undefined) {
+        keyboard.text("🔕 Silence", callbackData);
+        hasButtons = true;
+      }
+    }
+  }
+  return hasButtons ? keyboard : undefined;
 }
 
 function hhmm(d = new Date()): string {
@@ -469,10 +499,14 @@ export class HeartbeatRunner {
       } else {
         message = `ℹ️ <b>${entity}</b> ${escapeHtml(event.kind)}: ${detail}`;
       }
+      const keyboard = keyboardForEvent(event);
 
       for (const chatId of this.defaultChatIds) {
         try {
-          await bot.api.sendMessage(chatId, message, { parse_mode: "HTML" });
+          await bot.api.sendMessage(chatId, message, {
+            parse_mode: "HTML",
+            ...(keyboard === undefined ? {} : { reply_markup: keyboard }),
+          });
         } catch (err) {
           log.error("Failed to send fleet alert", { chatId, eventId: event.id, error: String(err) });
         }
