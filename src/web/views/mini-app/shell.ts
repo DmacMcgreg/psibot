@@ -32,21 +32,24 @@ const ICONS = {
   jobs: icon(`<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>`),
   library: icon(`<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>`),
   agents: icon(`<rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M8 14h.01M16 14h.01"/>`),
+  discover: icon(`<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>`),
   more: icon(`<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>`),
 };
 
 const TABS: Tab[] = [
+  { id: "discover", label: "Discover", href: "/tma/discover", icon: ICONS.discover },
   { id: "review", label: "Review", href: "/tma/review", icon: ICONS.review },
   { id: "jobs", label: "Jobs", href: "/tma/jobs", icon: ICONS.jobs },
   { id: "library", label: "Library", href: "/tma/library", icon: ICONS.library },
-  { id: "agents", label: "Agents", href: "/tma/agents", icon: ICONS.agents },
   { id: "more", label: "More", href: "/tma/more", icon: ICONS.more },
 ];
 
-// Secondary pages surfaced under "More" light up the More tab.
+// Secondary pages surfaced under "More" light up the More tab. Agents moved
+// here to make room for Discover in the primary bar.
 const MORE_PAGES = new Set([
   "more",
   "chat",
+  "agents",
   "digest",
   "youtube",
   "memory",

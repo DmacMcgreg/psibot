@@ -1166,15 +1166,23 @@ ${runsText}`;
 
           try {
             const { markdownToTelegramV2, splitMessage } = await import("../telegram/format.ts");
+            // Detect brief messages BEFORE stripping markers (keyboard cue).
+            const isBriefMsg = /\[NOTIFY\]/.test(args.text) && /BRIEF|MORNING/.test(args.text);
+            // Strip [NOTIFY]/[/NOTIFY]/[SILENT] control markers so they never
+            // render literally in the delivered message. These are executor-side
+            // routing cues, not user-facing content.
+            const cleanText = args.text
+              .replace(/\[\/?NOTIFY(?::\s*[^\]]+)?\]/gi, "")
+              .replace(/\[SILENT\]/gi, "")
+              .replace(/\n{3,}/g, "\n\n")
+              .trim();
             // Always run through unified pipeline (handles HTML tags, Markdown tables, etc.)
             // then send as MarkdownV2. The pipeline converts HTML→Markdown→MarkdownV2.
-            const formatted = args.parse_mode === "plain" ? args.text : markdownToTelegramV2(args.text);
+            const formatted = args.parse_mode === "plain" ? cleanText : markdownToTelegramV2(cleanText);
             const actualParseMode = args.parse_mode === "plain" ? undefined : "MarkdownV2";
             const chunks = splitMessage(formatted);
             const topicId = args.topic_id ?? currentChatContext?.topicId;
 
-            // Detect brief messages and attach interactive keyboard
-            const isBriefMsg = /\[NOTIFY\]/.test(args.text) && /BRIEF|MORNING/.test(args.text);
             let keyboard: import("grammy").InlineKeyboard | undefined;
             if (isBriefMsg) {
               const { briefKeyboard } = await import("../telegram/keyboards.ts");
@@ -1904,6 +1912,39 @@ ${runsText}`;
             content: [{
               type: "text" as const,
               text: `Inbox: ${counts.pending} pending, ${counts.triaged} triaged, ${counts.total} total\n\n${summary || "(empty)"}`,
+            }],
+          };
+        }
+      ),
+
+      tool(
+        "discover_summary",
+        "Get a one-line summary of new (unrated) items in the Discover content hub, grouped by topic, with a Mini App deep link. Use this in the morning/nightly brief to point the user at fresh content without dumping it in chat.",
+        {},
+        async () => {
+          const { newSummary } = await import("../discover/db.ts");
+          const { tmaLink } = await import("../telegram/format.ts");
+          const s = newSummary();
+          const link = tmaLink("discover");
+          const bits: string[] = [];
+          if (s.bySource["youtube_discovery"] || s.bySource["youtube_watchlater"]) {
+            bits.push(`🎬 ${(s.bySource["youtube_discovery"] ?? 0) + (s.bySource["youtube_watchlater"] ?? 0)}`);
+          }
+          if (s.bySource["github"]) bits.push(`⭐ ${s.bySource["github"]}`);
+          if (s.bySource["reddit"]) bits.push(`👽 ${s.bySource["reddit"]}`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                newCount: s.newCount,
+                groupCount: s.groupCount,
+                bySource: s.bySource,
+                sourceMix: bits.join(" · "),
+                deepLink: link,
+                line: s.newCount > 0
+                  ? `📺 Discover: ${s.newCount} new across ${s.groupCount} topics${bits.length ? ` (${bits.join(" · ")})` : ""}${link ? ` → ${link}` : ""}`
+                  : "📺 Discover: all caught up",
+              }),
             }],
           };
         }

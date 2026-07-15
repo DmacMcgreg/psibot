@@ -34,6 +34,7 @@ import { briefingActionKeyboard, fleetProposalKeyboard } from "../telegram/keybo
 import { ChatState } from "../telegram/state.ts";
 import type { Bot } from "grammy";
 import type { PendingItem } from "../shared/types.ts";
+import { isInboxSurfaceable } from "../shared/surface-policy.ts";
 import { checkAutonomyRule } from "./autonomy.ts";
 import type { MemorySystem } from "../memory/index.ts";
 import { embedBatch } from "../shared/embeddings.ts";
@@ -801,6 +802,9 @@ export class HeartbeatRunner {
     // Build top items list sorted by triage priority and score
     const enrichedTriaged = getPendingItems("triaged", 50);
     const topItems = enrichedTriaged
+      // Discover-only sources (e.g. YouTube) are browsed in the Mini App, never
+      // pushed to the channel. Single gate — see shared/surface-policy.ts.
+      .filter(isInboxSurfaceable)
       .filter((item) => item.priority !== null && item.priority <= 2)
       .sort((a, b) => (b.signal_score ?? 0) - (a.signal_score ?? 0) || (a.priority ?? 5) - (b.priority ?? 5))
       .slice(0, 5);
@@ -867,6 +871,7 @@ export class HeartbeatRunner {
 
       // Each top item as its own message with action buttons
       for (const item of result.topItems) {
+        if (!isInboxSurfaceable(item)) continue; // never post Discover-only sources
         try {
           const badge = this.valueTypeBadge(item.value_type ?? item.category);
           const title = escapeHtml(item.title ?? "Untitled");
@@ -936,6 +941,7 @@ export class HeartbeatRunner {
 
     for (const chatId of targetChatIds) {
       for (const item of unsurfaced) {
+        if (!isInboxSurfaceable(item)) continue; // never post Discover-only sources
         try {
           const badge = this.valueTypeBadge(item.value_type ?? item.category);
           const title = escapeHtml(item.title ?? "Untitled");

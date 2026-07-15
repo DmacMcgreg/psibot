@@ -114,6 +114,24 @@ function expandSourceCheckConstraints(db: Database): void {
       ],
       guard: "mini-app",
     },
+    {
+      // Admit the one-tap 'skipped' sentiment (Discover skip) into the CHECK.
+      table: "discover_feedback",
+      createSql: `CREATE TABLE discover_feedback_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        atlas_item_id INTEGER NOT NULL REFERENCES atlas_items(id) ON DELETE CASCADE,
+        group_id INTEGER,
+        sentiment TEXT NOT NULL CHECK(sentiment IN ('interested','not_interested','skipped')),
+        reasons_json TEXT NOT NULL DEFAULT '[]',
+        note TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+      )`,
+      indexes: [
+        "CREATE INDEX IF NOT EXISTS idx_discover_feedback_item ON discover_feedback(atlas_item_id)",
+        "CREATE INDEX IF NOT EXISTS idx_discover_feedback_created ON discover_feedback(created_at DESC)",
+      ],
+      guard: "'skipped'",
+    },
   ];
 
   for (const { table, createSql, indexes, guard } of rebuilds) {
@@ -124,7 +142,7 @@ function expandSourceCheckConstraints(db: Database): void {
       .get(table);
     if (!row || row.sql.includes(guard)) continue;
 
-    log.info(`Rebuilding ${table} to expand source CHECK constraint`);
+    log.info(`Rebuilding ${table} to expand CHECK constraint`);
     db.exec(`DROP TABLE IF EXISTS ${table}_new`);
     db.exec(createSql);
     db.exec(`INSERT INTO ${table}_new SELECT * FROM ${table}`);

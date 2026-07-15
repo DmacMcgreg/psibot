@@ -671,4 +671,51 @@ export const MIGRATIONS = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+
+  // --- Discover: unified Mini App content hub ---
+  // Topic-clustered, feedback-driven view over atlas_items across four sources
+  // (YouTube discovery, YouTube watch-laters, GitHub stars, Reddit saved).
+  // No new item table — grouping + feedback layer on top of the shared atlas
+  // index. See docs/plans/2026-07-15-discover-mini-app.md.
+
+  // The "digests" — learned topic clusters. centroid is base64 768-dim Float32
+  // in the same embedding space as atlas_items_vec. auto=1 means auto-created;
+  // set 0 when the user (or the taxonomy pass) curates the label.
+  `CREATE TABLE IF NOT EXISTS discover_topic_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    emoji TEXT,
+    centroid TEXT,
+    auto INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+
+  // Assignment of an atlas item to a group (one group per item). chips_json is
+  // the lazily-generated {pos:[],neg:[]} reason-chip cache (NULL until first
+  // feedback-open). similarity is the cosine to the group centroid at assign time.
+  `CREATE TABLE IF NOT EXISTS discover_item_groups (
+    atlas_item_id INTEGER PRIMARY KEY REFERENCES atlas_items(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES discover_topic_groups(id) ON DELETE CASCADE,
+    similarity REAL,
+    chips_json TEXT,
+    assigned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_discover_item_groups_group ON discover_item_groups(group_id)`,
+
+  // Per-item feedback. An eligible atlas item with NO feedback row is "new".
+  `CREATE TABLE IF NOT EXISTS discover_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    atlas_item_id INTEGER NOT NULL REFERENCES atlas_items(id) ON DELETE CASCADE,
+    group_id INTEGER,
+    sentiment TEXT NOT NULL CHECK(sentiment IN ('interested','not_interested','skipped')),
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_discover_feedback_item ON discover_feedback(atlas_item_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_discover_feedback_created ON discover_feedback(created_at DESC)`,
 ];

@@ -21,10 +21,10 @@ const LINKS: MoreLink[] = [
     icon: icon(`<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>`),
   },
   {
-    href: "/tma/digest",
-    label: "Digest",
-    hint: "Weekly rollups",
-    icon: icon(`<path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/>`),
+    href: "/tma/agents",
+    label: "Agents",
+    hint: "Agent roster & runs",
+    icon: icon(`<rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M8 14h.01M16 14h.01"/>`),
   },
   {
     href: "/tma/youtube",

@@ -9,6 +9,7 @@ import { registerAgentRoutes } from "./agents.ts";
 import { registerLibraryRoutes } from "./library.ts";
 import { registerDigestRoutes } from "./digest.ts";
 import { registerYoutubeRoutes } from "./youtube.ts";
+import { registerDiscoverRoutes } from "./discover.ts";
 import { registerMiscRoutes } from "./misc.ts";
 
 /**
@@ -41,6 +42,7 @@ export function createMiniAppRoutes() {
   registerJobRoutes(app);
   registerAgentRoutes(app);
   registerLibraryRoutes(app);
+  registerDiscoverRoutes(app);
   registerDigestRoutes(app);
   registerYoutubeRoutes(app);
   registerMiscRoutes(app);

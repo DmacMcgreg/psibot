@@ -214,11 +214,15 @@ export class JobExecutor {
 
       // Notify via Telegram — policy-driven (agent.notify_policy with job override)
       const agent = job.agent_name ? getAgentBySlug(job.agent_name) : null;
+      // Prefer a [NOTIFY]...[/NOTIFY] block captured mid-run over the final
+      // result text. This survives cases where a late turn (e.g. a backgrounded
+      // task completion the agent blocks on with TaskOutput) replaces the final
+      // message with a meta-acknowledgment, which would otherwise clobber the brief.
       const decision = decideNotify({
         agent,
         job,
         status,
-        result: result.result,
+        result: result.notifyText ?? result.result,
         previousHash: job.last_output_hash,
       });
       updateJob(jobId, { last_output_hash: decision.hash });
@@ -232,7 +236,7 @@ export class JobExecutor {
         const keyboard = isBrief ? briefKeyboard(run.id) : undefined;
 
         await this.notify(
-          `Job "${job.name}" completed\n\n${rendered}`,
+          rendered,
           job.notify_chat_id ?? undefined,
           job.notify_topic_id ?? undefined,
           withAppLink(keyboard, jobId),
@@ -359,7 +363,7 @@ export class JobExecutor {
           agent,
           job,
           status: "success",
-          result: result.result,
+          result: result.notifyText ?? result.result,
           previousHash: job.last_output_hash,
         });
         updateJob(jobId, { last_output_hash: decision.hash });
@@ -369,7 +373,7 @@ export class JobExecutor {
           const template = job.output_template ?? agent?.output_template ?? null;
           const rendered = template ? applyOutputTemplate(template, decision.cleanedResult) : decision.cleanedResult;
           await this.notify(
-            `Pipeline "${job.name}" completed\n\n${rendered}`,
+            rendered,
             job.notify_chat_id ?? undefined,
             job.notify_topic_id ?? undefined,
             withAppLink(undefined, jobId),

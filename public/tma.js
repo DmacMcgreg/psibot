@@ -199,6 +199,42 @@
     if (empty) empty.style.display = shown === 0 ? "" : "none";
   };
 
+  // ---- Generic client-side list sort --------------------------------------
+  // Attach via onchange="tmaSort(this)". Reorders [data-tma-filter-item] cards
+  // inside the nearest [data-dv-list] within the select's filter scope. The
+  // select's value names a data-attribute key; keys ending in a known numeric
+  // sense sort descending, "title" sorts alphabetically, "date" sorts ISO desc.
+  window.tmaSort = function (sel) {
+    var scope = sel.closest("[data-tma-filter-scope]");
+    if (!scope) return;
+    var list = scope.querySelector("[data-dv-list]");
+    if (!list) return;
+    var v = sel.value;
+    var cards = Array.prototype.slice.call(
+      list.querySelectorAll("[data-tma-filter-item]")
+    );
+    cards.sort(function (a, b) {
+      if (v === "title") {
+        return (a.getAttribute("data-title") || "").localeCompare(
+          b.getAttribute("data-title") || ""
+        );
+      }
+      if (v === "date") {
+        return (b.getAttribute("data-date") || "").localeCompare(
+          a.getAttribute("data-date") || ""
+        );
+      }
+      var key = "data-" + v;
+      return (
+        (parseFloat(b.getAttribute(key)) || 0) -
+        (parseFloat(a.getAttribute(key)) || 0)
+      );
+    });
+    cards.forEach(function (c) {
+      list.appendChild(c);
+    });
+  };
+
   // Chip-based filtering: clicking a [data-tma-filter] chip toggles active
   // state and filters items whose [data-<name>] value matches.
   document.body.addEventListener("click", function (e) {

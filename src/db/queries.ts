@@ -3,6 +3,7 @@ import {
   syncAtlasForPendingItem,
   syncAtlasForTradingSignal,
 } from "../atlas/sync.ts";
+import { INBOX_SURFACEABLE_SQL } from "../shared/surface-policy.ts";
 import type {
   ChatMessage,
   AgentSession,
@@ -1006,7 +1007,7 @@ export function getUnsurfacedTriagedItems(limit: number = 5): PendingItem[] {
   return db
     .prepare<PendingItem, [number]>(
       `SELECT * FROM pending_items
-       WHERE status = 'triaged' AND surfaced_at IS NULL
+       WHERE status = 'triaged' AND surfaced_at IS NULL AND ${INBOX_SURFACEABLE_SQL}
        ORDER BY
          CASE WHEN priority IS NOT NULL THEN priority ELSE 99 END ASC,
          COALESCE(signal_score, 0) DESC,

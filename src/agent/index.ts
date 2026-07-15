@@ -635,6 +635,11 @@ export class AgentService {
     let numTurns = 0;
     let stopReason: StopReason = "unknown";
     let deliveredViaTool = false;
+    // Last complete [NOTIFY]...[/NOTIFY] block seen in assistant text during the
+    // run. Captured per-message so a brief survives even if a later turn
+    // (e.g. a backgrounded task the agent blocks on) overwrites the final text.
+    let notifyText: string | undefined;
+    const NOTIFY_BLOCK_RE = /\[NOTIFY(?::[^\]]*)?\][\s\S]*?\[\/NOTIFY\]/i;
     const toolCache = new Map<string, { name: string; input?: Record<string, unknown>; emitted: boolean }>();
     let lastMessageAt = Date.now();
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -726,9 +731,11 @@ export class AgentService {
             }
             const content = message.message.content;
             let hasToolUse = false;
+            let msgText = "";
             if (Array.isArray(content)) {
               for (const block of content) {
                 if (block.type === "text") {
+                  msgText += block.text;
                   const visible = scrubber.feed(block.text);
                   if (visible) options.onText?.(visible);
                 } else if (block.type === "tool_use") {
@@ -763,6 +770,10 @@ export class AgentService {
                 }
               }
             }
+            // Capture the richest [NOTIFY] block emitted in this message so a
+            // brief survives a later clobbering turn (see notifyText decl).
+            const notifyMatch = msgText.match(NOTIFY_BLOCK_RE);
+            if (notifyMatch) notifyText = notifyMatch[0];
             if (hasToolUse) {
               awaitingToolResult = true;
               resetStaleTimer(); // re-arm with longer timeout for tool execution
@@ -905,6 +916,7 @@ export class AgentService {
         numTurns,
         stopReason,
         deliveredViaTool,
+        notifyText,
       };
 
       // Append a session summary to the daily log for user-facing conversations
@@ -952,6 +964,7 @@ export class AgentService {
           numTurns,
           stopReason,
           deliveredViaTool,
+          notifyText,
         };
 
         this.appendSessionToDailyLog(options, result);

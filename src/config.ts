@@ -248,6 +248,14 @@ const envSchema = z.object({
     .default("8")
     .transform(Number)
     .pipe(z.number().int().min(0).max(23)),
+  // Whether the discovery runner posts its digest to Telegram. Default OFF:
+  // content is browsed in the Mini App (/tma/discover), and the channel stays
+  // silent for content processing. Candidates are still marked `surfaced` and
+  // news persisted regardless, so the Mini App always has fresh data.
+  DISCOVERY_SURFACE_TELEGRAM: z
+    .string()
+    .default("false")
+    .transform((s) => s === "true"),
 });
 
 export type Config = z.infer<typeof envSchema>;

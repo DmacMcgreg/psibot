@@ -257,8 +257,11 @@ Every action item this brief produces MUST result in a callable artifact:
 
 - If a data source fails, skip it gracefully — never block the whole brief.
 - Always call `date` first for today's actual date. Don't guess.
-- Wrap the full brief in `[NOTIFY]...[/NOTIFY]` markers so the executor sends it via Telegram.
-- Archive the brief as markdown to `~/Documents/NotePlan-Notes/Notes/60 - Briefings/YYYY-MM-DD-morning-brief.md`.
+- **Delivery = emitting the brief as a message wrapped in `[NOTIFY]...[/NOTIFY]`. Writing the markdown file is NOT delivery.** The executor sends whichever `[NOTIFY]` block you emit.
+- **Gather ALL data first, then emit the brief LAST.** If a slow fetch (e.g. the Apple Calendar `osascript`) gets backgrounded, retrieve its result with `TaskOutput` BEFORE composing — do not emit the brief and then block on a background task afterward.
+- **The `[NOTIFY]` brief must be the last thing you output.** If a background task completes after you've composed the brief, do NOT reply with an acknowledgment like "already delivered" — re-emit the full `[NOTIFY]...[/NOTIFY]` brief so it is never lost.
+- Archive the brief as markdown to `~/Documents/NotePlan-Notes/Notes/60 - Briefings/YYYY-MM-DD-morning-brief.md` (this is a backup, not the delivery).
+- **Discover pointer:** call `discover_summary` and, if `newCount > 0`, add its `line` as a single line near the bottom (before the keynote). Do NOT list the items — the user browses them in the Mini App. Omit the line entirely if caught up.
 - Bin reminder (garbage): only on Monday evenings (even ISO week = Black + Green, odd week = Black only). Add to ACTIONS if today is Monday.
 - Sarunas payments: always note which account (Argentina, Euro, or other) from the email context.
 - De-dupe tasks: `task_list` before `task_add`.

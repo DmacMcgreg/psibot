@@ -249,6 +249,16 @@ export class DiscoveryRunner {
         stats.surfaced = surfaced;
       }
 
+      // --- Step 8.5: index into Discover (topic-cluster all four sources) ---
+      // Assigns any newly-eligible atlas items (YouTube discovery + watch-laters,
+      // GitHub stars, Reddit saved) to topic-cluster digests for the Mini App.
+      try {
+        const { runDiscoverIndexer } = await import("../discover/indexer.ts");
+        await runDiscoverIndexer();
+      } catch (err) {
+        log.warn("Discover indexing failed (non-fatal)", { error: String(err) });
+      }
+
       // --- Step 9: prune stale/expired candidates (bounds unbounded growth) ---
       try {
         const expired = expireStaleCandidates();
@@ -300,8 +310,28 @@ export class DiscoveryRunner {
 
   /** Lazily create the discoveries topic if needed, then send the digest. */
   private async surfaceDigest(processed: ProcessedPick[], news: NewsItem[]): Promise<number> {
+    // Mark picks surfaced regardless of delivery channel so the Mini App
+    // (/tma/discover) always has fresh, browseable items.
+    for (const { candidate } of processed) {
+      try {
+        setCandidateStatus(candidate.video_id, "surfaced", { surfacedAt: true });
+      } catch (err) {
+        log.error("Failed to mark candidate surfaced", { videoId: candidate.video_id, error: String(err) });
+      }
+    }
+
+    // Telegram surfacing is opt-in (default off). The user browses digests in
+    // the Mini App; the channel stays silent for content processing.
+    if (!getConfig().DISCOVERY_SURFACE_TELEGRAM) {
+      log.info("Discovery surfaced silently (Telegram delivery disabled)", {
+        processed: processed.length,
+        news: news.length,
+      });
+      return processed.length;
+    }
+
     const bot = this.getBot();
-    if (!bot) return 0;
+    if (!bot) return processed.length;
 
     const { chatId, topicId } = await this.resolveTarget(bot);
     // resolveTarget() returns a null chatId when the group isn't configured or

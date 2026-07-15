@@ -19,6 +19,10 @@ export interface NotifyInput {
 
 const DYNAMIC_NOTIFY_RE = /\[NOTIFY(?::\s*([^\]]+))?\]/i;
 const DYNAMIC_SILENT_RE = /\[SILENT\]/i;
+// Strip patterns: remove ALL notify/silent markers (opening [NOTIFY]/[NOTIFY:...],
+// closing [/NOTIFY], and [SILENT]) globally so none leak into the delivered text.
+const NOTIFY_STRIP_RE = /\[\/?NOTIFY(?::\s*[^\]]+)?\]/gi;
+const SILENT_STRIP_RE = /\[SILENT\]/gi;
 // Trading agents emit a fenced JSON envelope at the end for the dashboard.
 // Strip it before sending to Telegram so users don't see the JSON dump.
 const TRAILING_ENVELOPE_RE = /\n*```json\s*\n[\s\S]*?"agent_id"[\s\S]*?\n```\s*$/;
@@ -33,8 +37,8 @@ export function hashResult(result: string): string {
 
 function stripMarkers(result: string): string {
   return result
-    .replace(DYNAMIC_NOTIFY_RE, "")
-    .replace(DYNAMIC_SILENT_RE, "")
+    .replace(NOTIFY_STRIP_RE, "")
+    .replace(SILENT_STRIP_RE, "")
     .replace(TRAILING_ENVELOPE_RE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

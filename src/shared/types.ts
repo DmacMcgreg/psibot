@@ -386,6 +386,15 @@ export interface AgentRunResult {
    * the actual message via the tool.
    */
   deliveredViaTool: boolean;
+  /**
+   * The last complete `[NOTIFY]...[/NOTIFY]` block emitted as assistant text at
+   * ANY point during the run (not just the final message). Undefined if the
+   * agent never emitted one. The job executor prefers this over the final
+   * result text so a brief can't be lost when a late turn (e.g. a backgrounded
+   * task the agent blocks on with TaskOutput) replaces the final message with a
+   * meta-acknowledgment like "already delivered".
+   */
+  notifyText?: string;
 }
 
 export type TradingSignalDirection = "long" | "short" | "neutral";
