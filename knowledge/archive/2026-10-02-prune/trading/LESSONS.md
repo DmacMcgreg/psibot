@@ -196,3 +196,12 @@ Signal activity observed but P/L attribution IMPOSSIBLE:
 - **PCR >2.0 as exit signal**: reliable trigger even on winning positions — USO PCR 1.88-2.31 and AMT PCR 11.96 preceded exits (SCAN-2026-04-27-1700ET, scan-2026-04-27, 2026-04-22_1700)
 - **Mean reversion gated entire April**: PCE >2.5% kept MR strategies offline for 4+ weeks, stranding capital in Kalman/Regime allocations (2026-04-23, 2026-04-08-0200, scan-2026-04-12-0200)
 - **EQIX smart money divergence**: institutional options positioning vs weak retail technicals — AVOID despite algo BUY signals (2026-04-23, 2026-05-04_SIGNAL_DISCREPANCIES, 2026-05-04_comprehensive)
+
+## monthly additions (failures) — appended 2026-08-01
+- Energy equities distributed despite WTI >$100 — 'high oil = energy strength' failed; XLE showed bearish PCR / negative GEX / institutional distribution while crude rallied, so oil-price thesis alone is not tradeable: 2026-04-18, 2026-04-28-0200, 2026-04-29_fundamental, 2026-05-01.
+- Gold/GLD failed as safe-haven during war/stagflation — gold fell ~14% through the conflict as a hawkish Fed raised the opportunity cost of zero-yield gold; the geopolitical safe-haven long did not resolve: 2026-03-31-0200, 2026-05-01, 2026-04-29_fundamental.
+- Mean-reversion gate never opened all month — PCE stuck near 3.0% and VIX stayed elevated, keeping the entire MR strategy class offline despite a queue of 'preload' candidates; do not size into MR until the gate prints: 2026-04-01-0200, 2026-04-08-0200, 2026-04-16-0200, 2026-04-17_0200ET.
+- AMZN technical/options divergence stalled entries — 100% MTF bullish repeatedly conflicted with bearish PCR/options flow; playbook red flag correctly meant skip/wait rather than enter: 2026-05-05-1700, 2026-04-16-0200, 2026-05-04_SIGNAL_DISCREPANCIES.
+- Kalman Filter underperformed in macro-driven regime — produced no qualifying entries (all overbought) or contradictory signals during geopolitical shocks; trend/macro filters must override it: 2026-04-23_1700ET, 2026-04-17_0200ET.
+- NEE thesis flip-flopped without resolution — cycled between defensive-utility long, bearish-divergence exit, and short (266x put sweep) across scans without a clean directional resolve: 2026-04-12-0200, 2026-04-14-1700, 2026-04-17_0200ET.
+- Overbought momentum entries required pullbacks that often didn't come — QCOM (RSI 80+), DELL (RSI 77), INTC (RSI 86) flagged 'enter only on pullback' but vertical rallies kept extending, so waiting cost upside: 2026-05-07_0200, 2026-05-06-1700.

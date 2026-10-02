@@ -607,3 +607,21 @@ The `run_backtest` API does NOT support passing custom parameter overrides. All 
 - Does OVX (crude oil vol index) 1-month change >+20% predict equity momentum collapse and serve as an early exit signal? (raised 2026-03-27_session8_strategy_scout)
 - Does the composite multi-asset stress signal (IEF+/GLD- AND IEF+/USO- AND IEF+/SPY-) outperform single-asset reversal signals in mean reversion? (raised 2026-03-26_session6)
 - Does PCR >2.0 reliably predict exits across different market regimes, or is it specific to risk-off/stagflation conditions? (raised SCAN-2026-04-27-1700ET)
+
+## monthly additions (open hypotheses) — appended 2026-08-01
+- VLO crack-spread lag: refiner margins normalize 4–6 weeks slower than oil price after a ceasefire, producing lagged outperformance — testable as a timed entry claim (2026-03-27_session8).
+- Composite Correlated Stress Reversal (IEF+ with SPY/USO/GLD-) outperforms single-asset mean-reversion signals in backwardation regimes (2026-03-26_session6).
+- VIX term-structure backwardation (M1/M2 >1) as a regime filter improves mean-reversion expectancy — upweight MR signals when in backwardation (2026-03-26_session6).
+- adxr setup is playbook-ready (avg Sharpe 1.087, 89% positive rate across 9 symbols) and a live-deployment candidate once the MR gate clears (2026-03-27_session8_backtests).
+- Mag-7 universal insider selling ($16.1B net, 2-yr trailing) is a leading indicator of sector-peak rather than benign tax-related selling — testable as a forward predictor (2026-05-06-fundamentals, 2026-05-01).
+- Energy-equity distribution while WTI >$100 is a leading indicator of an incoming supply shock / institutional de-risking, not lagging noise (2026-05-01, 2026-04-18).
+- The MR gate threshold (PCE <2.5% AND VIX <25) accurately times mean-reversion deployment vs being too conservative — validate against realized MR edge (2026-04-01-0200, 2026-04-08-0200).
+- Trend-following dominates and mean-reversion fails in stagflation/war regimes — testable regime-conditional strategy edge (2026-03-27_session8_backtests).
+- NVDA earnings (5/20–27) acts as a binary sector catalyst setting direction for all mega-cap tech, not just NVDA — testable cross-name beta (2026-05-06-fundamentals).
+
+## monthly additions (open hypotheses) — appended 2026-09-01
+- CPI (May 10, 2026) prints benign — 40% odds <0.2% m/m, 45% in-line — because the oil collapse removes inflation upside (2026-05-06-1700-market-scan.md)
+- NVDA earnings (May 20-27, 2026) act as a binary sector driver: a beat triggers a semis melt-up, a miss a 5-7% sector selloff (2026-05-06-1700-market-scan.md)
+- Contrarian energy longs (XOM/CVX/SLB/VLO) profit via IV crush once oil holds $95 for 3+ consecutive days (2026-05-06-1700-market-scan.md)
+- The mean-reversion gate (currently blocking JNJ and MCD shorts) lifts and those setups resolve once PCE falls below 2.5% (2026-05-06-1700-market-scan.md)
+- When options divergence shows smart-money hedging under a bullish surface (QCOM/MU), rallies fail — fading the rally outperforms the surface signal (2026-05-06-1700-market-scan.md)

@@ -326,3 +326,15 @@ Paper portfolio underperforming all benchmarks by 6-9%. Cash preservation (94.3%
 - **META short** (100% bearish Kalman/Regime alignment but reduce to 1.5% on squeeze risk when RSI <30 + bullish PCR): 2026-03-31-0200, 2026-04-01-0200, 2026-03-30-1700, 2026-03-31-1707
 - **HPE long breakout** (multi-month base, 100% MTF bullish + confluence >77): 2026-04-23, 2026-05-05-1700, 2026-05-04_comprehensive, 2026-05-04_ACTIONABLE
 - **MRK defensive healthcare hold** (Kalman Filter + pipeline catalysts + PCR <0.25): 2026-04-01-0200, scan-2026-04-13-0200, 2026-03-30-1700, scan-2026-04-12-0200
+
+## monthly additions (setups) — appended 2026-08-01
+- GOOGL post-earnings momentum / dip-buy long — recurring highest-conviction MTF-aligned long (100% MTF, confluence 76–79.5, 38.9% ROE): 2026-05-05, 2026-05-04, 2026-05-01, 2026-04-29-technical, 2026-04-18.
+- AMZN breakout/pullback long — 100% MTF bullish breakout above resistance ($229) or pullback to $225–227 support: 2026-05-06, 2026-05-04, 2026-05-01, 2026-04-29-technical.
+- AAPL pullback-to-support accumulation — entry at support cluster ($254–258), 100% MTF, fortress support strength 90+: 2026-05-04, 2026-05-01, 2026-04-29-technical, 2026-05-07.
+- GDX gold-miners stagflation hedge long — highest-conviction long, bull-flag breakout entry $99–101 target $108: 2026-04-18-0200-market-scan, 2026-04-19, 2026-04-17_0200ET, 2026-04-18-0200-macro.
+- WMT defensive-staples long via Consecutive Days + institutional block-call flow (6.6x OI), entry $125–127 target $133: 2026-04-18, 2026-04-19, 2026-04-17, 2026-05-03.
+- Energy basket rotational long (XOM/CVX/EOG/VLO/HAL/SLB) keyed to Iran/Hormuz oil premium and Brent $108 tailwind: 2026-03-27_session8, 2026-03-27-0200ET, 2026-04-29_fundamental, 2026-04-07-1700.
+- Mean-reversion preload candidates (QCOM/MCD/AMGN/JNJ) queued at oversold RSI, gated on PCE <2.5% AND VIX <25: 2026-04-08-0200-session33, 2026-04-17, 2026-04-19, 2026-05-06-1700.
+- MRK institutional accumulation hold — Kalman + Regime Detection bullish, pipeline catalysts independent of macro regime: 2026-04-01-0200, 2026-04-12-0200, 2026-04-14-1700.
+- AMT defensive-REIT long — strongest PCR (0.20), real-asset hedge, hold with stop $173.38 target $196: 2026-04-17_0200ET, 2026-04-18, 2026-04-19, 2026-05-03.
+- NVDA high-beta cautious long / WAIT — enter on 4h MACD bullish crossover or post-earnings catalyst, never into 5/20–27 binary earnings risk: 2026-05-04, 2026-05-01, 2026-04-29-technical, 2026-05-06.

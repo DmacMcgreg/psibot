@@ -2,13 +2,12 @@ import { loadConfig } from "../src/config.ts";
 import { initDb, getDb } from "../src/db/index.ts";
 import {
   syncAtlasForPendingItem,
-  syncAtlasForTradingSignal,
   syncAtlasForYoutubeVideo,
   syncAtlasForResearchNote,
   syncAtlasForDailyLog,
 } from "../src/atlas/sync.ts";
 import { counts as atlasCounts, rebuildFtsAll } from "../src/atlas/index.ts";
-import type { PendingItem, TradingSignal } from "../src/shared/types.ts";
+import type { PendingItem } from "../src/shared/types.ts";
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -24,13 +23,6 @@ const pendingRows = db
   .all();
 console.log(`pending_items: ${pendingRows.length}`);
 for (const row of pendingRows) syncAtlasForPendingItem(row);
-
-// --- Trading signals ---
-const signalRows = db
-  .prepare<TradingSignal, []>("SELECT * FROM trading_signals")
-  .all();
-console.log(`trading_signals: ${signalRows.length}`);
-for (const row of signalRows) syncAtlasForTradingSignal(row);
 
 // --- YouTube videos (any status that carries a summary) ---
 interface YtRow {

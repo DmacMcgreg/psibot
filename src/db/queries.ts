@@ -1,8 +1,5 @@
 import { getDb } from "./index.ts";
-import {
-  syncAtlasForPendingItem,
-  syncAtlasForTradingSignal,
-} from "../atlas/sync.ts";
+import { syncAtlasForPendingItem } from "../atlas/sync.ts";
 import { INBOX_SURFACEABLE_SQL } from "../shared/surface-policy.ts";
 import { publishedAtFromUrl } from "../shared/published-date.ts";
 import type {
@@ -1687,7 +1684,6 @@ export function insertTradingSignal(params: {
       params.payload_json ?? null,
       params.source_url ?? null
     )!;
-  syncAtlasForTradingSignal(row);
   return row;
 }
 

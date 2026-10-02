@@ -120,3 +120,14 @@ ATR_PCT #1 despite Risk-On regime suggests model may be over-weighting volatilit
 - **Composite Multi-Factor Scoring** — Technical 40% + Sentiment 20% + Options 10% + ML 10% weighting for setup ranking
 - **VIX term structure M1/M2 ratio** — backwardation (>1.05) as regime filter for upweighting mean-reversion signals
 - **Consecutive Days pattern (10% weight)** — supplementary strategy for commodity/defensive ETFs (DBA, WMT, USO)
+
+## monthly additions (indicator combos) — appended 2026-08-01
+- MTF (multi-timeframe 4h/daily/weekly/monthly) alignment score + Confluence score (0–100) + PCR — the dominant entry-qualification trio across technical scans.
+- Kalman Filter + Regime Detection (50/50 strategy weight split) with a Mean-Reversion deployment gate (PCE core YoY <2.5% AND VIX <25).
+- Composite Multi-Factor score: Technical 40% / Fundamentals 20% / Sentiment 20% / Options Flow 10% / ML 10%.
+- VIX term-structure M1/M2 ratio + Correlated Stress Reversal (IEF up AND at least one of SPY/GLD/USO down → buy SPY next close, 1-day hold).
+- Fundamentals stack: P/E + PEG + ROE + net margin + YoY revenue/operating-income growth + net insider-selling flow.
+- Options-flow divergence detector: PCR + Max Pain + GEX + block-trade OI multiples read against technical alignment to flag smart-money vs retail disagreement.
+
+## monthly additions (indicator combos) — appended 2026-09-01
+- Composite setup-grading stack: MTF alignment + confluence score + weighted composite (Technical 40% / Fundamentals 20% / Sentiment 20% / Options Flow 10% / ML 10%) cross-checked with PCR, RSI, Bollinger position, IV percentile, and volume — applied to every setup in 2026-05-06-1700-market-scan.md

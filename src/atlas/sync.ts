@@ -1,5 +1,5 @@
 import { indexItem, removeItem, type AtlasKind } from "./index.ts";
-import type { PendingItem, TradingSignal } from "../shared/types.ts";
+import type { PendingItem } from "../shared/types.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("atlas:sync");
@@ -100,31 +100,6 @@ function safeParseTags(raw: string): string[] {
   }
 }
 
-export function syncAtlasForTradingSignal(signal: TradingSignal): void {
-  try {
-    const title = `${signal.ticker} ${signal.direction} — ${signal.source}`;
-    indexItem({
-      kind: "signal",
-      sourceTable: "trading_signals",
-      sourceId: String(signal.id),
-      title,
-      body: signal.reason ?? "",
-      url: signal.source_url ?? null,
-      capturedAt: signal.captured_at,
-      metadata: {
-        ticker: signal.ticker,
-        direction: signal.direction,
-        strength: signal.strength,
-        source: signal.source,
-      },
-    });
-  } catch (err) {
-    log.error("Failed to sync trading_signals", {
-      id: signal.id,
-      error: String(err),
-    });
-  }
-}
 
 export interface ResearchNoteInput {
   sourceId: string;
@@ -187,32 +162,6 @@ export function syncAtlasForDailyLog(params: {
   }
 }
 
-export function syncAtlasForScan(params: {
-  filePath: string;
-  body: string;
-  title?: string;
-  capturedAt?: string;
-}): void {
-  try {
-    const fallbackTitle =
-      params.filePath.split("/").pop()?.replace(/\.md$/, "") ?? params.filePath;
-    indexItem({
-      kind: "scan",
-      sourceTable: "scan_files",
-      sourceId: params.filePath,
-      title: params.title ?? fallbackTitle,
-      body: params.body,
-      url: null,
-      capturedAt: params.capturedAt ?? new Date().toISOString(),
-      metadata: { path: params.filePath },
-    });
-  } catch (err) {
-    log.error("Failed to sync scan file", {
-      filePath: params.filePath,
-      error: String(err),
-    });
-  }
-}
 
 /** Kind labels for the library UI and diagnostics. */
 export const KIND_LABEL: Record<AtlasKind, string> = {

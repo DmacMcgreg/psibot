@@ -3,14 +3,16 @@
  *
  * Mirrors HeartbeatRunner's shape (getBot + digest chat/topic closures, group
  * send with DM fallback). Fires Friday 17:00 America/New_York (after market
- * close); on fire it composes the digest, archives the markdown to
- * knowledge/digests/YYYY-Www.md, and posts the Telegram-HTML chunks to the
- * digest chat/topic. Telegram-only delivery — no email.
+ * close); on fire it composes the digest and posts the Telegram-HTML chunks
+ * to the digest chat/topic. Telegram-only delivery — no email.
+ *
+ * No markdown archive is written: knowledge/digests/ was pruned 2026-10-02
+ * (superseded by knowledge/weekly/; research/psibot-knowledge-value-2026-10.md
+ * in the vivaldi-home repo). The delivered chunks are the record, receipted
+ * in sent_messages.
  */
 
 import { Cron } from "croner";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import type { Bot, InlineKeyboard } from "grammy";
 import { createLogger } from "../shared/logger.ts";
 import { recordSentMessage } from "../db/queries.ts";
@@ -19,8 +21,6 @@ import { digestKeyboard } from "./buttons.ts";
 
 const log = createLogger("digest");
 
-const KNOWLEDGE_DIR = resolve(process.cwd(), "knowledge");
-const DIGESTS_DIR = join(KNOWLEDGE_DIR, "digests");
 
 /** Friday 17:00 (after market close). Timezone applied via Cron options. */
 const DIGEST_CRON = "0 17 * * 5";
@@ -90,7 +90,6 @@ export class DigestRunner {
         chunks: digest.telegramChunks.length,
       });
 
-      this.archive(digest);
       await this.deliver(digest);
 
       return digest;
@@ -99,17 +98,6 @@ export class DigestRunner {
     }
   }
 
-  /** Write the markdown archive to knowledge/digests/YYYY-Www.md. */
-  private archive(digest: WeeklyDigest): void {
-    try {
-      mkdirSync(DIGESTS_DIR, { recursive: true });
-      const path = join(DIGESTS_DIR, `${digest.week}.md`);
-      writeFileSync(path, digest.markdown);
-      log.info("Archived weekly digest", { path });
-    } catch (err) {
-      log.error("Failed to archive weekly digest", { week: digest.week, error: String(err) });
-    }
-  }
 
   /**
    * Send the Telegram-HTML chunks to the digest chat/topic, falling back to DM
