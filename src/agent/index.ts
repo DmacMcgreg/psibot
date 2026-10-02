@@ -1,5 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { getConfig } from "../config.ts";
+import { getConfig, GLM_CLI_ENV } from "../config.ts";
 import { MemorySystem } from "../memory/index.ts";
 import { createAgentTools, type ToolDeps } from "./tools.ts";
 import { createMediaTools } from "./media-tools.ts";
@@ -17,11 +17,72 @@ import {
 import { createLogger } from "../shared/logger.ts";
 import type { AgentRunOptions, AgentRunResult, StopReason, MessageSource } from "../shared/types.ts";
 import { pickReviewPrompt, type ReviewKind } from "./review-prompts.ts";
+import { isModelUnavailableResult } from "./model-unavailable.ts";
 import { withWriteOriginAsync, BACKGROUND_REVIEW } from "../skills/provenance.ts";
-import { recordVerdict } from "../skills/usage.ts";
+import { recordVerdict, bumpView, bumpUse } from "../skills/usage.ts";
 import { StreamingContextScrubber } from "../shared/context-scrubber.ts";
 
 const log = createLogger("agent");
+
+/** Saved as the reply when the user stops a run before any text arrived. */
+export const STOPPED_BEFORE_REPLY = "Stopped before replying.";
+
+/**
+ * The upstream (observed on the GLM backend) can answer a run's FIRST model
+ * call with an empty, contentless response: the CLI exits with an error
+ * result whose diagnostic reads
+ * `[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null`
+ * and the SDK throws it as an Error. No assistant turn ever arrived, so no
+ * work is lost — a transient upstream window, not a job failure. The
+ * 2026-10-02 YT-watchlist diagnosis attributed 3 of 5 weekly errors to it;
+ * every one self-healed on the next tick while the error row hid behind the
+ * boilerplate.
+ */
+export function isEmptyFirstResponseError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("[ede_diagnostic]") && msg.includes("result_type=user") && msg.includes("stop_reason=null");
+}
+
+/**
+ * Backoff before the single retry of an empty first response. Env-overridable
+ * so tests can shrink it and operators can tune it without a redeploy.
+ */
+const EMPTY_FIRST_RESPONSE_BACKOFF_MS = Number(process.env.EMPTY_RESPONSE_BACKOFF_MS ?? "") || 15_000;
+
+/**
+ * Watchdog ceiling for a single tool execution. Must sit comfortably above
+ * `youtube_process_playlist`'s internal batch budget (10 min default,
+ * src/youtube/playlist.ts) — the old 15 min killed catch-up batches that
+ * overshot it mid-video (two exact-15:00.0 watchdog kills in the 2026-10-02
+ * diagnosis; the identical backlog completed in 10.5 min on retry).
+ */
+export const TOOL_STALE_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Result returned when the empty-first-response window survives its retry:
+ * a completed (skipped-not-error) run, so the scheduler records a normal
+ * row with cost populated instead of an error row with NULL cost, and the
+ * next tick retries with fresh context.
+ */
+function skippedEmptyResponseResult(startedAt: number): AgentRunResult {
+  return {
+    sessionId: "",
+    result:
+      `Skipped: upstream returned an empty response (no assistant turn) twice after a ` +
+      `${Math.round(EMPTY_FIRST_RESPONSE_BACKOFF_MS / 1000)}s backoff — transient backend window, ` +
+      `not a job failure. The next scheduled run continues automatically.`,
+    costUsd: 0,
+    durationMs: Date.now() - startedAt,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    contextWindow: 0,
+    promptTokens: 0,
+    numTurns: 0,
+    stopReason: "error",
+    deliveredViaTool: false,
+  };
+}
 
 function toolInputSummary(input?: Record<string, unknown>): string | null {
   if (!input) return null;
@@ -48,6 +109,8 @@ export class AgentService {
   private memory: MemorySystem;
   private deps: AgentServiceDeps;
   private activeQueries = new Map<string, { interrupt: () => Promise<void> }>();
+  /** Runs the user stopped through interrupt(). They end as a partial reply, not an error. */
+  private userStoppedRuns = new Set<string>();
   private _keepAlive: (() => void) | null = null;
   private _pendingRestart = false;
 
@@ -150,9 +213,10 @@ export class AgentService {
   }
 
   /** Create fresh MCP servers for each run to avoid transport conflicts. */
-  private createMcpServers(chatContext?: AgentRunOptions["chatContext"]) {
+  private createMcpServers(chatContext?: AgentRunOptions["chatContext"], runContext?: { source: string; sourceId?: string }) {
     const toolBundle = createAgentTools(this.deps);
     toolBundle.setChatContext(chatContext);
+    toolBundle.setRunContext(runContext);
     return {
       toolBundle,
       servers: {
@@ -212,8 +276,24 @@ export class AgentService {
       ];
     }
 
-    const primaryBackend = options.backend ?? (config.DEFAULT_BACKEND as "claude" | "glm");
+    let primaryBackend = options.backend ?? (config.DEFAULT_BACKEND as "claude" | "glm");
     const primaryModel = options.model ?? config.DEFAULT_MODEL;
+
+    // Backend/model coherence guard. jobs.backend DEFAULTs to 'claude', so any
+    // job created without an explicit backend runs the GLM default model on the
+    // Claude backend — the provider rejects the id ("There's an issue with the
+    // selected model … may not exist") and, before the model-unavailable gate,
+    // the run recorded that error as a SUCCESSFUL result (job #85, 2026-09-22).
+    // When the model id itself is unambiguous, it wins over the configured
+    // backend. Bare aliases ("haiku"/"sonnet"/"opus") stay put — they map
+    // correctly on either backend via the env overrides.
+    if (/^glm-/i.test(primaryModel) && primaryBackend === "claude") {
+      log.warn("Model/backend mismatch: routing GLM model id to glm backend", { model: primaryModel });
+      primaryBackend = "glm";
+    } else if (/^claude-/i.test(primaryModel) && primaryBackend === "glm") {
+      log.warn("Model/backend mismatch: routing Claude model id to claude backend", { model: primaryModel });
+      primaryBackend = "claude";
+    }
 
     // Resolve the "family" (primary tier) and its fallback model per backend.
     // Uses short aliases so GLM env-overrides map them to the right concrete IDs.
@@ -260,8 +340,51 @@ export class AgentService {
     ];
   }
 
+  /**
+   * Run one fallback tier. An empty first response (upstream returned a
+   * user-role result with no assistant turn — see isEmptyFirstResponseError)
+   * is transient: retry the SAME tier once after a short backoff; if the
+   * window persists, return a skipped result instead of throwing so the
+   * scheduler records a completed run rather than an error row. Non-empty
+   * errors and resumed sessions (retrying would duplicate the persisted
+   * user turn) keep the old throw behavior.
+   */
+  private async runTier(
+    options: AgentRunOptions,
+    tier: { backend: "claude" | "glm"; model: string },
+    tierIdx: number,
+    totalTiers: number,
+    startedAt: number,
+  ): Promise<{ skipped: boolean; result: AgentRunResult }> {
+    try {
+      return { skipped: false, result: await this.runOnce({ ...options, model: tier.model, backend: tier.backend }) };
+    } catch (err) {
+      if (!isEmptyFirstResponseError(err) || options.sessionId) throw err;
+      log.warn("Empty first response — transient upstream window, retrying same tier after backoff", {
+        tier: tierIdx + 1,
+        totalTiers,
+        backend: tier.backend,
+        model: tier.model,
+        backoffMs: EMPTY_FIRST_RESPONSE_BACKOFF_MS,
+      });
+      await Bun.sleep(EMPTY_FIRST_RESPONSE_BACKOFF_MS);
+      try {
+        return { skipped: false, result: await this.runOnce({ ...options, model: tier.model, backend: tier.backend }) };
+      } catch (err2) {
+        if (!isEmptyFirstResponseError(err2)) throw err2;
+        log.warn("Empty first response persisted after retry — returning skipped result", {
+          tier: tierIdx + 1,
+          backend: tier.backend,
+          model: tier.model,
+        });
+        return { skipped: true, result: skippedEmptyResponseResult(startedAt) };
+      }
+    }
+  }
+
   async run(options: AgentRunOptions): Promise<AgentRunResult> {
     const tiers = this.buildFallbackTiers(options);
+    const startedAt = Date.now(); // wall clock for skipped-result durationMs
     let lastResult: AgentRunResult | null = null;
 
     for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
@@ -274,11 +397,9 @@ export class AgentService {
         attempt: tier.attempt,
       });
 
-      const result = await this.runOnce({
-        ...options,
-        model: tier.model,
-        backend: tier.backend,
-      });
+      const tierOutcome = await this.runTier(options, tier, tierIdx, tiers.length, startedAt);
+      if (tierOutcome.skipped) return tierOutcome.result; // terminal: window persists, next tick retries fresh
+      const result = tierOutcome.result;
       lastResult = result;
 
       // Advance on two signals:
@@ -516,7 +637,6 @@ export class AgentService {
     const runId = crypto.randomUUID();
     const FIRST_RESPONSE_TIMEOUT_MS = 90 * 1000; // 90s to get first assistant message before treating run as stuck
     const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes with no messages = stale (after first response)
-    const TOOL_STALE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes during tool execution
     const MAX_LOOP_MESSAGES = maxTurns * 5; // Hard ceiling on total messages in the loop
 
     log.info("Starting agent run", {
@@ -558,11 +678,15 @@ export class AgentService {
           ANTHROPIC_DEFAULT_HAIKU_MODEL: config.GLM_HAIKU_MODEL,
           ANTHROPIC_DEFAULT_SONNET_MODEL: config.GLM_SONNET_MODEL,
           ANTHROPIC_DEFAULT_OPUS_MODEL: config.GLM_OPUS_MODEL,
+          ...GLM_CLI_ENV,
         }
       : undefined;
 
     // Create fresh MCP servers for this run (avoids transport conflicts on concurrent runs)
-    const { servers: mcpServers } = this.createMcpServers(options.chatContext);
+    const { servers: mcpServers } = this.createMcpServers(options.chatContext, {
+      source: options.source,
+      sourceId: options.sourceId,
+    });
     if (backend === "glm") {
       Object.assign(mcpServers, getGlmMcpServers());
     }
@@ -599,7 +723,13 @@ export class AgentService {
         maxTurns,
         // Budget enforcement disabled — leave code for reference
         // maxBudgetUsd: maxBudget,
-        settingSources: [],
+        // "project" loads .claude/skills natively (Skill tool + descriptions
+        // in context). This repo has no .claude/settings.json, and CLAUDE.md
+        // only loads with the claude_code systemPrompt preset — so skills are
+        // the only thing this pulls in. Do NOT add "local": settings.local.json
+        // carries enableAllProjectMcpServers, which would boot .mcp.json
+        // servers (chrome-devtools) inside the daemon.
+        settingSources: ["project"],
         ...(options.allowedTools ? { allowedTools: [...options.allowedTools, "Skill"] } : {}),
         mcpServers,
         agents,
@@ -634,6 +764,10 @@ export class AgentService {
     let promptTokens = 0;
     let numTurns = 0;
     let stopReason: StopReason = "unknown";
+    // Visible assistant text streamed so far, one entry per text block. Kept so
+    // a reply the user stops can be saved as the partial text they saw.
+    const streamedText: string[] = [];
+    const partialReply = () => streamedText.join("\n\n").trim();
     let deliveredViaTool = false;
     // Last complete [NOTIFY]...[/NOTIFY] block seen in assistant text during the
     // run. Captured per-message so a brief survives even if a later turn
@@ -690,19 +824,30 @@ export class AgentService {
       for await (const message of agentQuery) {
         awaitingToolResult = false;
         resetStaleTimer();
-        messageCount++;
+        // Only conversational messages count toward the runaway-loop ceiling.
+        // The SDK also streams high-frequency telemetry (system/thinking_tokens
+        // ticks, tool_progress) that can emit 1000+ messages in a few real
+        // turns — counting those tripped the guard on healthy runs.
+        const isTelemetry = message.type === "system" || message.type === "tool_progress";
+        if (!isTelemetry) messageCount++;
         if (messageCount > MAX_LOOP_MESSAGES) {
           log.warn("Message loop exceeded limit, interrupting", { runId, messageCount, maxTurns });
           stopReason = "message_limit";
           await agentQuery.interrupt();
           break;
         }
-        log.info("Message received", { runId, type: message.type, subtype: "subtype" in message ? message.subtype : undefined });
+        const logSubtype = "subtype" in message ? message.subtype : undefined;
+        if (message.type === "system" && logSubtype !== "init") {
+          log.debug("Message received", { runId, type: message.type, subtype: logSubtype });
+        } else {
+          log.info("Message received", { runId, type: message.type, subtype: logSubtype });
+        }
         switch (message.type) {
           case "system":
             if (message.subtype === "init") {
               sessionId = message.session_id;
               log.info("Agent session initialized", { sessionId });
+              options.onSessionStart?.(sessionId);
 
               // Store user message now that we have session ID
               if (!options.sessionId) {
@@ -737,7 +882,10 @@ export class AgentService {
                 if (block.type === "text") {
                   msgText += block.text;
                   const visible = scrubber.feed(block.text);
-                  if (visible) options.onText?.(visible);
+                  if (visible) {
+                    streamedText.push(visible);
+                    options.onText?.(visible);
+                  }
                 } else if (block.type === "tool_use") {
                   hasToolUse = true;
                   const input = block.input as Record<string, unknown> | undefined;
@@ -745,8 +893,11 @@ export class AgentService {
                   if (/telegram_send_/.test(block.name)) deliveredViaTool = true;
                   // Track skills consulted in a user-facing session so the
                   // background review can deterministically verdict them.
-                  if (!options._isBackgroundReview && /skill_view/.test(block.name) && sessionId) {
-                    const viewedName = input?.name;
+                  // Covers both the explicit skill_view MCP tool and the SDK's
+                  // native Skill tool (project skills load natively now).
+                  const isNativeSkill = block.name === "Skill";
+                  if (!options._isBackgroundReview && (isNativeSkill || /skill_view/.test(block.name)) && sessionId) {
+                    const viewedName = isNativeSkill ? input?.skill : input?.name;
                     if (typeof viewedName === "string" && viewedName) {
                       let set = this.viewedSkillsBySession.get(sessionId);
                       if (!set) {
@@ -755,6 +906,15 @@ export class AgentService {
                       }
                       set.add(viewedName);
                     }
+                  }
+                  // Native Skill invocations bypass skill_view's telemetry, so
+                  // feed the lifecycle counters here (view + use — invoking a
+                  // skill IS following its procedure).
+                  if (isNativeSkill && typeof input?.skill === "string") {
+                    try {
+                      bumpView(input.skill);
+                      bumpUse(input.skill);
+                    } catch { /* non-critical */ }
                   }
                   options.onToolUse?.(block.name, input, false);
                   if (sessionId) {
@@ -814,21 +974,39 @@ export class AgentService {
             // Only override stopReason from SDK if we didn't already set it
             // (stale_timeout / message_limit take priority since they're our interrupts)
             if (stopReason === "unknown") {
-              const subtype = message.subtype as string;
-              if (subtype === "end_turn") stopReason = "end_turn";
-              else if (subtype === "max_turns") stopReason = "max_turns";
-              else if (subtype === "budget_exceeded") stopReason = "budget_exceeded";
-              else if (subtype === "interrupted") stopReason = "interrupted";
-              else if (subtype === "error_during_execution" || subtype === "error") stopReason = "error";
-              else stopReason = "end_turn";
+              // Model-unavailable gate: when the upstream rejects the model the
+              // CLI still exits cleanly (subtype success/end_turn) with the error
+              // string as the result. Reclassify as "error" so the fallback
+              // ladder advances (GLM flake → Claude rungs) instead of recording
+              // a "successful" run whose entire output is the error message.
+              if (isModelUnavailableResult(resultText, numTurns)) {
+                log.warn("Reclassified clean-exit model failure as error for fallback ladder", {
+                  runId,
+                  resultPreview: resultText.slice(0, 160),
+                });
+                stopReason = "error";
+              } else {
+                const subtype = message.subtype as string;
+                if (subtype === "end_turn") stopReason = "end_turn";
+                else if (subtype === "max_turns") stopReason = "max_turns";
+                else if (subtype === "budget_exceeded") stopReason = "budget_exceeded";
+                else if (subtype === "interrupted") stopReason = "interrupted";
+                else if (subtype === "error_during_execution" || subtype === "error") stopReason = "error";
+                else stopReason = "end_turn";
+              }
             }
 
-            for (const usage of Object.values(message.modelUsage)) {
+            for (const usage of Object.values(message.modelUsage) as Array<{
+              inputTokens: number;
+              outputTokens: number;
+              cacheReadInputTokens?: number;
+              contextWindow?: number;
+            }>) {
               inputTokens += usage.inputTokens;
               outputTokens += usage.outputTokens;
-              cacheReadTokens += usage.cacheReadInputTokens;
-              if (usage.contextWindow > contextWindow) {
-                contextWindow = usage.contextWindow;
+              cacheReadTokens += usage.cacheReadInputTokens ?? 0;
+              if ((usage.contextWindow ?? 0) > contextWindow) {
+                contextWindow = usage.contextWindow!;
               }
             }
 
@@ -850,7 +1028,18 @@ export class AgentService {
       // Flush any held-back partial-tag tail. If the stream ended mid-span,
       // the buffer is dropped (safer than leaking partial recall context).
       const trailing = scrubber.flush();
-      if (trailing) options.onText?.(trailing);
+      if (trailing) {
+        streamedText.push(trailing);
+        options.onText?.(trailing);
+      }
+
+      // A user Stop is final: whatever the SDK reported (often
+      // error_during_execution), record it as interrupted so the fallback
+      // ladder doesn't retry, and keep the partial reply as the result.
+      if (this.userStoppedRuns.has(runId)) {
+        stopReason = "interrupted";
+        if (!resultText.trim()) resultText = partialReply() || STOPPED_BEFORE_REPLY;
+      }
 
       // The result message's `result` field is the model's final assembled
       // response — sanitize once in case the model echoed a complete fence
@@ -892,6 +1081,7 @@ export class AgentService {
         source_id: options.sourceId,
         cost_usd: totalCost,
         duration_ms: durationMs,
+        stop_reason: this.userStoppedRuns.has(runId) ? "interrupted" : null,
       });
 
       // Update session record
@@ -927,29 +1117,45 @@ export class AgentService {
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
 
+      // The user pressed Stop: the SDK usually ends an interrupted query by
+      // throwing. That is not a failure — keep what was said so far and return
+      // it as an interrupted reply (handled by the branch below).
+      const stoppedByUser = this.userStoppedRuns.has(runId);
+      if (stoppedByUser) {
+        log.info("Agent run stopped by user", { runId, error: errMessage });
+        stopReason = "interrupted";
+        if (!resultText.trim()) resultText = partialReply() || STOPPED_BEFORE_REPLY;
+      }
+
       // If we already received a valid result, this is a post-result CLI crash
       // (e.g., "Claude Code process exited with code 1" during shutdown).
       // Return the successful result instead of throwing.
       if (resultText.trim() && stopReason !== "unknown") {
-        log.warn("Post-result CLI error (returning successful result)", { runId, error: errMessage, stopReason });
+        if (!stoppedByUser) {
+          log.warn("Post-result CLI error (returning successful result)", { runId, error: errMessage, stopReason });
+        }
 
-        insertChatMessage({
-          session_id: sessionId,
-          role: "assistant",
-          content: resultText,
-          source: persistSource,
-          source_id: options.sourceId,
-          cost_usd: totalCost,
-          duration_ms: durationMs,
-        });
+        // A run stopped before the SDK reported a session has nowhere to save.
+        if (sessionId) {
+          insertChatMessage({
+            session_id: sessionId,
+            role: "assistant",
+            content: resultText,
+            source: persistSource,
+            source_id: options.sourceId,
+            cost_usd: totalCost,
+            duration_ms: durationMs,
+            stop_reason: stoppedByUser ? "interrupted" : null,
+          });
 
-        upsertSession({
-          session_id: sessionId,
-          source: options.source,
-          source_id: options.sourceId,
-          model,
-          cost_usd: totalCost,
-        });
+          upsertSession({
+            session_id: sessionId,
+            source: options.source,
+            source_id: options.sourceId,
+            model,
+            cost_usd: totalCost,
+          });
+        }
 
         const result: AgentRunResult = {
           sessionId,
@@ -994,12 +1200,17 @@ export class AgentService {
       if (staleTimer) clearTimeout(staleTimer);
       this._keepAlive = null;
       this.activeQueries.delete(runId);
+      this.userStoppedRuns.delete(runId);
     }
   }
 
+  /** Stop a live run on the user's behalf. The run then resolves (it does not
+   *  throw) with stopReason "interrupted" and the partial reply, which is saved
+   *  to the session with chat_messages.stop_reason = "interrupted". */
   async interrupt(runId: string): Promise<void> {
     const q = this.activeQueries.get(runId);
     if (q) {
+      this.userStoppedRuns.add(runId);
       await q.interrupt();
       this.activeQueries.delete(runId);
     }
