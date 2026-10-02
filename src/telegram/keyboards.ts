@@ -16,7 +16,10 @@ import {
   dismissReminder,
   snoozeReminder,
   getJobRun,
+  getJobConfigHistory,
+  recordSentMessage,
 } from "../db/queries.ts";
+import type { Job } from "../shared/types.ts";
 import { escapeMarkdownV2 } from "./format.ts";
 import { createLogger } from "../shared/logger.ts";
 import {
@@ -112,7 +115,22 @@ export function confirmDeleteKeyboard(jobId: number): InlineKeyboard {
     .text("Cancel", "cx");
 }
 
+/**
+ * Reminder action keyboard — collapsed by default into a single button.
+ * Tapping it expands to reveal PAID/SKIP, snooze intervals, and MORE.
+ * Mirrors the brief keyboard (bfx) expand/collapse convention so stacked
+ * reminders don't fill the chat with two rows of green buttons each.
+ */
 export function briefingActionKeyboard(reminderId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("▾ Options", `bx:${reminderId}`);
+}
+
+/**
+ * Expanded reminder keyboard — full action set + collapse toggle.
+ * The collapse button reuses the same `bx:<id>` callback as expand.
+ */
+export function briefingActionKeyboardExpanded(reminderId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text("PAID", `bp:${reminderId}`)
     .text("SKIP", `bs:${reminderId}`)
@@ -121,15 +139,24 @@ export function briefingActionKeyboard(reminderId: number): InlineKeyboard {
     .text("4h", `bz:${reminderId}:4`)
     .text("24h", `bz:${reminderId}:24`)
     .row()
-    .text("MORE", `bm:${reminderId}`);
+    .text("MORE", `bm:${reminderId}`)
+    .row()
+    .text("▴ Collapse", `bx:${reminderId}`);
 }
 
 /**
- * Morning Brief keyboard — section-specific drill-down buttons.
- * Each section button spawns an agent conversation about that topic.
- * The "Reply" button starts a general conversation about the brief.
+ * Morning Brief keyboard — collapsed by default into a single button.
+ * Tapping it expands to reveal all section drill-down buttons.
  */
 export function briefKeyboard(jobRunId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("▾ Brief actions", `bfx:${jobRunId}`);
+}
+
+/**
+ * Expanded brief keyboard — all section buttons + collapse.
+ */
+export function briefKeyboardExpanded(jobRunId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text("Markets", `bf:${jobRunId}:markets`)
     .text("Calendar", `bf:${jobRunId}:calendar`)
@@ -139,7 +166,39 @@ export function briefKeyboard(jobRunId: number): InlineKeyboard {
     .text("Tasks", `bf:${jobRunId}:tasks`)
     .text("Actions", `bf:${jobRunId}:actions`)
     .row()
-    .text("Reply", `bfr:${jobRunId}`);
+    .text("Reply", `bfr:${jobRunId}`)
+    .row()
+    .text("▴ Collapse", `bfx:${jobRunId}`);
+}
+
+/**
+ * Job actions keyboard — attached (collapsed) to every non-brief job
+ * notification so any job result can be configured in place: pause, skip,
+ * silence, or inspect its config history. Mirrors the brief keyboard's
+ * collapse pattern. Actions taken here are audited in job_config_history
+ * with changed_by='user'.
+ */
+export function jobActionsKeyboard(jobId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("▾ Job actions", `jax:${jobId}`);
+}
+
+function isJobPaused(job: Job): boolean {
+  if (!job.paused_until) return false;
+  const until = new Date(job.paused_until.endsWith("Z") ? job.paused_until : job.paused_until + "Z");
+  return until > new Date();
+}
+
+export function jobActionsKeyboardExpanded(job: Job): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(isJobPaused(job) ? "Resume" : "Pause 24h", `jnp:${job.id}`)
+    .text("Skip next", `jns:${job.id}`)
+    .row()
+    .text(job.notify_policy === "silent" ? "Unsilence" : "Silence", `jnq:${job.id}`)
+    .text("History", `jnh:${job.id}`)
+    .text("Run now", `jr:${job.id}`)
+    .row()
+    .text("▴ Collapse", `jax:${job.id}`);
 }
 
 function callbackByteLength(data: string): number {
@@ -707,11 +766,11 @@ export function createCallbackHandler(deps: CallbackDeps) {
           }
           const isPaused = job.paused_until && new Date(job.paused_until.endsWith("Z") ? job.paused_until : job.paused_until + "Z") > new Date();
           if (isPaused) {
-            updateJob(jobId, { paused_until: null });
+            updateJob(jobId, { paused_until: null }, { by: "user", reason: "job-list button" });
             await ctx.answerCallbackQuery({ text: `Job "${job.name}" unpaused` });
           } else {
             const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
-            updateJob(jobId, { paused_until: until });
+            updateJob(jobId, { paused_until: until }, { by: "user", reason: "job-list button" });
             await ctx.answerCallbackQuery({ text: `Job "${job.name}" paused 24h` });
           }
           // Refresh the job list keyboard
@@ -731,7 +790,7 @@ export function createCallbackHandler(deps: CallbackDeps) {
             return;
           }
           const newStatus = job.status === "enabled" ? "disabled" : "enabled";
-          updateJob(jobId, { status: newStatus as "enabled" | "disabled" });
+          updateJob(jobId, { status: newStatus as "enabled" | "disabled" }, { by: "user", reason: "job-list button" });
           scheduler.reload();
           await ctx.answerCallbackQuery({ text: `Job "${job.name}" ${newStatus}` });
           // Refresh keyboard
@@ -767,6 +826,139 @@ export function createCallbackHandler(deps: CallbackDeps) {
           scheduler.reload();
           await ctx.answerCallbackQuery({ text: `Job "${job.name}" deleted` });
           await ctx.editMessageText(escapeMarkdownV2("Job deleted."), MD2).catch(() => {});
+          break;
+        }
+
+        case "jax": {
+          // Job actions expand/collapse toggle (on job notification messages).
+          // Preserves any trailing URL row (the "Open in app" deep link).
+          const jobId = parseInt(payload, 10);
+          const job = getJob(jobId);
+          if (!job) {
+            await ctx.answerCallbackQuery({ text: "Job not found" });
+            return;
+          }
+          const current = ctx.callbackQuery?.message;
+          const hasCollapse = current?.reply_markup?.inline_keyboard?.some(row =>
+            row.some(btn => btn.text.includes("Collapse"))
+          );
+          const urlRows = (current?.reply_markup?.inline_keyboard ?? []).filter(row =>
+            row.some(btn => "url" in btn)
+          );
+          await ctx.answerCallbackQuery({});
+          const markup = hasCollapse ? jobActionsKeyboard(jobId) : jobActionsKeyboardExpanded(job);
+          for (const row of urlRows) {
+            markup.row();
+            for (const btn of row) {
+              if ("url" in btn && btn.url) markup.url(btn.text, btn.url);
+            }
+          }
+          await ctx.editMessageReplyMarkup({ reply_markup: markup }).catch(() => {});
+          break;
+        }
+
+        case "jnp": {
+          // Pause 24h / resume from a job notification — audited as user action
+          const jobId = parseInt(payload, 10);
+          const job = getJob(jobId);
+          if (!job) {
+            await ctx.answerCallbackQuery({ text: "Job not found" });
+            return;
+          }
+          if (isJobPaused(job)) {
+            updateJob(jobId, { paused_until: null }, { by: "user", reason: "job-actions button" });
+            await ctx.answerCallbackQuery({ text: `Job "${job.name}" resumed` });
+          } else {
+            const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+            updateJob(jobId, { paused_until: until }, { by: "user", reason: "job-actions button" });
+            await ctx.answerCallbackQuery({ text: `Job "${job.name}" paused 24h` });
+          }
+          const refreshed = getJob(jobId);
+          if (refreshed) {
+            await ctx.editMessageReplyMarkup({ reply_markup: jobActionsKeyboardExpanded(refreshed) }).catch(() => {});
+          }
+          break;
+        }
+
+        case "jns": {
+          // Skip the next scheduled run — audited as user action
+          const jobId = parseInt(payload, 10);
+          const job = getJob(jobId);
+          if (!job) {
+            await ctx.answerCallbackQuery({ text: "Job not found" });
+            return;
+          }
+          const skips = (job.skip_runs ?? 0) + 1;
+          updateJob(jobId, { skip_runs: skips }, { by: "user", reason: "job-actions button" });
+          await ctx.answerCallbackQuery({ text: `Will skip next run (${skips} queued)` });
+          break;
+        }
+
+        case "jnq": {
+          // Silence / unsilence job notifications — audited as user action.
+          // Unsilence restores the default policy chain (job NULL → agent → global).
+          const jobId = parseInt(payload, 10);
+          const job = getJob(jobId);
+          if (!job) {
+            await ctx.answerCallbackQuery({ text: "Job not found" });
+            return;
+          }
+          const silencing = job.notify_policy !== "silent";
+          updateJob(jobId, { notify_policy: silencing ? "silent" : null }, { by: "user", reason: "job-actions button" });
+          await ctx.answerCallbackQuery({ text: silencing ? `Job "${job.name}" silenced` : `Job "${job.name}" unsilenced` });
+          const refreshed = getJob(jobId);
+          if (refreshed) {
+            await ctx.editMessageReplyMarkup({ reply_markup: jobActionsKeyboardExpanded(refreshed) }).catch(() => {});
+          }
+          break;
+        }
+
+        case "jnh": {
+          // Show recent config history for the job as a reply in the same thread
+          const jobId = parseInt(payload, 10);
+          const job = getJob(jobId);
+          if (!job) {
+            await ctx.answerCallbackQuery({ text: "Job not found" });
+            return;
+          }
+          const history = getJobConfigHistory(jobId, 8);
+          await ctx.answerCallbackQuery({});
+          const short = (v: unknown): string => {
+            const s = v === null || v === undefined ? "∅" : String(v);
+            return s.length > 60 ? s.slice(0, 60) + "…" : s;
+          };
+          const lines = history.length === 0
+            ? [`No recorded config changes for "${job.name}" (#${jobId}).`]
+            : [
+                `Config history — "${job.name}" (#${jobId}):`,
+                ...history.map((h) => {
+                  let fields = "?";
+                  try {
+                    const changes = JSON.parse(h.changes) as Record<string, { from: unknown; to: unknown }>;
+                    fields = Object.entries(changes)
+                      .map(([k, c]) => `${k}: ${short(c.from)} → ${short(c.to)}`)
+                      .join("; ");
+                  } catch { /* keep "?" */ }
+                  const when = h.changed_at.slice(0, 16).replace("T", " ");
+                  return `• ${when} [${h.changed_by}] ${fields}${h.reason ? ` (${h.reason})` : ""}`;
+                }),
+              ];
+          const chatIdForHistory = ctx.chat?.id;
+          if (chatIdForHistory !== undefined) {
+            const threadId = ctx.callbackQuery?.message?.message_thread_id;
+            try {
+              const sent = await ctx.api.sendMessage(chatIdForHistory, lines.join("\n"), {
+                ...(threadId ? { message_thread_id: threadId } : {}),
+              });
+              recordSentMessage(chatIdForHistory, sent.message_id, threadId ?? null, {
+                source: "job-history",
+                jobId,
+                preview: lines[0],
+              });
+            } catch (err) {
+              log.error("Failed to send job history", { jobId, error: String(err) });
+            }
+          }
           break;
         }
 
@@ -819,6 +1011,23 @@ export function createCallbackHandler(deps: CallbackDeps) {
           } else {
             await ctx.answerCallbackQuery({ text: "No additional details" });
           }
+          break;
+        }
+
+        case "bx": {
+          // Reminder keyboard expand/collapse toggle.
+          // Same convention as bfx: inspect the current reply_markup — if any
+          // button text contains "Collapse" we're expanded, so swap to collapsed.
+          const bxId = parseInt(payload, 10);
+          const current = ctx.callbackQuery?.message;
+          const hasCollapse = current?.reply_markup?.inline_keyboard?.some(row =>
+            row.some(btn => btn.text.includes("Collapse"))
+          );
+          await ctx.answerCallbackQuery({});
+          const markup = hasCollapse
+            ? briefingActionKeyboard(bxId)
+            : briefingActionKeyboardExpanded(bxId);
+          await ctx.editMessageReplyMarkup({ reply_markup: markup }).catch(() => {});
           break;
         }
 
@@ -934,6 +1143,37 @@ export function createCallbackHandler(deps: CallbackDeps) {
           break;
         }
 
+        case "as": {
+          // Asset digest buttons (src/assets/digest.ts): payload "q|f|x|n:<id>"
+          // = queue, file into the kind's home, dismiss, already handled.
+          const { handleAssetCallback, markRowDone } = await import("../assets/digest.ts");
+          const r = await handleAssetCallback(payload);
+          await ctx.answerCallbackQuery({ text: r.toast, show_alert: !r.ok && !payload.startsWith("n:") });
+          if (r.ok && r.assetId !== null && r.doneLabel) {
+            const rows = ctx.callbackQuery?.message?.reply_markup?.inline_keyboard ?? [];
+            const next = markRowDone(rows as Parameters<typeof markRowDone>[0], r.assetId, r.doneLabel);
+            await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: next as InlineKeyboard["inline_keyboard"] } }).catch(() => {});
+          }
+          break;
+        }
+
+        case "dg": {
+          // Weekly digest buttons (src/digest/buttons.ts): payload
+          // "w|a|s|n:<itemId>:<week>" = watch / archive / snooze / already
+          // handled. One attributed feedback_log row per click (F3/F4 fix).
+          // Dynamic import matches the "as" case's pattern: dispatch stays
+          // lazy so handler modules load only when their button is tapped.
+          const { handleDigestCallback, markDigestRowDone } = await import("../digest/buttons.ts");
+          const dg = handleDigestCallback(payload);
+          await ctx.answerCallbackQuery({ text: dg.toast, show_alert: !dg.ok && !payload.startsWith("n:") });
+          if (dg.ok && dg.itemId !== null && dg.doneLabel) {
+            const rows = ctx.callbackQuery?.message?.reply_markup?.inline_keyboard ?? [];
+            const next = markDigestRowDone(rows as Parameters<typeof markDigestRowDone>[0], dg.itemId, dg.doneLabel);
+            await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: next as InlineKeyboard["inline_keyboard"] } }).catch(() => {});
+          }
+          break;
+        }
+
         case "fr":
         case "fs":
         case "fc": {
@@ -965,6 +1205,21 @@ export function createCallbackHandler(deps: CallbackDeps) {
             user_action: sub,
             signal_snapshot: JSON.stringify({ candidateId }),
           });
+          break;
+        }
+
+        case "bfx": {
+          // Brief keyboard expand/collapse toggle
+          const bfxJobRunId = parseInt(payload, 10) || 0;
+          const current = ctx.callbackQuery?.message;
+          const hasCollapse = current?.reply_markup?.inline_keyboard?.some(row =>
+            row.some(btn => btn.text.includes("Collapse"))
+          );
+          await ctx.answerCallbackQuery({});
+          const markup = hasCollapse
+            ? briefKeyboard(bfxJobRunId)
+            : briefKeyboardExpanded(bfxJobRunId);
+          await ctx.editMessageReplyMarkup({ reply_markup: markup }).catch(() => {});
           break;
         }
 

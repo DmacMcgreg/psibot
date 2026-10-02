@@ -4,6 +4,7 @@ import {
   syncAtlasForTradingSignal,
 } from "../atlas/sync.ts";
 import { INBOX_SURFACEABLE_SQL } from "../shared/surface-policy.ts";
+import { publishedAtFromUrl } from "../shared/published-date.ts";
 import type {
   ChatMessage,
   AgentSession,
@@ -26,12 +27,17 @@ import type {
   FeedbackLogEntry,
   AutonomyRule,
   AutonomyLevel,
+  SentMessage,
+  SentMessageSource,
+  JobConfigChange,
   TradingSignal,
   TradingSignalDirection,
   SignalCluster,
   Agent,
   AgentNotifyPolicy,
   AgentBackend,
+  NoteplanArchive,
+  NoteplanSourceKind,
 } from "../shared/types.ts";
 
 // --- Fleet State ---
@@ -62,12 +68,14 @@ export function insertChatMessage(params: {
   source_id?: string | null;
   cost_usd?: number | null;
   duration_ms?: number | null;
+  /** Only for a reply that ended early, e.g. "interrupted" when the user pressed Stop. */
+  stop_reason?: string | null;
 }): ChatMessage {
   const db = getDb();
   const row = db
-    .prepare<ChatMessage, [string, string, string, string, string | null, number | null, number | null]>(
-      `INSERT INTO chat_messages (session_id, role, content, source, source_id, cost_usd, duration_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+    .prepare<ChatMessage, [string, string, string, string, string | null, number | null, number | null, string | null]>(
+      `INSERT INTO chat_messages (session_id, role, content, source, source_id, cost_usd, duration_ms, stop_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`
     )
     .get(
@@ -77,7 +85,8 @@ export function insertChatMessage(params: {
       params.source,
       params.source_id ?? null,
       params.cost_usd ?? null,
-      params.duration_ms ?? null
+      params.duration_ms ?? null,
+      params.stop_reason ?? null
     )!;
 
   // Sync into chat_messages_fts (contentless FTS5 — rowid = chat_messages.id).
@@ -356,11 +365,19 @@ export function updateJob(
       | "output_template"
       | "last_output_hash"
     >
-  >
+  >,
+  audit?: { by?: "agent" | "user" | "web" | "system"; reason?: string }
 ): void {
   const db = getDb();
   const sets: string[] = [];
   const values: (string | number | null)[] = [];
+
+  // Runtime bookkeeping — excluded from the config-history audit trail.
+  const AUDIT_EXCLUDED = new Set(["last_run_at", "next_run_at", "last_output_hash"]);
+  const auditedKeys = Object.keys(params).filter(
+    (k) => (params as Record<string, unknown>)[k] !== undefined && !AUDIT_EXCLUDED.has(k)
+  );
+  const before = auditedKeys.length > 0 ? getJob(id) : null;
 
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) {
@@ -375,11 +392,107 @@ export function updateJob(
   values.push(id);
 
   db.prepare(`UPDATE jobs SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+
+  // Config-history audit — must never block or fail the update itself.
+  if (before) {
+    try {
+      const truncate = (v: unknown): unknown =>
+        typeof v === "string" && v.length > 500 ? v.slice(0, 500) + `… [${v.length} chars]` : v;
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
+      for (const k of auditedKeys) {
+        const from = (before as unknown as Record<string, unknown>)[k] ?? null;
+        const raw = (params as Record<string, unknown>)[k];
+        const to = k === "use_browser" ? (raw ? 1 : 0) : (raw ?? null);
+        if (from !== to) changes[k] = { from: truncate(from), to: truncate(to) };
+      }
+      if (Object.keys(changes).length > 0) {
+        db.prepare(
+          `INSERT INTO job_config_history (job_id, changed_by, changes, reason) VALUES (?, ?, ?, ?)`
+        ).run(id, audit?.by ?? "system", JSON.stringify(changes), audit?.reason ?? null);
+      }
+    } catch {
+      // audit failure is not an update failure
+    }
+  }
+}
+
+export function getJobConfigHistory(jobId: number, limit: number = 20): JobConfigChange[] {
+  const db = getDb();
+  return db
+    .prepare<JobConfigChange, [number, number]>(
+      `SELECT * FROM job_config_history WHERE job_id = ? ORDER BY changed_at DESC, id DESC LIMIT ?`
+    )
+    .all(jobId, limit);
 }
 
 export function deleteJob(id: number): void {
   const db = getDb();
   db.prepare(`DELETE FROM jobs WHERE id = ?`).run(id);
+}
+
+// --- Sent message provenance ---
+
+export interface SentMessageMeta {
+  source: SentMessageSource;
+  jobId?: number | null;
+  runId?: number | null;
+  itemId?: number | null;
+  sessionId?: string | null;
+  /** First ~200 chars of the message text, for human-readable lookups. */
+  preview?: string | null;
+}
+
+/**
+ * Record which code path sent an outbound Telegram message. MUST never throw —
+ * provenance is best-effort bookkeeping and can never be allowed to break a
+ * send. Callers pass the Telegram API result's message_id.
+ */
+export function recordSentMessage(
+  chatId: string | number,
+  messageId: number,
+  topicId: number | null | undefined,
+  meta: SentMessageMeta
+): void {
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT OR REPLACE INTO sent_messages
+         (chat_id, message_id, topic_id, source, job_id, run_id, item_id, session_id, preview)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      String(chatId),
+      messageId,
+      topicId ?? null,
+      meta.source,
+      meta.jobId ?? null,
+      meta.runId ?? null,
+      meta.itemId ?? null,
+      meta.sessionId ?? null,
+      meta.preview ? meta.preview.slice(0, 200) : null
+    );
+  } catch {
+    // best-effort only
+  }
+}
+
+export function getSentMessage(chatId: string | number, messageId: number): SentMessage | null {
+  const db = getDb();
+  return (
+    db
+      .prepare<SentMessage, [string, number]>(
+        `SELECT * FROM sent_messages WHERE chat_id = ? AND message_id = ?`
+      )
+      .get(String(chatId), messageId) ?? null
+  );
+}
+
+export function listRecentSentMessages(limit: number = 20): SentMessage[] {
+  const db = getDb();
+  return db
+    .prepare<SentMessage, [number]>(
+      `SELECT * FROM sent_messages ORDER BY sent_at DESC, id DESC LIMIT ?`
+    )
+    .all(limit);
 }
 
 // --- Job Runs ---
@@ -433,6 +546,123 @@ export function getJobRuns(jobId: number, limit: number = 20): JobRun[] {
       `SELECT * FROM job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT ?`
     )
     .all(jobId, limit);
+}
+
+/**
+ * Close out `job_runs` rows left in "running" by a process that died mid-run
+ * (daemon restart or crash). The status CHECK has no "abandoned" value, so they
+ * become "error" with an error text starting with `errorPrefix`; the executor's
+ * failure streak ignores those (see scheduler/watchdog.ts). Returns the count.
+ */
+export function abandonStaleJobRuns(olderThanHours: number, errorPrefix: string): number {
+  const db = getDb();
+  const res = db
+    .prepare(
+      `UPDATE job_runs
+         SET status = 'error',
+             error = ? || COALESCE(': ' || error, ''),
+             completed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE status = 'running'
+         AND julianday(started_at) < julianday('now', ?)`
+    )
+    .run(
+      `${errorPrefix} — still "running" after ${olderThanHours}h; the daemon restarted or crashed mid-run`,
+      `-${olderThanHours} hours`,
+    );
+  return res.changes;
+}
+
+/**
+ * When a job last went from "failed" back to "enabled" (dashboard toggle,
+ * job_update tool, or the scheduler's daily retry), from job_config_history.
+ * The executor's failure streak only counts runs after this moment, so a
+ * re-enabled job gets a fresh CRON_FAILURE_STREAK tries. Null if never.
+ */
+export function getLastReenabledAt(jobId: number): string | null {
+  const row = getDb()
+    .prepare<{ changed_at: string }, [number]>(
+      `SELECT changed_at FROM job_config_history
+        WHERE job_id = ?
+          AND json_valid(changes)
+          AND json_extract(changes, '$.status.from') = 'failed'
+          AND json_extract(changes, '$.status.to') = 'enabled'
+        ORDER BY changed_at DESC, id DESC
+        LIMIT 1`,
+    )
+    .get(jobId);
+  return row?.changed_at ?? null;
+}
+
+/**
+ * When a job's status last changed to "enabled" (from anything), per
+ * job_config_history. The scheduler's overdue check measures missed fire
+ * times from here, so a job enabled today isn't "overdue" for the months it
+ * was disabled. Null if never recorded (e.g. a direct DB write).
+ */
+export function getLastEnabledAt(jobId: number): string | null {
+  const row = getDb()
+    .prepare<{ changed_at: string }, [number]>(
+      `SELECT changed_at FROM job_config_history
+        WHERE job_id = ?
+          AND json_valid(changes)
+          AND json_extract(changes, '$.status.to') = 'enabled'
+        ORDER BY changed_at DESC, id DESC
+        LIMIT 1`,
+    )
+    .get(jobId);
+  return row?.changed_at ?? null;
+}
+
+// --- Ops state (key/value; see src/shared/ops-alerts.ts) ---
+
+export function getOpsState(key: string): string | null {
+  const row = getDb()
+    .prepare<{ value: string }, [string]>(`SELECT value FROM ops_state WHERE key = ?`)
+    .get(key);
+  return row?.value ?? null;
+}
+
+export function setOpsState(key: string, value: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO ops_state (key, value, updated_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    )
+    .run(key, value);
+}
+
+export function deleteOpsState(key: string): void {
+  getDb().prepare(`DELETE FROM ops_state WHERE key = ?`).run(key);
+}
+
+// --- Research queue upkeep ---
+
+/**
+ * Put research left "running" by a dead process back in the queue. Research
+ * runs in-process (HeartbeatRunner's research phase), so at daemon start any
+ * *_research_running row is an orphan from a restart or crash mid-research.
+ * Also maps the legacy `research_requested` state (the old Telegram Research
+ * button, before it queued directly) to quick research, which nothing else
+ * reads. Returns how many rows moved.
+ */
+export function requeueOrphanedResearch(): { running: number; legacy: number } {
+  const db = getDb();
+  const running = db
+    .prepare(
+      `UPDATE pending_items
+          SET auto_decision = CASE auto_decision
+                WHEN 'deep_research_running' THEN 'deep_research_queued'
+                ELSE 'quick_research_queued' END
+        WHERE auto_decision IN ('deep_research_running', 'quick_research_running')`,
+    )
+    .run().changes;
+  const legacy = db
+    .prepare(
+      `UPDATE pending_items SET auto_decision = 'quick_research_queued'
+        WHERE auto_decision = 'research_requested'`,
+    )
+    .run().changes;
+  return { running, legacy };
 }
 
 export function getRecentRuns(limit: number = 50): JobRun[] {
@@ -895,15 +1125,18 @@ export function insertPendingItem(params: {
   platform?: string | null;
   profile?: string | null;
   captured_at?: string | null;
+  /** When the content first came out (e.g. Reddit post time), if known. */
+  published_at?: string | null;
 }): PendingItem | null {
   const db = getDb();
   const row = db
-    .prepare<PendingItem, [string, string | null, string | null, string, string | null, string | null, string | null]>(
-      `INSERT INTO pending_items (url, title, description, source, platform, profile, captured_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+    .prepare<PendingItem, [string, string | null, string | null, string, string | null, string | null, string | null, string | null]>(
+      `INSERT INTO pending_items (url, title, description, source, platform, profile, captured_at, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(url) DO UPDATE SET
          title = COALESCE(excluded.title, pending_items.title),
-         description = COALESCE(excluded.description, pending_items.description)
+         description = COALESCE(excluded.description, pending_items.description),
+         published_at = COALESCE(pending_items.published_at, excluded.published_at)
        RETURNING *`
     )
     .get(
@@ -913,7 +1146,9 @@ export function insertPendingItem(params: {
       params.source ?? "manual",
       params.platform ?? null,
       params.profile ?? null,
-      params.captured_at ?? new Date().toISOString()
+      params.captured_at ?? new Date().toISOString(),
+      // URL-encoded times (X/Twitter status IDs) need no fetch.
+      params.published_at ?? publishedAtFromUrl(params.url)?.publishedAt ?? null
     );
   syncAtlasForPendingItem(row);
   return row;
@@ -955,7 +1190,7 @@ export function getPendingItemByUrl(url: string): PendingItem | null {
 
 export function updatePendingItem(
   id: number,
-  params: Partial<Pick<PendingItem, "status" | "priority" | "category" | "triage_summary" | "noteplan_path" | "title" | "description" | "quick_scan_summary" | "theme_id" | "relevance_window" | "watch_status" | "auto_decision" | "signal_score" | "value_type" | "extracted_value" | "surfaced_at">>
+  params: Partial<Pick<PendingItem, "status" | "priority" | "category" | "triage_summary" | "noteplan_path" | "title" | "description" | "quick_scan_summary" | "theme_id" | "relevance_window" | "watch_status" | "auto_decision" | "signal_score" | "value_type" | "extracted_value" | "surfaced_at" | "published_at">>
 ): void {
   const db = getDb();
   const sets: string[] = [];
@@ -1346,6 +1581,26 @@ export function insertFeedbackLog(params: {
     params.user_action,
     params.signal_snapshot ?? null
   );
+}
+
+// --- Research-note consumption (first open/answer marker) ---
+
+/**
+ * Mark a research note consumed. Returns the timestamp when this call was the
+ * FIRST open/answer, or null when the note was already consumed (the original
+ * timestamp stands) or does not exist. Read receipts never overwrite.
+ */
+export function markResearchNoteConsumed(id: number): string | null {
+  const db = getDb();
+  const row = db
+    .prepare<{ consumed_at: string }, [number]>(
+      `UPDATE research_notes
+          SET consumed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        WHERE id = ? AND consumed_at IS NULL
+        RETURNING consumed_at`
+    )
+    .get(id);
+  return row?.consumed_at ?? null;
 }
 
 export function getFeedbackForSignal(
@@ -1753,4 +2008,123 @@ export function countJobsByAgent(): Map<string, number> {
 export function getJobRun(id: number): JobRun | null {
   const db = getDb();
   return db.prepare<JobRun, [number]>(`SELECT * FROM job_runs WHERE id = ?`).get(id) ?? null;
+}
+
+// --- NotePlan Archive ---
+
+export function insertNoteplanArchive(params: {
+  rel_path: string;
+  folder: string;
+  source_kind: NoteplanSourceKind;
+  title?: string | null;
+  frontmatter?: string | null;
+  tags?: string | null;
+  body: string;
+  raw_size?: number | null;
+  cleaned_size?: number | null;
+  sha256: string;
+  file_mtime?: string | null;
+  captured_at?: string | null;
+  researched_at?: string | null;
+  pending_item_id?: number | null;
+  dedup_related_removed?: number;
+}): NoteplanArchive {
+  const db = getDb();
+  // Idempotent: rel_path is UNIQUE. Re-running replaces the existing row's
+  // content in place (id preserved) so the archive never accumulates dupes.
+  return db
+    .prepare<NoteplanArchive, [string, string, string, string | null, string | null, string | null, string, number | null, number | null, string, string | null, string | null, string | null, number | null, number]>(
+      `INSERT INTO noteplan_archive (
+        rel_path, folder, source_kind, title, frontmatter, tags, body,
+        raw_size, cleaned_size, sha256, file_mtime, captured_at, researched_at,
+        pending_item_id, dedup_related_removed
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(rel_path) DO UPDATE SET
+        folder = excluded.folder,
+        source_kind = excluded.source_kind,
+        title = excluded.title,
+        frontmatter = excluded.frontmatter,
+        tags = excluded.tags,
+        body = excluded.body,
+        raw_size = excluded.raw_size,
+        cleaned_size = excluded.cleaned_size,
+        sha256 = excluded.sha256,
+        file_mtime = excluded.file_mtime,
+        captured_at = excluded.captured_at,
+        researched_at = excluded.researched_at,
+        pending_item_id = excluded.pending_item_id,
+        dedup_related_removed = excluded.dedup_related_removed,
+        archived_at = datetime('now')
+      RETURNING *`
+    )
+    .get(
+      params.rel_path,
+      params.folder,
+      params.source_kind,
+      params.title ?? null,
+      params.frontmatter ?? null,
+      params.tags ?? null,
+      params.body,
+      params.raw_size ?? null,
+      params.cleaned_size ?? null,
+      params.sha256,
+      params.file_mtime ?? null,
+      params.captured_at ?? null,
+      params.researched_at ?? null,
+      params.pending_item_id ?? null,
+      params.dedup_related_removed ?? 0
+    )!;
+}
+
+export function getNoteplanArchiveByPath(relPath: string): NoteplanArchive | null {
+  const db = getDb();
+  return db
+    .prepare<NoteplanArchive, [string]>(
+      `SELECT * FROM noteplan_archive WHERE rel_path = ?`
+    )
+    .get(relPath) ?? null;
+}
+
+export function listNoteplanArchive(
+  kind?: NoteplanSourceKind,
+  limit: number = 50
+): NoteplanArchive[] {
+  const db = getDb();
+  if (kind) {
+    return db
+      .prepare<NoteplanArchive, [string, number]>(
+        `SELECT * FROM noteplan_archive WHERE source_kind = ? ORDER BY file_mtime DESC LIMIT ?`
+      )
+      .all(kind, limit);
+  }
+  return db
+    .prepare<NoteplanArchive, [number]>(
+      `SELECT * FROM noteplan_archive ORDER BY file_mtime DESC LIMIT ?`
+    )
+    .all(limit);
+}
+
+export function searchNoteplanArchive(
+  likePattern: string,
+  limit: number = 50
+): NoteplanArchive[] {
+  const db = getDb();
+  const pattern = `%${likePattern}%`;
+  return db
+    .prepare<NoteplanArchive, [string, string, number]>(
+      `SELECT * FROM noteplan_archive WHERE body LIKE ? OR title LIKE ? ORDER BY file_mtime DESC LIMIT ?`
+    )
+    .all(pattern, pattern, limit);
+}
+
+export function countNoteplanArchive(kind?: NoteplanSourceKind): number {
+  const db = getDb();
+  if (kind) {
+    return (db.prepare<{ cnt: number }, [string]>(
+      `SELECT COUNT(*) as cnt FROM noteplan_archive WHERE source_kind = ?`
+    ).get(kind))?.cnt ?? 0;
+  }
+  return (db.prepare<{ cnt: number }, []>(
+    `SELECT COUNT(*) as cnt FROM noteplan_archive`
+  ).get())?.cnt ?? 0;
 }

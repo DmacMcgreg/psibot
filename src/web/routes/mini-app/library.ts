@@ -31,6 +31,7 @@ import {
   rejectAliasProposal,
   type EntityKind,
 } from "../../../atlas/entities.ts";
+import { markResearchNoteConsumed } from "../../../db/queries.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as pathResolve, join as pathJoin } from "node:path";
 import { type MiniAppEnv, requireIntParam } from "./shared.ts";
@@ -241,6 +242,11 @@ export function registerLibraryRoutes(app: Hono<MiniAppEnv>): void {
     if (id === null) return c.text("Bad id", 400);
     const item = getAtlasItem(id);
     if (!item) return c.text("Item not found", 404);
+    // First-open receipt (value audit F4): opening an item whose body IS a
+    // research write-up marks the underlying note consumed, once, ever.
+    if (item.source_table === "research_notes") {
+      markResearchNoteConsumed(Number(item.source_id));
+    }
     const entities = entitiesForItem(id, 30);
     const backParam = c.req.query("back");
     let backUrl = "/tma/library";

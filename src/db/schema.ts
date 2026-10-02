@@ -718,4 +718,251 @@ export const MIGRATIONS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_discover_feedback_item ON discover_feedback(atlas_item_id)`,
   `CREATE INDEX IF NOT EXISTS idx_discover_feedback_created ON discover_feedback(created_at DESC)`,
+
+  // --- NotePlan content archive ---
+  // Owns the markdown content of the four PsiBot-pipeline NotePlan folders
+  // (Inbox, Research queued/completed, Briefings) plus @Trash, so the files
+  // on disk can later be pruned without losing their content. One row per .md
+  // file. rel_path is relative to the NotePlan Notes/ root and is the stable
+  // identity key. sha256 is the hash of the ORIGINAL raw file bytes (NOT the
+  // cleaned body) so a later deletion step can verify the DB copy against disk.
+  // body is the cleaned markdown (runaway "## Related" duplication collapsed to
+  // the first section). See scripts/archive-noteplan-content.ts.
+  `CREATE TABLE IF NOT EXISTS noteplan_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rel_path TEXT UNIQUE NOT NULL,
+    folder TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('inbox','research_queued','research_completed','briefing','trash')),
+    title TEXT,
+    frontmatter TEXT,
+    tags TEXT,
+    body TEXT NOT NULL,
+    raw_size INTEGER,
+    cleaned_size INTEGER,
+    sha256 TEXT NOT NULL,
+    file_mtime TEXT,
+    captured_at TEXT,
+    researched_at TEXT,
+    pending_item_id INTEGER REFERENCES pending_items(id),
+    dedup_related_removed INTEGER DEFAULT 0,
+    archived_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_noteplan_archive_kind ON noteplan_archive(source_kind)`,
+  `CREATE INDEX IF NOT EXISTS idx_noteplan_archive_mtime ON noteplan_archive(file_mtime)`,
+
+  // --- Research write-ups ---
+  // Replaces NotePlan "70 - Research/completed" notes (2026-09-25). Read in the
+  // vivaldi-home /library page; older write-ups live in noteplan_archive.
+  `CREATE TABLE IF NOT EXISTS research_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER REFERENCES pending_items(id),
+    depth TEXT NOT NULL DEFAULT 'deep' CHECK(depth IN ('quick','deep')),
+    title TEXT NOT NULL,
+    url TEXT,
+    summary TEXT,
+    markdown TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_research_notes_item ON research_notes(item_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_research_notes_created ON research_notes(created_at DESC)`,
+
+  // --- Message provenance ---
+  // One row per outbound Telegram notification, recording WHICH code path sent
+  // it (job-wrapper, heartbeat-digest, heartbeat-backlog, discovery,
+  // agent-tool, ...). Exists so a user reply to any bot message can be traced
+  // to its origin, and so "stop posting these" complaints can be routed to the
+  // governing lever instead of a memory note. See
+  // docs/research/2026-07-22-behavior-regression-analysis.html.
+  `CREATE TABLE IF NOT EXISTS sent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    topic_id INTEGER,
+    source TEXT NOT NULL,
+    job_id INTEGER,
+    run_id INTEGER,
+    item_id INTEGER,
+    session_id TEXT,
+    preview TEXT,
+    sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_messages_chat_msg ON sent_messages(chat_id, message_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_sent_messages_sent_at ON sent_messages(sent_at DESC)`,
+
+  // --- Job config history ---
+  // Field-level audit trail of job configuration changes (who changed what,
+  // when, and why). Written automatically by updateJob() for config fields;
+  // runtime bookkeeping fields (last_run_at, next_run_at, last_output_hash)
+  // are excluded. Long values are truncated — the current full value always
+  // lives in the jobs row.
+  `CREATE TABLE IF NOT EXISTS job_config_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    changed_by TEXT NOT NULL DEFAULT 'system',
+    changes TEXT NOT NULL,
+    reason TEXT,
+    changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_job_config_history_job ON job_config_history(job_id, changed_at DESC)`,
+
+  // --- Library topic categories (Jev taxonomy) ---
+  // One row per library item (video:/research:/archive:/article: keys), filed
+  // down data/relevance/taxonomy.json by src/relevance/categorize.ts. Read by
+  // the vivaldi-home /library page. `path` is the slash-joined node id path.
+  // Keep in sync with CATEGORY_DDL in src/relevance/library.ts.
+  // See docs/plans/2026-09-25-jev-taxonomy.md.
+  `CREATE TABLE IF NOT EXISTS item_categories (
+    item_key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    path TEXT NOT NULL,
+    leaf TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    alt_json TEXT,
+    taxonomy_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_item_categories_path ON item_categories(path)`,
+  // Human "move to category" decisions; always win over the model.
+  `CREATE TABLE IF NOT EXISTS item_category_overrides (
+    item_key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_item_category_overrides_key ON item_category_overrides(item_key, created_at)`,
+
+  // --- Discover: Jev auto-triage ---
+  // One row per unrated Discover item that the Jev auto-triage pass decided on
+  // (src/relevance/discover-triage.ts). DELIBERATELY separate from
+  // discover_feedback: the discovery profile, Jev training labels and the
+  // Discover feed read discover_feedback, and machine decisions must never feed
+  // back into them. vivaldi-home /discover hides 'hide' rows from "New" and
+  // sorts 'pick' rows first; a real rating from David supersedes the row.
+  // Keep in sync with TRIAGE_DDL in src/relevance/discover-triage.ts.
+  `CREATE TABLE IF NOT EXISTS discover_jev_triage (
+    atlas_item_id INTEGER PRIMARY KEY,
+    decision TEXT NOT NULL CHECK(decision IN ('hide','pick','unsure')),
+    p_not REAL,
+    p_interest REAL,
+    p_protected REAL,
+    reason TEXT,
+    model TEXT,
+    run_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_discover_jev_triage_decision ON discover_jev_triage(decision)`,
+  `CREATE INDEX IF NOT EXISTS idx_discover_jev_triage_run ON discover_jev_triage(run_id)`,
+
+  // --- Original publish dates ---
+  // When the content first came out, as opposed to when PsiBot saved it
+  // (created_at / captured_at). NULL = unknown. Videos: YouTube upload time
+  // (yt-dlp on ingest, videos.list for backfill). Pending items: Reddit post
+  // time or GitHub repo creation time. Read by vivaldi-home date filters.
+  // Backfill: scripts/backfill-published-at.ts.
+  `ALTER TABLE youtube_videos ADD COLUMN published_at TEXT`,
+  `ALTER TABLE pending_items ADD COLUMN published_at TEXT`,
+  // Publish dates for archived tabs and saved links, keyed by URL, read from
+  // each page's own markup (JSON-LD, article:published_time, …) or a known-host
+  // API. status: found | none | skipped | gone | blocked | error. Filled by
+  // src/capture/published-date-sweep.ts (daemon runner + backfill script).
+  // Keep in sync with PAGE_DATES_DDL there.
+  `CREATE TABLE IF NOT EXISTS page_published_dates (
+    url TEXT PRIMARY KEY,
+    published_at TEXT,
+    status TEXT NOT NULL,
+    method TEXT,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    checked_at TEXT NOT NULL
+  )`,
+  // Why an assistant reply ended early. "interrupted" = the user pressed Stop;
+  // the row then holds the partial reply. NULL for a normal reply. Keep the
+  // chat_messages rebuild in db/index.ts (expandSourceCheckConstraints) in step.
+  `ALTER TABLE chat_messages ADD COLUMN stop_reason TEXT`,
+  // Small key/value store for operational bookkeeping: when each ops alert
+  // (missed/failed job, log growth) was last sent (24 h de-dupe), the day of
+  // the last failed-job retry sweep, and daily log-size baselines.
+  // See src/shared/ops-alerts.ts, Scheduler.retryFailedCronJobs and
+  // src/maintenance/log-rotation.ts.
+  `CREATE TABLE IF NOT EXISTS ops_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  // Asset registry: concrete, reusable things pulled out of every source
+  // (videos, tabs, stars, saves, research, feeds) and scored against
+  // knowledge/GOALS.md. One row per thing, deduped on `key` (canonical URL, or
+  // kind:slug when there is no URL). See src/assets/.
+  `CREATE TABLE IF NOT EXISTS assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK(kind IN ('dataset','tool','skill','technique','design_ref','prompt','opportunity')),
+    title TEXT NOT NULL,
+    url TEXT,
+    summary TEXT NOT NULL DEFAULT '',
+    track TEXT NOT NULL,
+    tracks_json TEXT NOT NULL DEFAULT '[]',
+    value_score INTEGER NOT NULL DEFAULT 0,
+    value_reason TEXT NOT NULL DEFAULT '',
+    next_action TEXT NOT NULL DEFAULT '',
+    effort TEXT CHECK(effort IN ('S','M','L')),
+    details_json TEXT NOT NULL DEFAULT '{}',
+    deadline TEXT,
+    amount TEXT,
+    status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','queued','in_use','done','dismissed')),
+    outcome TEXT,
+    home_path TEXT,
+    published_at TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    acted_at TEXT,
+    surfaced_at TEXT,
+    extractor TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_assets_rank ON assets(status, value_score DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_assets_track ON assets(track, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_assets_deadline ON assets(deadline) WHERE deadline IS NOT NULL`,
+  // Every place an asset was seen. evidence = a short quote or timestamp.
+  `CREATE TABLE IF NOT EXISTS asset_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    source_url TEXT,
+    source_title TEXT,
+    evidence TEXT,
+    seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(asset_id, source_kind, source_ref)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_asset_sources_ref ON asset_sources(source_kind, source_ref)`,
+  // One row per (source item, extractor version): stops re-extraction and
+  // records what the gate or the model decided. status: done | empty | gated | failed.
+  `CREATE TABLE IF NOT EXISTS asset_extractions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    gate_score REAL,
+    n_assets INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(source_kind, source_ref, version)
+  )`,
+  // What David did with an asset: the outcome labels the old system never had
+  // (used, installed, applied, won, earned, dismissed:<reason>).
+  `CREATE TABLE IF NOT EXISTS asset_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_asset_events_asset ON asset_events(asset_id)`,
+  // Research-note read receipt (2026-10-02 value audit F4): set ONCE, on the
+  // first open (mini-app library item detail) or answer (weekly digest
+  // button). NULL = never opened. Makes "was this note ever read" answerable
+  // from the registry alone.
+  `ALTER TABLE research_notes ADD COLUMN consumed_at TEXT`,
 ];

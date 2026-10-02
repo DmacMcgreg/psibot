@@ -232,6 +232,16 @@ Items scoring above threshold (dependency match + workflow gap) are auto-queued 
 
 Requires `GLM_AUTH_TOKEN` for triage, quick scan, and theme clustering. Without it, the pipeline skips GLM-dependent phases.
 
+### Weekly Digest Receipts &amp; Actions
+
+The Friday 17:00 weekly digest ships with the asset-digest's proven button+receipt shape (30d value audit, `research/psibot-pipeline-value.md` F3/F4, 2026-10-02):
+
+- **Buttons ride the digest chunk itself** — one row per top item (`👀 Watch / 🗄 Archive / 💤 Snooze`), never per-item cards (the 2026-07-22 surface policy stands). Each tap writes one attributed `feedback_log` row (`content_type='weekly_digest'`); no item status or autonomy state changes.
+- **Delivery receipts** — `deliverWeeklyDigest` records a `sent_messages` row per chunk (`source='weekly-digest'`), so delivery is provable from the registry alone.
+- **Read receipts** — `research_notes.consumed_at` is set once, on the first open (Mini App library item detail) or first answer (a digest button on an item carrying that note).
+
+Gate (from the audit, verbatim): within 2 weeks, &ge;1 weekly digest with &ge;1 recorded button action, and the acted-on rate table above recomputable from the registry alone — actions via `feedback_log WHERE content_type='weekly_digest'`, delivery via `sent_messages WHERE source='weekly-digest'`.
+
 ### YouTube Video Processing (Optional)
 
 psibot can analyze YouTube videos &mdash; extracting transcripts, generating structured summaries with Claude, and storing vector embeddings for semantic search. Transcripts are pulled via `yt-dlp` (no API quota), while playlist management uses the YouTube Data API via OAuth.

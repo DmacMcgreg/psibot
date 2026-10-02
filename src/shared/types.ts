@@ -10,6 +10,8 @@ export interface ChatMessage {
   cost_usd: number | null;
   duration_ms: number | null;
   created_at: string;
+  /** Set on an assistant reply that ended early; "interrupted" = the user pressed Stop. Null for a normal reply. */
+  stop_reason?: string | null;
 }
 
 export interface AgentSession {
@@ -74,6 +76,42 @@ export interface JobRun {
   started_at: string;
   completed_at: string | null;
   triggered_by_run_id: number | null;
+}
+
+/** Which code path produced an outbound Telegram notification. */
+export type SentMessageSource =
+  | "job-wrapper"
+  | "heartbeat-digest"
+  | "heartbeat-backlog"
+  | "discovery"
+  | "agent-tool"
+  | "job-history"
+  | "ops-alert"
+  | "asset-digest"
+  | "weekly-digest";
+
+export interface SentMessage {
+  id: number;
+  chat_id: string;
+  message_id: number;
+  topic_id: number | null;
+  source: SentMessageSource;
+  job_id: number | null;
+  run_id: number | null;
+  item_id: number | null;
+  session_id: string | null;
+  preview: string | null;
+  sent_at: string;
+}
+
+export interface JobConfigChange {
+  id: number;
+  job_id: number;
+  changed_by: string;
+  /** JSON: { [field]: { from, to } } — long values truncated. */
+  changes: string;
+  reason: string | null;
+  changed_at: string;
 }
 
 // --- Declarative agents ---
@@ -155,6 +193,8 @@ export interface AgentRunOptions {
   onComplete?: (result: AgentRunResult) => void;
   /** Called with the internal runId once the underlying query is live, so callers can interrupt it. May fire multiple times across fallback tiers. */
   onRunStart?: (runId: string) => void;
+  /** Called with the Claude session ID as soon as the SDK reports it (before the reply). Lets a chat that started a new session keep using it. May fire once per fallback tier. */
+  onSessionStart?: (sessionId: string) => void;
   /**
    * Internal flag — set when a run is itself a background self-improvement
    * review fork. Suppresses turn-counter increments and the post-run review
@@ -266,6 +306,8 @@ export interface PendingItem {
   value_type: ValueType | null;
   extracted_value: string | null;
   surfaced_at: string | null;
+  /** When the content first came out (Reddit post / GitHub repo creation); NULL if unknown. */
+  published_at?: string | null;
   created_at: string;
 }
 
@@ -439,4 +481,31 @@ export interface SignalCluster {
   signal_ids: number[];
   latest_captured_at: string;
   top_reasons: string[];
+}
+
+export type NoteplanSourceKind =
+  | "inbox"
+  | "research_queued"
+  | "research_completed"
+  | "briefing"
+  | "trash";
+
+export interface NoteplanArchive {
+  id: number;
+  rel_path: string;
+  folder: string;
+  source_kind: NoteplanSourceKind;
+  title: string | null;
+  frontmatter: string | null;
+  tags: string | null;
+  body: string;
+  raw_size: number | null;
+  cleaned_size: number | null;
+  sha256: string;
+  file_mtime: string | null;
+  captured_at: string | null;
+  researched_at: string | null;
+  pending_item_id: number | null;
+  dedup_related_removed: number;
+  archived_at: string;
 }

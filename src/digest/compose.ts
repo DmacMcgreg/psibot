@@ -597,8 +597,10 @@ function renderMarkdown(d: Omit<WeeklyDigest, "telegramChunks" | "markdown">): s
 // Rendering — Telegram HTML (b/i/a/code/pre subset), chunked.
 // ---------------------------------------------------------------------------
 
-/** How many top items to show inline in the short Telegram summary. */
-const TELEGRAM_TOP_ITEMS_N = 3;
+/** How many top items to show inline in the short Telegram summary. Exported
+ * because the action buttons (src/digest/buttons.ts) ride the same slice —
+ * button numbers must match the numbered list below. */
+export const TELEGRAM_TOP_ITEMS_N = 3;
 
 /**
  * Build the `/tma/digest/:week` reader URL using the same host source as the
@@ -634,12 +636,13 @@ function renderTelegram(d: Omit<WeeklyDigest, "telegramChunks" | "markdown">): s
 
   // Top 2-3 items only — the rest lives behind the full-digest link.
   if (d.topItems.length > 0) {
-    const items = d.topItems.slice(0, TELEGRAM_TOP_ITEMS_N).map((item) => {
+    const items = d.topItems.slice(0, TELEGRAM_TOP_ITEMS_N).map((item, i) => {
       const p = item.priority != null ? `(P${item.priority}) ` : "";
+      const n = `${i + 1}. `;
       const title = escapeTg(item.title);
       const link = item.url ? `<a href="${escapeTg(item.url)}">${title}</a>` : title;
       const plat = item.platform ? ` — ${escapeTg(item.platform)}` : "";
-      return `${p}${link}${plat}`;
+      return `${n}${p}${link}${plat}`;
     });
     const heading = d.topItems.length > TELEGRAM_TOP_ITEMS_N
       ? `<b>Top items</b> (${TELEGRAM_TOP_ITEMS_N} of ${d.topItems.length})`
