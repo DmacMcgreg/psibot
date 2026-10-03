@@ -38,7 +38,7 @@ his last one.
 
 | id | signal (platform:profile:value_type) | learned | decisions | David's actions (n) | stop-doing-X reading | test status |
 |---|---|---|---|---|---|---|
-| 1 | `digest_item:source:telegram` | research | 12 | research 208, watch 56, archive 18 (all sources, digest feedback) | stop auto-filing telegram digest items — surface them | pinned by rulesHash watch |
+| 1 | `digest_item:source:telegram` | research | 12 | research 208, watch 56, archive 18 — global plain-action totals over all compound signals, not counts for this rule (CITE-PARTIAL relabel 2026-10-03; the digest_item producer is absent from src/, so a per-rule recompute is impossible) | stop auto-filing telegram digest items — surface them | pinned by rulesHash watch |
 | 13 | `reddit:*:unknown` | research | 22 | research 19, watch 1, archive 2, archive:irrelevant 1 | stop discarding unclassified reddit captures — research them | pinned by rulesHash watch |
 | 16 | `github:*:unknown` | research | 107 | research 67, watch 28, archive 8, archive:known 2, drop:outdated 2, archive:outdated 3 | stop discarding unclassified github captures — research them | pinned by rulesHash watch |
 | 30 | `github:*:tool` | research | 49 | research 31, watch 9, archive 6, archive:known 1, archive:outdated 2 | github tool repos stay research-first | pinned by rulesHash watch |

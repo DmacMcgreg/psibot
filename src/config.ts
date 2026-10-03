@@ -281,6 +281,19 @@ export function getConfig(): Config {
 }
 
 /**
+ * Claude CLI ≥2.1.280 introduced a model catalog: model ids it doesn't know
+ * (every GLM SKU) get rejected client-side with "There's an issue with the
+ * selected model … may not exist or you may not have access", and the run is
+ * recorded as SUCCESSFUL — so the fallback ladder never advances. This flag
+ * restores the pre-2.1.280 wait-for-the-API behavior. Include it in EVERY env
+ * override that points the CLI at Z.AI (GLM env sites: agent, research ×2,
+ * triage, heartbeat/themes, getBackendEnv).
+ */
+export const GLM_CLI_ENV = {
+  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1",
+} as const;
+
+/**
  * Returns env overrides for the GLM backend when DEFAULT_BACKEND is "glm",
  * or undefined when using Claude. Use with the SDK's `query({ options: { env } })`.
  */
@@ -294,5 +307,6 @@ export function getBackendEnv(): Record<string, string> | undefined {
     ANTHROPIC_DEFAULT_HAIKU_MODEL: config.GLM_HAIKU_MODEL,
     ANTHROPIC_DEFAULT_SONNET_MODEL: config.GLM_SONNET_MODEL,
     ANTHROPIC_DEFAULT_OPUS_MODEL: config.GLM_OPUS_MODEL,
+    ...GLM_CLI_ENV,
   };
 }

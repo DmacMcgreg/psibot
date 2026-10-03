@@ -109,6 +109,8 @@ export function createAgentTools(deps: ToolDeps) {
 
   // Mutable context set before each agent.run() so tools default to the originating chat.
   let currentChatContext: ChatContext | undefined;
+  // Origin of the current run ("job:31", "telegram:...", ...) for send provenance.
+  let currentRunContext: { source: string; sourceId?: string } | undefined;
 
   const server = createSdkMcpServer({
     name: "agent-tools",
@@ -2499,6 +2501,10 @@ ${runsText}`;
     server,
     setChatContext(ctx?: ChatContext) {
       currentChatContext = ctx;
+    },
+    /** Set before each run so telegram sends can be provenance-tagged with their origin run. */
+    setRunContext(ctx?: { source: string; sourceId?: string }) {
+      currentRunContext = ctx;
     },
   };
 }
