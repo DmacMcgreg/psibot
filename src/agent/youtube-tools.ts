@@ -41,6 +41,36 @@ export interface YoutubeDeps {
   getDiscoveryRunner?: () => import("../discovery/index.ts").DiscoveryRunner | null;
 }
 
+
+export type GoogleRefreshProbe = "refresh-ok" | "reauth-required" | "unknown";
+
+/**
+ * One force-refresh probe against the vault's google row: distinguishes soft
+ * expiry (refresh token still works) from a dead refresh token (invalid_grant).
+ */
+export async function probeGoogleRefresh(
+  config: { OAUTH_VAULT_URL: string; OAUTH_VAULT_API_KEY: string },
+): Promise<GoogleRefreshProbe> {
+  try {
+    const response = await fetch(`${config.OAUTH_VAULT_URL}/api/tokens/google?force_refresh=true`, {
+      headers: { Authorization: `Bearer ${config.OAUTH_VAULT_API_KEY}` },
+    });
+    if (response.ok) return "refresh-ok";
+    const data = (await response.json().catch(() => null)) as { reauth_required?: boolean } | null;
+    return data?.reauth_required ? "reauth-required" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** The "Expired:" answer for youtube_oauth_setup; never promises auto-refresh when invalid_grant killed it. */
+export function oauthExpiredLine(probe: GoogleRefreshProbe): string {
+  if (probe === "reauth-required") {
+    return "yes — DEAD (invalid_grant): re-auth required, auto-refresh will NOT recover it";
+  }
+  return probe === "refresh-ok" ? "yes (will auto-refresh)" : "yes (refresh unverified)";
+}
+
 export function createYoutubeTools(deps: YoutubeDeps) {
   const { getBot, defaultChatIds, keepAlive, getDiscoveryRunner } = deps;
 
@@ -305,6 +335,10 @@ ${quotesStr}`;
               `Playlist processing complete (${result.processed} new, ${result.skipped} skipped, ${result.moved} moved, ${result.failed} failed)`,
             ];
 
+            if (result.remaining > 0) {
+              lines.push(`${result.remaining} videos still in the playlist — time budget reached; the next run continues.`);
+            }
+
             if (result.retrySuccesses > 0 || result.retryFailures > 0) {
               lines.push(`Retries: ${result.retrySuccesses} succeeded, ${result.retryFailures} failed`);
             }
@@ -362,15 +396,20 @@ ${quotesStr}`;
               return {
                 content: [{
                   type: "text" as const,
-                  text: `Google is not connected in the OAuth vault.\n\nConnect it at: ${config.OAUTH_VAULT_URL}/?key=<API_KEY>\n\nClick "Connect" next to Google and complete the OAuth flow.`,
+                  text: `Google is not connected in the OAuth vault.\n\nConnect it at: ${config.OAUTH_VAULT_URL}/dashboard?key=${config.OAUTH_VAULT_API_KEY}\n\nClick "Connect" next to Google and complete the OAuth flow.`,
                 }],
               };
             }
 
+            // Soft expiry refreshes fine; invalid_grant means auto-refresh
+            // will NOT recover it — probe once so the line never lies.
+            const expiredLine = status.expired
+              ? oauthExpiredLine(await probeGoogleRefresh(config))
+              : "no";
             return {
               content: [{
                 type: "text" as const,
-                text: `YouTube OAuth status (via vault):\n  Connected: yes\n  Expired: ${status.expired ? "yes (will auto-refresh)" : "no"}\n  Scopes: ${status.scopes ?? "unknown"}\n  Ready to use.`,
+                text: `YouTube OAuth status (via vault):\n  Connected: yes\n  Expired: ${expiredLine}\n  Scopes: ${status.scopes ?? "unknown"}\n  Ready to use.`,
               }],
             };
           } catch (error) {
