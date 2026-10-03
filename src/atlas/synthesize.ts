@@ -7,6 +7,7 @@ import Database from "bun:sqlite";
 import { getDb } from "../db/index.ts";
 import { createLogger } from "../shared/logger.ts";
 import { MemorySystem } from "../memory/index.ts";
+import { goalsPromptBlock } from "../assets/goals.ts";
 
 const log = createLogger("atlas:synth");
 
@@ -175,7 +176,7 @@ export function gatherDailyContext(windowHours = 24): DailyContext {
       { rule_key: string; level: string; updated_at: string },
       [string]
     >(
-      `SELECT rule_key, level, updated_at FROM autonomy_rules
+      `SELECT signal_type || ':' || signal_value AS rule_key, level, updated_at FROM autonomy_rules
        WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT 20`,
     )
     .all(since)
@@ -186,11 +187,15 @@ export function gatherDailyContext(windowHours = 24): DailyContext {
       { title: string | null; summary: string | null; url: string | null; at: string },
       [string]
     >(
-      `SELECT title, quick_scan_summary AS summary, url, updated_at AS at
-       FROM pending_items
-       WHERE auto_decision IN ('deep_research_done','quick_research_done')
-         AND updated_at >= ?
-       ORDER BY updated_at DESC LIMIT 20`,
+      // pending_items has no updated_at; the research write-up's archive row carries
+      // when it finished, else fall back to when the item was surfaced or saved.
+      `SELECT * FROM (
+         SELECT p.title, p.quick_scan_summary AS summary, p.url,
+           COALESCE((SELECT max(na.researched_at) FROM noteplan_archive na WHERE na.pending_item_id = p.id),
+                    p.surfaced_at, p.created_at) AS at
+         FROM pending_items p
+         WHERE p.auto_decision IN ('deep_research_done','quick_research_done'))
+       WHERE at >= ? ORDER BY at DESC LIMIT 20`,
     )
     .all(since)
     .map((r) => ({
@@ -380,6 +385,40 @@ interface WeeklyContext {
   dailyLogs: { date: string; content: string }[];
   topEdges: Array<{ a: string; b: string; weight: number }>;
   topMentions: Array<{ entity: string; kind: string; count: number }>;
+  /** GOALS.md as a prompt block ("" when unreadable). */
+  goals: string;
+  /** Assets first seen or acted on this week (empty before the registry exists). */
+  weekAssets: WeekAsset[];
+}
+
+export interface WeekAsset {
+  id: number;
+  kind: string;
+  title: string;
+  track: string;
+  status: string;
+  value_score: number;
+  next_action: string;
+  deadline: string | null;
+  url: string | null;
+  isNew: number;
+}
+
+/** Assets seen or acted on in the window, best first; [] when the registry table is missing. */
+function gatherWeekAssets(since: string): WeekAsset[] {
+  const db = getDb();
+  const has = db.prepare<{ n: number }, [string]>(
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name = ?",
+  ).get("assets");
+  if (!has || has.n === 0) return [];
+  return db.prepare<WeekAsset, [string, string, string]>(
+    `SELECT id, kind, title, track, status, value_score, next_action, deadline, url,
+            (first_seen_at >= ?) AS isNew
+       FROM assets
+      WHERE first_seen_at >= ? OR acted_at >= ?
+      ORDER BY track, value_score DESC
+      LIMIT 80`,
+  ).all(since, since, since);
 }
 
 export function gatherWeeklyContext(): WeeklyContext {
@@ -426,24 +465,51 @@ export function gatherWeeklyContext(): WeeklyContext {
         .all(since)
     : [];
 
+  let goals = "";
+  try {
+    goals = goalsPromptBlock();
+  } catch (err) {
+    log.warn("Weekly synthesis: GOALS.md unreadable", { error: String(err) });
+  }
+
   return {
     week: isoWeek(),
     dailyLogs: readDailyLogsForWindow(7),
     topEdges,
     topMentions,
+    goals,
+    weekAssets: gatherWeekAssets(since),
   };
 }
 
 function buildWeeklyPrompt(ctx: WeeklyContext): string {
   const lines: string[] = [];
-  lines.push(`You are a weekly synthesizer. Write a weekly themes report for ${ctx.week}.`);
+  lines.push(`You are a weekly synthesizer. Write a weekly report for ${ctx.week}.`);
   lines.push("");
+  if (ctx.goals) {
+    lines.push("David's goals (each `## track:` is one money track):");
+    lines.push(ctx.goals);
+    lines.push("");
+  }
   lines.push("Rules:");
-  lines.push("- Lead with entities that show up across multiple sources. That is the story.");
-  lines.push("- 3-6 named themes. Each theme: a short heading, 2-4 sentences citing specific items/dates.");
-  lines.push("- End with 'Open threads' section listing 2-4 concrete unresolved questions from the week.");
-  lines.push("- Markdown. Use ## for theme headings and ## Open threads for the tail.");
+  lines.push("- Open with `## What's new per track`: one `### <track id>` per goals track, each listing the concrete new assets (tools, techniques, datasets, opportunities) from the asset list below with their next action and any deadline. Write `Nothing new.` for a track with none. Never invent assets that are not in the list.");
+  lines.push("- Then 2-4 named themes from the daily logs and entities. Each theme: a short heading, 2-4 sentences citing specific items/dates. Skip PsiBot's own maintenance chatter (heartbeat counts, job runs).");
+  lines.push("- End with an 'Open threads' section listing 2-4 concrete unresolved questions from the week.");
+  lines.push("- Markdown. Use ## for section and theme headings and ## Open threads for the tail.");
   lines.push("");
+  if (ctx.weekAssets.length > 0) {
+    lines.push(`## Assets this week (${ctx.weekAssets.length})`);
+    for (const a of ctx.weekAssets) {
+      const due = a.deadline ? ` · due ${a.deadline.slice(0, 10)}` : "";
+      const tag = a.isNew ? "new" : `acted: ${a.status}`;
+      lines.push(`- [${a.track}] ${a.kind}: ${a.title} (score ${a.value_score}, ${tag}${due}) → ${a.next_action}${a.url ? ` <${a.url}>` : ""}`);
+    }
+    lines.push("");
+  } else {
+    lines.push("## Assets this week (0)");
+    lines.push("No assets were found this week; write `Nothing new.` under each track.");
+    lines.push("");
+  }
   lines.push(`## Daily logs (${ctx.dailyLogs.length})`);
   for (const d of ctx.dailyLogs) {
     lines.push(`### ${d.date}`);
@@ -476,7 +542,7 @@ export interface WeeklyThemesResult {
 
 export async function synthesizeWeeklyThemes(): Promise<WeeklyThemesResult> {
   const ctx = gatherWeeklyContext();
-  if (ctx.dailyLogs.length === 0 && ctx.topMentions.length === 0) {
+  if (ctx.dailyLogs.length === 0 && ctx.topMentions.length === 0 && ctx.weekAssets.length === 0) {
     return { week: ctx.week, text: "", path: null, written: false };
   }
 
@@ -667,6 +733,57 @@ interface ReduceOutput {
   research_appends: string[];
 }
 
+/**
+ * Write the reduce output as one durable markdown artifact:
+ * `archive/atlas-monthly/<YYYY-MM>.md`, beside the prune's `knowledge/archive/`
+ * root and never under `knowledge/` (the pruned trading tree must not regrow).
+ * The directory is created on demand, so the scheduled window can never die on
+ * ENOENT after LLM spend. Same-month re-runs append a dated section.
+ * Returns the artifact path, or null when the reduce produced no lines.
+ */
+export function writeMonthlySynthesis(reduce: ReduceOutput): string | null {
+  const sections = [
+    { heading: "monthly additions (setups)", lines: reduce.playbook_appends },
+    { heading: "monthly additions (failures)", lines: reduce.lessons_appends },
+    { heading: "monthly additions (indicator combos)", lines: reduce.models_appends },
+    { heading: "monthly additions (open hypotheses)", lines: reduce.research_appends },
+  ].filter((s) => s.lines.length > 0);
+  if (sections.length === 0) return null;
+
+  const dir = resolve(process.cwd(), "archive", "atlas-monthly");
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, `${isoDateOnly().slice(0, 7)}.md`);
+  const block =
+    `\n## ${isoDateOnly()}\n` +
+    sections
+      .map(
+        (s) =>
+          `### ${s.heading}\n${s.lines.map((l) => (l.startsWith("- ") ? l : `- ${l}`)).join("\n")}`,
+      )
+      .join("\n") +
+    "\n";
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : `# Monthly scan synthesis\n`;
+  writeFileSync(filePath, existing.trimEnd() + "\n" + block);
+  return filePath;
+}
+
+export interface MonthlySynthResult {
+  mapped: number;
+  reduced: boolean;
+  appendedTo: string[];
+}
+
+export async function synthesizeMonthly(): Promise<MonthlySynthResult> {
+  const mapped = await mapScanExtractions(30);
+  const since = new Date(Date.now() - 35 * 86400_000).toISOString();
+  const bundle = gatherReduceBundle(since);
+  const reduce = await runReduce(bundle);
+  if (!reduce) return { mapped, reduced: false, appendedTo: [] };
+
+  const artifact = writeMonthlySynthesis(reduce);
+  return { mapped, reduced: true, appendedTo: artifact ? [artifact] : [] };
+}
+
 async function runReduce(bundle: ReduceBundle): Promise<ReduceOutput | null> {
   if (bundle.extractions.length === 0) return null;
 
@@ -677,12 +794,12 @@ async function runReduce(bundle: ReduceBundle): Promise<ReduceOutput | null> {
     tools: [
       tool(
         "record_monthly_synthesis",
-        "Emit appended lines for the trading knowledge files. Call exactly once.",
+        "Emit lines for the monthly synthesis archive. Call exactly once.",
         {
-          playbook_appends: z.array(z.string()).max(10).describe("New setups to append to PLAYBOOK.md — each a single-line markdown bullet."),
-          lessons_appends: z.array(z.string()).max(10).describe("Failed setups / lessons for LESSONS.md — single-line bullets."),
-          models_appends: z.array(z.string()).max(10).describe("Consistent indicator combinations for MODELS.md — single-line bullets."),
-          research_appends: z.array(z.string()).max(10).describe("Open hypotheses worth testing for RESEARCH.md — single-line bullets."),
+          playbook_appends: z.array(z.string()).max(10).describe("New setups surfaced this month — each a single-line markdown bullet."),
+          lessons_appends: z.array(z.string()).max(10).describe("Failed setups / lessons from this month's scans — single-line bullets."),
+          models_appends: z.array(z.string()).max(10).describe("Consistent indicator combinations — single-line bullets."),
+          research_appends: z.array(z.string()).max(10).describe("Open hypotheses worth testing — single-line bullets."),
         },
         async (args) => {
           capture.data = {
@@ -704,14 +821,14 @@ async function runReduce(bundle: ReduceBundle): Promise<ReduceOutput | null> {
     )
     .join("\n");
 
-  const prompt = `You are reducing ${bundle.extractions.length} monthly scan extractions into append-only knowledge updates.
+  const prompt = `You are reducing ${bundle.extractions.length} monthly scan extractions into a monthly synthesis record.
 
 Rules:
 - playbook_appends: setups that recurred across >=3 scans. Each line names the setup + at least one example scan date.
 - lessons_appends: setups that failed or didn't resolve as expected in >=2 scans. Each line names the pattern + the failure mode.
 - models_appends: indicator combinations the scans used consistently (e.g. "MTF + VWAP + sentiment score"). Only truly new patterns.
 - research_appends: hypotheses raised in the scans that haven't been resolved — each phrased as a testable claim.
-- Every appended line is a single-line markdown bullet starting with "- ".
+- Every line is a single-line markdown bullet starting with "- ".
 - If a category is empty, return [].
 - Dates are April 2026. Cite specific scan files when possible.
 
@@ -744,43 +861,6 @@ Call record_monthly_synthesis now.`;
     return null;
   }
   return capture.data;
-}
-
-function appendLines(filePath: string, heading: string, lines: string[]): void {
-  if (lines.length === 0) return;
-  const stamp = isoDateOnly();
-  const block = `\n## ${heading} — appended ${stamp}\n${lines.map((l) => (l.startsWith("- ") ? l : `- ${l}`)).join("\n")}\n`;
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : `# ${heading}\n`;
-  writeFileSync(filePath, existing.trimEnd() + "\n" + block);
-}
-
-export interface MonthlySynthResult {
-  mapped: number;
-  reduced: boolean;
-  appendedTo: string[];
-}
-
-export async function synthesizeMonthly(): Promise<MonthlySynthResult> {
-  const mapped = await mapScanExtractions(30);
-  const since = new Date(Date.now() - 35 * 86400_000).toISOString();
-  const bundle = gatherReduceBundle(since);
-  const reduce = await runReduce(bundle);
-  if (!reduce) return { mapped, reduced: false, appendedTo: [] };
-
-  const appendedTo: string[] = [];
-  const files = [
-    { file: join(TRADING_DIR, "PLAYBOOK.md"), heading: "monthly additions (setups)", lines: reduce.playbook_appends },
-    { file: join(TRADING_DIR, "LESSONS.md"), heading: "monthly additions (failures)", lines: reduce.lessons_appends },
-    { file: join(TRADING_DIR, "MODELS.md"), heading: "monthly additions (indicator combos)", lines: reduce.models_appends },
-    { file: join(TRADING_DIR, "RESEARCH.md"), heading: "monthly additions (open hypotheses)", lines: reduce.research_appends },
-  ];
-  for (const f of files) {
-    if (f.lines.length > 0) {
-      appendLines(f.file, f.heading, f.lines);
-      appendedTo.push(f.file);
-    }
-  }
-  return { mapped, reduced: true, appendedTo };
 }
 
 // Unused imports kept for future expansion
