@@ -23,8 +23,14 @@ import type { CaptureSource } from "./types.ts";
 /**
  * Sources whose content lives ONLY in the Discover feed, never the inbox channel.
  * Add a source here to keep its captures out of every Telegram inbox surfacing.
+ *
+ * "github" and "reddit" were added 2026-07-22: the automated pollers were
+ * flooding the News topic with per-item cards after David asked repeatedly for
+ * them to stop. Poller captures still flow through triage, atlas, and the Mini
+ * App Discover/Review feeds — they just never get pushed to the channel.
+ * Deliberate captures (chrome-extension, telegram, manual) still surface.
  */
-export const DISCOVER_ONLY_SOURCES: readonly CaptureSource[] = ["youtube"] as const;
+export const DISCOVER_ONLY_SOURCES: readonly CaptureSource[] = ["youtube", "github", "reddit"] as const;
 
 /** True if an item's source is allowed to be surfaced to the inbox channel. */
 export function isInboxSurfaceable(item: { source?: string | null }): boolean {

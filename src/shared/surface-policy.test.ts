@@ -6,12 +6,18 @@ import {
 } from "./surface-policy.ts";
 
 describe("surface-policy", () => {
-  it("keeps YouTube out of the inbox channel", () => {
-    expect(isInboxSurfaceable({ source: "youtube" })).toBe(false);
+  it("keeps automated poller sources out of the inbox channel", () => {
+    // Regression guard: each of these flooded the News topic before being
+    // gated (youtube 2026-07-15, github/reddit 2026-07-22). Removing a source
+    // from DISCOVER_ONLY_SOURCES re-introduces the flood — this test is the
+    // durable record of that decision.
+    for (const source of ["youtube", "github", "reddit"]) {
+      expect(isInboxSurfaceable({ source })).toBe(false);
+    }
   });
 
-  it("allows the inbox-native capture sources", () => {
-    for (const source of ["reddit", "github", "chrome-extension", "telegram", "manual"]) {
+  it("allows deliberate capture sources", () => {
+    for (const source of ["chrome-extension", "telegram", "manual"]) {
       expect(isInboxSurfaceable({ source })).toBe(true);
     }
   });
