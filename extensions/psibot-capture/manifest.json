@@ -1,20 +1,27 @@
 {
   "manifest_version": 3,
   "name": "PsiBot Capture",
-  "version": "1.0.0",
-  "description": "Capture pages, selections, and X bookmarks to PsiBot inbox",
+  "version": "1.1.0",
+  "description": "Capture pages, selections, and X bookmarks to PsiBot inbox; also silently archives (screenshot + text + AI summary) and closes tabs you haven't touched in a while, searchable from the popup.",
   "permissions": [
     "activeTab",
     "contextMenus",
     "notifications",
     "storage",
-    "scripting"
+    "scripting",
+    "tabs",
+    "alarms",
+    "idle",
+    "favicon"
   ],
   "host_permissions": [
-    "http://localhost:3141/*"
+    "http://localhost:3141/*",
+    "http://localhost:4820/*",
+    "<all_urls>"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "action": {
     "default_popup": "popup.html",
@@ -32,8 +39,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://x.com/i/bookmarks*",
-        "https://twitter.com/i/bookmarks*"
+        "https://x.com/*",
+        "https://twitter.com/*"
       ],
       "js": ["content-x-bookmarks.js"],
       "css": [],

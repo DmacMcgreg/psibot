@@ -1,3 +1,19 @@
+// Tab-archive module (added — see apps/tab-archive/ISA.md for the spec this
+// implements). Kept as separate files and wired in here with the smallest
+// possible edits to this existing capture flow, which is otherwise
+// untouched.
+import { initTracking } from "./tracking.js";
+import {
+  initArchiveAlarm,
+  runSweep,
+  getLocalSettings,
+  saveLocalSettings,
+  getStatus,
+  testConnection,
+  searchArchivedTabs,
+  restoreArchivedTab,
+} from "./archive.js";
+
 const API_URL = "http://localhost:3141/api/inbox";
 
 const PLATFORM_MAP = {
@@ -145,6 +161,14 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// Tab-archive: listener registration (tracking + the sweep alarm) must run
+// at top level so it re-registers on every service-worker start, not just
+// onInstalled — MV3 can spin the worker up fresh without re-firing
+// onInstalled, and in-memory listeners don't survive a worker restart even
+// though the alarm itself (stored by Chrome) does.
+initTracking();
+initArchiveAlarm();
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === "psibot-save-selection") {
     await captureAndSend(
@@ -246,6 +270,54 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       }
     );
+    return true;
+  }
+
+  // -- Tab-archive: popup "Archive" tab -----------------------------------
+
+  if (message.action === "archive-get-settings") {
+    getLocalSettings().then(sendResponse);
+    return true;
+  }
+
+  if (message.action === "archive-save-settings") {
+    saveLocalSettings({ serverUrl: message.serverUrl, token: message.token }).then((settings) =>
+      sendResponse({ success: true, settings }),
+    );
+    return true;
+  }
+
+  if (message.action === "archive-test-connection") {
+    testConnection().then(sendResponse);
+    return true;
+  }
+
+  if (message.action === "archive-status") {
+    getStatus().then(sendResponse);
+    return true;
+  }
+
+  if (message.action === "archive-run-sweep-now") {
+    runSweep()
+      .then((result) => sendResponse({ success: true, result }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "archive-search") {
+    searchArchivedTabs(message.query, message.limit)
+      .then((result) => sendResponse({ success: true, result }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "archive-restore") {
+    restoreArchivedTab(message.id)
+      .then(({ url }) => {
+        chrome.tabs.create({ url });
+        sendResponse({ success: true, url });
+      })
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 });

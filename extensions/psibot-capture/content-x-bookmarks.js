@@ -198,7 +198,9 @@
     const MAX_STALLS = 5;
     const SCROLL_DELAY = 1500;
 
-    while (noNewCount < MAX_STALLS) {
+    // Stop if the user leaves Bookmarks mid-scroll, or we'd collect
+    // whatever timeline they moved to.
+    while (noNewCount < MAX_STALLS && isBookmarksPage()) {
       const articles = document.querySelectorAll('article[data-testid="tweet"]');
       const beforeCount = collected.size;
 
@@ -235,6 +237,11 @@
     // Scroll and extract tweet data as we go (X virtualizes the DOM)
     const items = await scrollAndCollectAll(btn);
 
+    if (!isBookmarksPage()) {
+      btn.remove();
+      return;
+    }
+
     if (items.length === 0) {
       btn.textContent = "No bookmarks found";
       btn.style.background = "#ef4444";
@@ -270,6 +277,10 @@
     btn.style.background = "#6366f1";
   }
 
+  function isBookmarksPage() {
+    return /^\/i\/bookmarks(\/|$)/.test(location.pathname);
+  }
+
   // Inject button once the page is ready
   // Use a MutationObserver to wait for the timeline to load
   function waitForTimeline() {
@@ -282,7 +293,7 @@
     const observer = new MutationObserver((_mutations, obs) => {
       if (document.querySelector('article[data-testid="tweet"]')) {
         obs.disconnect();
-        createButton();
+        if (isBookmarksPage()) createButton();
       }
     });
 
@@ -291,13 +302,55 @@
     // Safety timeout: inject button after 10s regardless
     setTimeout(() => {
       observer.disconnect();
-      createButton();
+      if (isBookmarksPage()) createButton();
     }, 10000);
   }
 
+  // X is a single-page app: opening Bookmarks from elsewhere on x.com changes
+  // the URL without a page load, so a bookmarks-only manifest match never
+  // fires. The manifest matches all of x.com and this follows URL changes.
+  function syncWithRoute() {
+    if (isBookmarksPage()) {
+      waitForTimeline();
+    } else {
+      document.getElementById(BUTTON_ID)?.remove();
+    }
+  }
+
+  // The popup also injects this file on demand, so never set up twice.
+  if (window.__psibotXBookmarks) return;
+  window.__psibotXBookmarks = true;
+
+  // Popup fallback: "Save All X Bookmarks" button in the extension popup.
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.action !== "x-bookmarks-save-all") return;
+
+    if (!isBookmarksPage()) {
+      sendResponse({ started: false, error: "Open x.com/i/bookmarks first" });
+      return;
+    }
+
+    createButton();
+    if (document.getElementById(BUTTON_ID).disabled) {
+      sendResponse({ started: false, error: "Already saving" });
+      return;
+    }
+
+    handleSaveAll();
+    sendResponse({ started: true });
+  });
+
+  let lastPath = location.pathname;
+  setInterval(() => {
+    if (location.pathname !== lastPath) {
+      lastPath = location.pathname;
+      syncWithRoute();
+    }
+  }, 1000);
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", waitForTimeline);
+    document.addEventListener("DOMContentLoaded", syncWithRoute);
   } else {
-    waitForTimeline();
+    syncWithRoute();
   }
 })();
