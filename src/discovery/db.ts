@@ -299,6 +299,66 @@ export function getCandidatesByStatus(status: CandidateStatus, limit = 50): Disc
     .all(status, limit);
 }
 
+/**
+ * The candidates one discovery run should score: never-scored rows first
+ * (newest discovered first), plus up to `rescoreSlots` of the best
+ * already-scored rows so strong candidates that missed a pick slot compete
+ * again under the current profile. Unused slots on either side go to the other.
+ *
+ * Replaces getCandidatesByStatus("candidate", 200), which ordered by
+ * COALESCE(score, 0) DESC and so re-scored the same top rows every run while
+ * ~12.5k never-scored candidates waited until they expired (2026-09-25).
+ */
+export function getScoringQueue(limit = 200, rescoreSlots = 50): DiscoveryCandidate[] {
+  const db = getDb();
+  const topScored = (n: number) =>
+    db
+      .prepare<DiscoveryCandidate, [number]>(
+        `SELECT * FROM discovery_candidates WHERE status = 'candidate' AND score IS NOT NULL
+         ORDER BY score DESC, discovered_at DESC LIMIT ?`,
+      )
+      .all(n);
+  const rescore = topScored(Math.min(rescoreSlots, limit));
+  // Titleless rows can't be embedded, so they'd hold a slot every run; they
+  // stay 'candidate' until expireStaleCandidates() retires them.
+  const unscored = db
+    .prepare<DiscoveryCandidate, [number]>(
+      `SELECT * FROM discovery_candidates
+        WHERE status = 'candidate' AND score IS NULL
+          AND title IS NOT NULL AND length(trim(title)) >= 3
+        ORDER BY discovered_at DESC, id DESC LIMIT ?`,
+    )
+    .all(limit - rescore.length);
+  if (unscored.length + rescore.length >= limit) return [...unscored, ...rescore];
+  // Unscored backlog is short: top up with more previously-scored rows.
+  return [...unscored, ...topScored(limit - unscored.length)];
+}
+
+export const ALREADY_IN_LIBRARY_REASON = "already_in_library";
+
+/**
+ * Reject queued candidates whose video is already in youtube_videos (mostly RSS
+ * re-finds of videos David sent himself). Left queued, one could pass the gate:
+ * processAndStoreVideo() returns the existing row, the digest surfaces it as a
+ * discovery, and the profile's provenance rule then drops its user-chosen weight.
+ * Updates by row id so other rows for the same video keep their status.
+ */
+export function rejectCandidatesAlreadyInLibrary(): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `UPDATE discovery_candidates
+          SET status = 'rejected', reason = ?
+        WHERE id IN (
+          SELECT dc.id FROM discovery_candidates dc
+           WHERE dc.status = 'candidate'
+             AND EXISTS (SELECT 1 FROM youtube_videos yv WHERE yv.video_id = dc.video_id)
+        )`,
+    )
+    .run(ALREADY_IN_LIBRARY_REASON);
+  return result.changes;
+}
+
 export function getTopUnscoredCandidates(limit = 50): DiscoveryCandidate[] {
   const db = getDb();
   return db

@@ -5,6 +5,14 @@ import {
   nicheScore,
   mmrRerank,
   epsilonGreedy,
+  profileSimilarity,
+  rescaleSimilarity,
+  passesRelevanceGate,
+  MIN_RELEVANCE_SIMILARITY,
+  SIMILARITY_BASELINE,
+  SIMILARITY_CEILING,
+  WEIGHTS,
+  resolveCandidateVectors,
   type ScoredCandidate,
 } from "./scoring.ts";
 
@@ -29,7 +37,7 @@ function makeCandidate(id: number, total: number): ScoredCandidate {
     processed_at: null,
     surfaced_at: null,
     breakdown: {
-      similarity: 0, topicOverlap: 0, recency: 0, niche: 0, channel: 0, total,
+      similarity: 0, similarityRaw: 0, recency: 0, niche: 0, channel: 0, total,
     },
   };
 }
@@ -162,5 +170,104 @@ describe("epsilonGreedy", () => {
     const selected = [makeCandidate(1, 0.9)];
     const out = epsilonGreedy(selected, selected, 3);
     expect(out.length).toBe(1);
+  });
+});
+
+// --- profileSimilarity / relevance gate ---
+
+describe("profileSimilarity", () => {
+  const topics = [
+    { topicId: 1, weight: 1.0, vector: unitVec(0) },
+    { topicId: 2, weight: 0.2, vector: unitVec(1) },
+  ];
+
+  it("matches a multi-modal profile on its nearest topic, not the average", () => {
+    // Exactly on topic 1 → full cosine. The centroid of topics 1+2 would give
+    // only ~0.98 here, but a vector on topic 2 would drop to ~0.2 against it.
+    expect(profileSimilarity(unitVec(0), topics)).toBeCloseTo(1, 5);
+    expect(profileSimilarity(unitVec(1), topics)).toBeGreaterThan(0.75);
+  });
+
+  it("scales by topic weight between 0.75× and 1×", () => {
+    // topic 2 has weight 0.2 → multiplier 0.75 + 0.25·0.2 = 0.8
+    expect(profileSimilarity(unitVec(1), topics)).toBeCloseTo(0.8, 5);
+  });
+
+  it("is 0 for a vector orthogonal to every topic", () => {
+    expect(profileSimilarity(unitVec(5), topics)).toBe(0);
+  });
+
+  it("is 0 for an empty profile", () => {
+    expect(profileSimilarity(unitVec(0), [])).toBe(0);
+  });
+});
+
+describe("rescaleSimilarity", () => {
+  it("maps baseline → 0 and ceiling → 1, clamped", () => {
+    expect(rescaleSimilarity(SIMILARITY_BASELINE)).toBeCloseTo(0, 5);
+    expect(rescaleSimilarity(SIMILARITY_CEILING)).toBeCloseTo(1, 5);
+    expect(rescaleSimilarity(0)).toBe(0);
+    expect(rescaleSimilarity(0.99)).toBe(1);
+  });
+});
+
+describe("passesRelevanceGate", () => {
+  it("passes at or above the threshold and blocks below it", () => {
+    expect(passesRelevanceGate({ similarityRaw: MIN_RELEVANCE_SIMILARITY })).toBe(true);
+    expect(passesRelevanceGate({ similarityRaw: MIN_RELEVANCE_SIMILARITY + 0.1 })).toBe(true);
+    expect(passesRelevanceGate({ similarityRaw: MIN_RELEVANCE_SIMILARITY - 0.001 })).toBe(false);
+  });
+
+  it("blocks NaN (e.g. a zero-length vector)", () => {
+    expect(passesRelevanceGate({ similarityRaw: Number.NaN })).toBe(false);
+  });
+});
+
+// --- resolveCandidateVectors (batched title embeddings) ---
+
+describe("resolveCandidateVectors", () => {
+  /** Fake embedder: records each call and encodes the title's number in dim 0. */
+  function fakeEmbed(failOnCall?: number) {
+    const calls: string[][] = [];
+    const embed = async (texts: string[]) => {
+      calls.push(texts);
+      if (calls.length === failOnCall) throw new Error("API down");
+      return texts.map((t) => Float32Array.of(Number(t.replace("Video ", ""))));
+    };
+    return { calls, embed };
+  }
+
+  it("embeds a 200-candidate run in 2 API calls, mapping vectors back by position", async () => {
+    const candidates = Array.from({ length: 200 }, (_, i) => makeCandidate(i, 0));
+    const { calls, embed } = fakeEmbed();
+    const vectors = await resolveCandidateVectors(candidates, embed);
+    expect(calls.map((c) => c.length)).toEqual([100, 100]);
+    expect(vectors.map((v) => v![0])).toEqual(candidates.map((c) => c.id));
+  });
+
+  it("skips titleless candidates without sending them", async () => {
+    const candidates = [makeCandidate(1, 0), { ...makeCandidate(2, 0), title: null }, { ...makeCandidate(3, 0), title: " x " }];
+    const { calls, embed } = fakeEmbed();
+    const vectors = await resolveCandidateVectors(candidates, embed);
+    expect(calls).toEqual([["Video 1"]]);
+    expect(vectors[0]![0]).toBe(1);
+    expect(vectors[1]).toBeNull();
+    expect(vectors[2]).toBeNull();
+  });
+
+  it("leaves only the failed batch unembedded", async () => {
+    const candidates = Array.from({ length: 150 }, (_, i) => makeCandidate(i, 0));
+    const { embed } = fakeEmbed(1);
+    const vectors = await resolveCandidateVectors(candidates, embed);
+    expect(vectors.slice(0, 100).every((v) => v === null)).toBe(true);
+    expect(vectors.slice(100).map((v) => v![0])).toEqual(candidates.slice(100).map((c) => c.id));
+  });
+});
+
+describe("WEIGHTS", () => {
+  it("sums to 1 and has no topicOverlap component", () => {
+    const sum = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1, 10);
+    expect("topicOverlap" in WEIGHTS).toBe(false);
   });
 });
