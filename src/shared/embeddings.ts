@@ -131,4 +131,19 @@ export async function embedBatch(texts: string[]): Promise<Float32Array[]> {
   return results;
 }
 
+/**
+ * Decode a vec0 `float[N]` column value. bun:sqlite returns BLOB columns as a
+ * Uint8Array of raw bytes (4 per float), NOT a Float32Array — indexing it
+ * directly yields byte values 0..255. Returns null on a length mismatch.
+ */
+export function decodeVecBlob(blob: Uint8Array | Float32Array | null | undefined): Float32Array | null {
+  if (!blob) return null;
+  if (blob instanceof Float32Array) return blob.length === EMBEDDING_DIMENSIONS ? blob : null;
+  if (blob.byteLength !== EMBEDDING_DIMENSIONS * 4) return null;
+  // Copy so the result is 4-byte aligned regardless of the source offset.
+  const copy = new Uint8Array(blob.byteLength);
+  copy.set(blob);
+  return new Float32Array(copy.buffer);
+}
+
 export { EMBEDDING_DIMENSIONS };

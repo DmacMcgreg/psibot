@@ -1,1 +1,1 @@
-export { embedText, embedBatch, EMBEDDING_DIMENSIONS } from "../shared/embeddings.ts";
+export { embedText, embedBatch, decodeVecBlob, EMBEDDING_DIMENSIONS } from "../shared/embeddings.ts";
