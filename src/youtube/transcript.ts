@@ -292,7 +292,18 @@ async function extractTranscriptViaAudio(videoId: string, notify?: (message: str
  * channelId is the UC... id needed for RSS polling / channel fan-out; it's
  * populated from yt-dlp's channel_id field when present.
  */
-export async function getVideoMetadata(videoId: string): Promise<{ title: string; channelTitle: string; channelId?: string } | null> {
+/**
+ * When the video came out, as ISO 8601 UTC. yt-dlp gives an epoch `timestamp`
+ * (premieres/streams: `release_timestamp`) and always a YYYYMMDD `upload_date`.
+ */
+export function ytDlpPublishedAt(data: { timestamp?: number; release_timestamp?: number; upload_date?: string }): string | undefined {
+  const epoch = data.release_timestamp ?? data.timestamp;
+  if (typeof epoch === "number" && epoch > 0) return new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const m = data.upload_date?.match(/^(\d{4})(\d{2})(\d{2})$/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}T00:00:00Z` : undefined;
+}
+
+export async function getVideoMetadata(videoId: string): Promise<{ title: string; channelTitle: string; channelId?: string; publishedAt?: string } | null> {
   try {
     const proc = Bun.spawn(
       ["yt-dlp", "--dump-json", "--skip-download", `https://youtube.com/watch?v=${videoId}`],
@@ -307,11 +318,15 @@ export async function getVideoMetadata(videoId: string): Promise<{ title: string
     const exitCode = await proc.exited;
     if (exitCode !== 0) return null;
 
-    const data = JSON.parse(stdout) as { title?: string; channel?: string; uploader?: string; channel_id?: string };
+    const data = JSON.parse(stdout) as {
+      title?: string; channel?: string; uploader?: string; channel_id?: string;
+      timestamp?: number; release_timestamp?: number; upload_date?: string;
+    };
     return {
       title: data.title ?? "Unknown Title",
       channelTitle: data.channel ?? data.uploader ?? "Unknown Channel",
       channelId: data.channel_id,
+      publishedAt: ytDlpPublishedAt(data),
     };
   } catch {
     return null;

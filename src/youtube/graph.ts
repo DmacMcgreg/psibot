@@ -1,7 +1,7 @@
 import { getDb } from "../db/index.ts";
 import { createLogger } from "../shared/logger.ts";
 import type { ParsedTranscript } from "./analyzer.ts";
-import { embedText, embedBatch } from "./embeddings.ts";
+import { embedText, embedBatch, decodeVecBlob } from "./embeddings.ts";
 
 const log = createLogger("youtube:graph");
 
@@ -429,16 +429,17 @@ export function buildVideoSimilarityGraph(similarityThreshold: number = 0.78, ma
     )
     .all();
 
-  // Fetch embeddings for all summary chunks
+  // Fetch embeddings for all summary chunks. bun:sqlite returns the vec0
+  // column as raw bytes, so decode before use — indexing the bytes directly
+  // made every pair look similar (all components 0..255, all positive).
+  const embeddingStmt = db.prepare<{ embedding: Uint8Array }, [number]>(
+    `SELECT embedding FROM youtube_vec WHERE rowid = ?`
+  );
   const embeddingMap = new Map<string, Float32Array>();
   for (const v of videos) {
-    const row = db
-      .prepare<{ embedding: Float32Array }, [number]>(
-        `SELECT embedding FROM youtube_vec WHERE rowid = ?`
-      )
-      .get(v.chunk_id);
-    if (row) {
-      embeddingMap.set(v.video_id, row.embedding);
+    const vec = decodeVecBlob(embeddingStmt.get(v.chunk_id)?.embedding);
+    if (vec) {
+      embeddingMap.set(v.video_id, vec);
     }
   }
 

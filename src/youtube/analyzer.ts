@@ -47,10 +47,105 @@ function formatTimestamp(seconds: number): string {
 }
 
 /**
- * Parse a transcript with Claude Agent SDK into structured analysis.
+ * Thrown when the model's reply still can't be parsed after one stricter
+ * retry (or the model call itself failed twice). Callers treat the video as
+ * failed: nothing is stored, so no placeholder summary, "General Content"
+ * theme, triage item or discovery seed comes out of it, and the Watch Later
+ * processor retries the video on its next run.
+ */
+export class AnalysisFailedError extends Error {
+  constructor(message: string) {
+    super(`analysis_failed: ${message}`);
+    this.name = "AnalysisFailedError";
+  }
+}
+
+/** One model turn → raw reply text. Swappable for tests. */
+export type AnalyzerAsk = (prompt: string, model?: string) => Promise<string>;
+
+async function askModel(prompt: string, model?: string): Promise<string> {
+  let response = "";
+  for await (const msg of query({ prompt, options: { maxTurns: 1, ...(model ? { model } : {}) } })) {
+    if (msg.type === "assistant" && msg.message) {
+      response += msg.message.content
+        .map((block: { type: string; text?: string }) => (block.type === "text" ? block.text : ""))
+        .join("");
+    } else if (msg.type === "result") {
+      log.info("Analysis complete", {
+        turns: msg.num_turns,
+        durationMs: msg.duration_ms,
+        cost: msg.total_cost_usd?.toFixed(6),
+      });
+    }
+  }
+  return response;
+}
+
+/** First balanced {...} in the text, string-aware. */
+function firstJsonObject(text: string): string | null {
+  const firstBrace = text.indexOf("{");
+  if (firstBrace === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  for (let i = firstBrace; i < text.length; i++) {
+    const char = text[i];
+    if (escapeNext) { escapeNext = false; continue; }
+    if (char === "\\") { escapeNext = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (char === "{") depth++;
+    else if (char === "}") {
+      depth--;
+      if (depth === 0) return text.substring(firstBrace, i + 1);
+    }
+  }
+  return null;
+}
+
+const asArray = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
+/**
+ * Parse and validate a model reply. Throws when there is no JSON, the JSON is
+ * broken, or the summary is empty — the cases that used to produce fallback
+ * placeholder rows.
+ */
+export function parseAnalysisResponse(response: string): ParsedTranscript {
+  const block = response.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1]?.trim();
+  const jsonString = block && block.startsWith("{") && block.endsWith("}") ? block : firstJsonObject(response);
+  if (!jsonString) throw new Error(`no JSON in reply: ${response.slice(0, 120).replace(/\s+/g, " ")}`);
+  const raw = JSON.parse(jsonString) as Partial<ParsedTranscript>;
+  const markdown_summary = typeof raw.markdown_summary === "string" ? raw.markdown_summary.trim() : "";
+  if (markdown_summary.length < 40) throw new Error("reply has no usable markdown_summary");
+  return {
+    markdown_summary,
+    tags: asArray<string>(raw.tags).filter((t) => typeof t === "string" && t.trim()),
+    themes: asArray<Theme>(raw.themes).filter((t) => t && typeof t.name === "string" && t.name.trim()),
+    key_topics: asArray<KeyTopic>(raw.key_topics),
+    insights: asArray<Insight>(raw.insights).filter((i) => i && typeof i.insight === "string"),
+    quotes: asArray<Quote>(raw.quotes).filter((q) => q && typeof q.quote === "string"),
+  };
+}
+
+export const STRICT_RETRY_SUFFIX = `
+
+IMPORTANT — your previous reply could not be parsed as JSON. Reply again with ONE valid JSON object and nothing else:
+- no prose before or after, no code fence;
+- escape every newline inside a string as \\n and every double quote as \\";
+- keep "markdown_summary" under 2,500 characters and each quote under 200 characters.`;
+
+/**
+ * Summarise a transcript for recall and search: a short factual overview plus
+ * key points, themes, tags and quotes. It gives no advice — concrete assets
+ * (tools, techniques, datasets, deadlines) are extracted separately from the
+ * stored transcript by src/assets/extract*.
+ *
  * `candidateTopics` is a soft hint: nearest existing canonical topics the
  * analyzer should prefer when naming themes, to keep the taxonomy clean.
  * `candidateTags` works the same way for the flat tag vocabulary.
+ *
+ * On a parse failure it retries once with a stricter prompt, then throws
+ * AnalysisFailedError. It never returns placeholder text.
  */
 export async function analyzeTranscript(
   transcript: Transcript,
@@ -59,202 +154,96 @@ export async function analyzeTranscript(
     model?: string;
     candidateTopics?: Array<{ name: string; description: string }>;
     candidateTags?: string[];
+    /** Test seam; defaults to one tool-less Agent SDK turn. */
+    ask?: AnalyzerAsk;
   }
 ): Promise<ParsedTranscript> {
+  const ask = options?.ask ?? askModel;
+  log.info("Analyzing transcript", {
+    videoTitle,
+    segments: transcript.segments.length,
+    candidateTopics: options?.candidateTopics?.length ?? 0,
+    candidateTags: options?.candidateTags?.length ?? 0,
+  });
+
+  const prompt = buildAnalysisPrompt(transcript, videoTitle, options);
+
+  let firstError: string;
   try {
-    log.info("Analyzing transcript", {
-      videoTitle,
-      segments: transcript.segments.length,
-      candidateTopics: options?.candidateTopics?.length ?? 0,
-      candidateTags: options?.candidateTags?.length ?? 0,
-    });
+    const parsed = parseAnalysisResponse(await ask(prompt, options?.model));
+    logParsed(parsed);
+    return parsed;
+  } catch (error) {
+    firstError = error instanceof Error ? error.message : String(error);
+    log.warn("Analysis reply unusable, retrying once with a stricter prompt", { videoTitle, error: firstError });
+  }
 
-    const transcriptData = transcript.segments.map((seg) => ({
-      timestamp: formatTimestamp(seg.start),
-      text: seg.text,
-    }));
+  try {
+    const parsed = parseAnalysisResponse(await ask(prompt + STRICT_RETRY_SUFFIX, options?.model));
+    logParsed(parsed);
+    return parsed;
+  } catch (error) {
+    const secondError = error instanceof Error ? error.message : String(error);
+    log.error("Analysis failed after retry; video will be marked failed", { videoTitle, firstError, secondError });
+    throw new AnalysisFailedError(secondError.slice(0, 200));
+  }
+}
 
-    const candidateTopicsSection = options?.candidateTopics && options.candidateTopics.length > 0
-      ? `\n\nCanonical topic taxonomy (prefer these names when a theme clearly matches one of them; otherwise invent a new theme name):\n${options.candidateTopics
-          .map((t) => `- ${t.name}: ${t.description}`)
-          .join("\n")}\n`
-      : "";
+function logParsed(parsed: ParsedTranscript): void {
+  log.info("Parsed analysis", {
+    themes: parsed.themes.length,
+    topics: parsed.key_topics.length,
+    points: parsed.insights.length,
+    quotes: parsed.quotes.length,
+    tags: parsed.tags,
+  });
+}
 
-    const candidateTagsSection = options?.candidateTags && options.candidateTags.length > 0
-      ? `\n\nCanonical tag vocabulary (prefer these exact strings for the "tags" field when one clearly applies; only invent a new tag when no existing tag fits). Format: lowercase-hyphenated.\n${options.candidateTags.map((t) => `- ${t}`).join("\n")}\n`
-      : "";
+export function buildAnalysisPrompt(
+  transcript: Transcript,
+  videoTitle: string,
+  options?: { candidateTopics?: Array<{ name: string; description: string }>; candidateTags?: string[] },
+): string {
+  // One compact line per segment: the old pretty-printed JSON doubled the tokens.
+  const transcriptLines = transcript.segments.map((seg) => `[${formatTimestamp(seg.start)}] ${seg.text}`).join("\n");
 
-    const prompt = `Analyze this YouTube video transcript and create a structured summary.
+  const candidateTopicsSection = options?.candidateTopics && options.candidateTopics.length > 0
+    ? `\n\nCanonical topic taxonomy (prefer these names when a theme clearly matches one of them; otherwise invent a new theme name):\n${options.candidateTopics
+        .map((t) => `- ${t.name}: ${t.description}`)
+        .join("\n")}\n`
+    : "";
+
+  const candidateTagsSection = options?.candidateTags && options.candidateTags.length > 0
+    ? `\n\nCanonical tag vocabulary (prefer these exact strings for the "tags" field when one clearly applies; only invent a new tag when no existing tag fits). Format: lowercase-hyphenated.\n${options.candidateTags.map((t) => `- ${t}`).join("\n")}\n`
+    : "";
+
+  return `Summarise this YouTube video transcript for later recall and search.
+
+Report what the video says. Do not give advice, do not tell the reader what to do, and do not invent "insights" the speaker didn't state. Keep names, numbers, tools, links and steps exactly as spoken.
 
 Title: ${videoTitle}
 ${candidateTopicsSection}${candidateTagsSection}
-Transcript:
-${JSON.stringify(transcriptData, null, 2)}
+Transcript (one line per segment, [HH:MM:SS] text):
+${transcriptLines}
 
-Create a JSON object with this schema:
+Reply with ONE JSON object with this schema:
 
 {
-  "markdown_summary": "## Overview\\n(2-3 sentences)\\n\\n## Key Topics\\n(timestamped list)\\n\\n## Actionable Insights\\n(bulleted with timestamps, imperative verbs)\\n\\n## Notable Quotes\\n(4-6 key quotes with timestamps)\\n\\n## Follow-up Ideas\\n(optional next steps)",
+  "markdown_summary": "## Overview\\n(2-3 factual sentences: what the video covers and its main claim)\\n\\n## Key Points\\n(5-10 timestamped bullets, each a specific fact, claim, number, tool or step stated in the video)\\n\\n## Notable Quotes\\n(2-4 short quotes with timestamps)",
   "tags": ["2-5 categorization tags"],
   "themes": [
-    {
-      "id": "t1",
-      "name": "theme name",
-      "summary": "1-2 sentences"
-    }
+    { "id": "t1", "name": "specific subject name (not a catch-all)", "summary": "1-2 sentences" }
   ],
   "key_topics": [
-    {
-      "timestamp": "HH:MM:SS",
-      "topic": "topic name",
-      "theme_id": "t1",
-      "summary": "1-2 sentences"
-    }
+    { "timestamp": "HH:MM:SS", "topic": "topic name", "theme_id": "t1", "summary": "1-2 sentences" }
   ],
   "insights": [
-    {
-      "timestamp": "HH:MM:SS or null",
-      "insight": "imperative phrasing (e.g., Consider..., Explore...)",
-      "theme_id": "t1"
-    }
+    { "timestamp": "HH:MM:SS or null", "insight": "one key point as a factual statement of what the video says (not advice)", "theme_id": "t1" }
   ],
   "quotes": [
-    {
-      "timestamp": "HH:MM:SS",
-      "speaker": "speaker name or null",
-      "quote": "the actual quote",
-      "theme_id": "t1"
-    }
+    { "timestamp": "HH:MM:SS", "speaker": "speaker name or null", "quote": "the actual quote", "theme_id": "t1" }
   ]
 }
 
-Return the JSON in a markdown code block like this:
-\`\`\`json
-{
-  "markdown_summary": "...",
-  ...
-}
-\`\`\``;
-
-    let response = "";
-    for await (const msg of query({ prompt, options: { maxTurns: 1, ...(options?.model ? { model: options.model } : {}) } })) {
-      if (msg.type === "assistant" && msg.message) {
-        response += msg.message.content
-          .map((block: { type: string; text?: string }) =>
-            block.type === "text" ? block.text : ""
-          )
-          .join("");
-      } else if (msg.type === "result") {
-        log.info("Analysis complete", {
-          turns: msg.num_turns,
-          durationMs: msg.duration_ms,
-          cost: msg.total_cost_usd?.toFixed(6),
-        });
-      }
-    }
-
-    // Extract JSON from response
-    let jsonString: string | null = null;
-
-    // Try 1: markdown code block
-    const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlockMatch) {
-      const extracted = codeBlockMatch[1].trim();
-      if (extracted.startsWith("{") && extracted.endsWith("}")) {
-        jsonString = extracted;
-      }
-    }
-
-    // Try 2: brace matching
-    if (!jsonString) {
-      const firstBrace = response.indexOf("{");
-      if (firstBrace !== -1) {
-        let braceCount = 0;
-        let inString = false;
-        let escapeNext = false;
-        let endPos = -1;
-
-        for (let i = firstBrace; i < response.length; i++) {
-          const char = response[i];
-
-          if (escapeNext) {
-            escapeNext = false;
-            continue;
-          }
-          if (char === "\\") {
-            escapeNext = true;
-            continue;
-          }
-          if (char === '"') {
-            inString = !inString;
-            continue;
-          }
-          if (!inString) {
-            if (char === "{") braceCount++;
-            else if (char === "}") {
-              braceCount--;
-              if (braceCount === 0) {
-                endPos = i;
-                break;
-              }
-            }
-          }
-        }
-
-        if (endPos !== -1) {
-          jsonString = response.substring(firstBrace, endPos + 1);
-        }
-      }
-    }
-
-    if (!jsonString) {
-      log.error("No JSON in agent response", { responsePreview: response.slice(0, 500) });
-      throw new Error("Agent did not return valid JSON");
-    }
-
-    const parsed: ParsedTranscript = JSON.parse(jsonString);
-
-    log.info("Parsed analysis", {
-      themes: parsed.themes.length,
-      topics: parsed.key_topics.length,
-      insights: parsed.insights.length,
-      quotes: parsed.quotes.length,
-      tags: parsed.tags,
-    });
-
-    return parsed;
-  } catch (error) {
-    log.error("Analysis failed, using fallback", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return fallbackAnalysis(transcript, videoTitle);
-  }
-}
-
-function fallbackAnalysis(transcript: Transcript, videoTitle: string): ParsedTranscript {
-  const overview = transcript.fullText.substring(0, 300) + "...";
-  const markdown_summary = `## Overview\n**${videoTitle}**\n\n${overview}\n\n## Key Topics\nAuto-generated fallback -- topics extracted at 5-minute intervals.\n\n## Actionable Insights\n- Review the full transcript for detailed insights\n\n## Notable Quotes\nNo quotes extracted in fallback mode.\n\n## Follow-up Ideas\nConsider re-processing for better analysis.`;
-
-  const key_topics: KeyTopic[] = [];
-  const INTERVAL = 300;
-  for (let i = 0; i < transcript.segments.length; i++) {
-    const segment = transcript.segments[i];
-    if (segment.start % INTERVAL < 10 || i === 0) {
-      key_topics.push({
-        timestamp: formatTimestamp(segment.start),
-        topic: `Content at ${formatTimestamp(segment.start)}`,
-        theme_id: "t1",
-        summary: segment.text.substring(0, 100) + "...",
-      });
-    }
-  }
-
-  return {
-    markdown_summary,
-    tags: ["auto-generated", "fallback"],
-    themes: [{ id: "t1", name: "General Content", summary: "Auto-generated fallback theme." }],
-    key_topics,
-    insights: [{ timestamp: null, insight: "Re-process this video for detailed analysis", theme_id: "t1" }],
-    quotes: [],
-  };
+Escape newlines inside strings as \\n. Return the JSON in a \`\`\`json code block and nothing else.`;
 }

@@ -61,6 +61,15 @@ describe("youtube schema", () => {
   });
 });
 
+describe("published_at columns", () => {
+  it("exists on youtube_videos and pending_items", () => {
+    for (const table of ["youtube_videos", "pending_items"]) {
+      const cols = db.prepare<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      expect(cols).toContain("published_at");
+    }
+  });
+});
+
 describe("youtube_videos CRUD", () => {
   it("inserts and retrieves a video", () => {
     const result = db

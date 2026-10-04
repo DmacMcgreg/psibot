@@ -12,9 +12,21 @@ import {
 import { indexVideoTopics, getCandidateTopicsForText } from "./graph.ts";
 import { canonicalizeTags, getCandidateTagsForText } from "./tags-canonical.ts";
 import { insertPendingItem } from "../db/queries.ts";
+import { getVideoStats } from "./api.ts";
 import type { ParsedTranscript } from "./analyzer.ts";
 
 const log = createLogger("youtube:process");
+
+/** Fallback when yt-dlp gives no date: one videos.list call (1 quota unit). Never throws. */
+async function publishedAtFromApi(videoId: string): Promise<string | null> {
+  try {
+    const [stat] = await getVideoStats([videoId]);
+    return stat?.publishedAt || null;
+  } catch (err) {
+    log.warn("Could not fetch publish date (non-fatal)", { videoId, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
 
 export interface ProcessVideoResult {
   videoId: string;
@@ -121,7 +133,10 @@ export async function processAndStoreVideo(
     });
   }
 
-  // Analyze with Claude
+  // Analyze with Claude. On an unusable reply (after one stricter retry) this
+  // throws AnalysisFailedError before anything is stored: no row, no chunks,
+  // no topics, no triage item. Callers mark the video/candidate failed, and
+  // the Watch Later processor retries it next run.
   log.info("Analyzing transcript", {
     videoId,
     candidateTopics: candidateTopics.length,
@@ -163,6 +178,7 @@ export async function processAndStoreVideo(
     transcriptText: transcript.fullText,
     processingStatus: options?.processingStatus ?? "complete",
     playlistItemId: options?.playlistItemId,
+    publishedAt: meta.publishedAt ?? (await publishedAtFromApi(videoId)),
   });
 
   // Generate embeddings and store chunks

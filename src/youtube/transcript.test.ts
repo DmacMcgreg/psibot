@@ -1,7 +1,23 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
 import * as sqliteVec from "sqlite-vec";
-import { parseVideoId, extractTranscript, getVideoMetadata } from "./transcript.ts";
+import { parseVideoId, extractTranscript, getVideoMetadata, ytDlpPublishedAt } from "./transcript.ts";
+
+// --- ytDlpPublishedAt (pure) ---
+
+describe("ytDlpPublishedAt", () => {
+  it("prefers release_timestamp, then timestamp, as ISO UTC without millis", () => {
+    expect(ytDlpPublishedAt({ timestamp: 1_753_171_200 })).toBe("2025-07-22T08:00:00Z");
+    expect(ytDlpPublishedAt({ timestamp: 1, release_timestamp: 1_753_171_200 })).toBe("2025-07-22T08:00:00Z");
+  });
+  it("falls back to upload_date at midnight UTC", () => {
+    expect(ytDlpPublishedAt({ upload_date: "20250722" })).toBe("2025-07-22T00:00:00Z");
+  });
+  it("returns undefined when nothing usable is present", () => {
+    expect(ytDlpPublishedAt({})).toBeUndefined();
+    expect(ytDlpPublishedAt({ upload_date: "NA" })).toBeUndefined();
+  });
+});
 
 // --- parseVideoId (pure, unit tests) ---
 

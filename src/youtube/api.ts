@@ -1,4 +1,5 @@
 import { getConfig } from "../config.ts";
+import { buildReauthMessage } from "../shared/oauth.ts";
 import { createLogger } from "../shared/logger.ts";
 
 const log = createLogger("youtube:api");
@@ -47,9 +48,9 @@ async function fetchAccessToken(forceRefresh = false): Promise<string> {
   if (!response.ok) {
     const data = (await response.json().catch(() => null)) as VaultTokenResponse | null;
     if (data?.reauth_required) {
-      throw new ReauthRequiredError(
-        `Google OAuth token expired. Re-authenticate at: ${config.OAUTH_VAULT_URL}${data.reauth_url ?? "/google/authorize"}`
-      );
+      // Always the dashboard link (Connect buttons live there), never the
+      // vault root or a raw authorize path — see src/shared/oauth.ts.
+      throw new ReauthRequiredError(buildReauthMessage("Google"));
     }
     const text = data?.error ?? `HTTP ${response.status}`;
     throw new Error(`OAuth vault error (${response.status}): ${text}`);
@@ -236,6 +237,14 @@ export interface VideoStat {
   viewCount: number;
   likeCount: number;
   durationSeconds: number;
+  /** snippet.categoryId, e.g. "20" Gaming, "28" Science & Technology. */
+  categoryId?: string;
+  /** snippet.defaultAudioLanguage (BCP-47, e.g. "en", "zh-Hant"); often absent. */
+  audioLanguage?: string;
+  /** snippet.defaultLanguage: language of the title/description; often absent. */
+  textLanguage?: string;
+  description?: string;
+  tags?: string[];
 }
 
 interface SearchListResponse {
@@ -259,6 +268,11 @@ interface VideoListResponse {
       channelTitle?: string;
       title?: string;
       publishedAt?: string;
+      categoryId?: string;
+      defaultAudioLanguage?: string;
+      defaultLanguage?: string;
+      description?: string;
+      tags?: string[];
     };
     statistics?: {
       viewCount?: string;
@@ -289,6 +303,10 @@ export async function searchVideos(params: {
   order?: "date" | "viewCount" | "rating" | "relevance";
   publishedAfter?: string; // RFC 3339
   videoDuration?: "any" | "short" | "medium" | "long";
+  /** Bias results toward this language (ISO 639-1, e.g. "en"). A hint, not a filter. */
+  relevanceLanguage?: string;
+  /** Bias results toward this region (ISO 3166-1 alpha-2, e.g. "CA"). */
+  regionCode?: string;
 }): Promise<SearchResult[]> {
   const apiParams: Record<string, string> = {
     part: "snippet",
@@ -299,6 +317,8 @@ export async function searchVideos(params: {
   };
   if (params.publishedAfter) apiParams.publishedAfter = params.publishedAfter;
   if (params.videoDuration) apiParams.videoDuration = params.videoDuration;
+  if (params.relevanceLanguage) apiParams.relevanceLanguage = params.relevanceLanguage;
+  if (params.regionCode) apiParams.regionCode = params.regionCode;
 
   const data = await youtubeApiRequest<SearchListResponse>("search", { params: apiParams });
 
@@ -335,6 +355,11 @@ export async function getVideoStats(videoIds: string[]): Promise<VideoStat[]> {
     viewCount: Number(item.statistics?.viewCount ?? 0),
     likeCount: Number(item.statistics?.likeCount ?? 0),
     durationSeconds: parseIso8601Duration(item.contentDetails?.duration ?? "PT0S"),
+    categoryId: item.snippet?.categoryId,
+    audioLanguage: item.snippet?.defaultAudioLanguage,
+    textLanguage: item.snippet?.defaultLanguage,
+    description: item.snippet?.description,
+    tags: item.snippet?.tags,
   }));
 }
 

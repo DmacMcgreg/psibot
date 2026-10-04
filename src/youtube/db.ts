@@ -28,6 +28,8 @@ export interface StoredVideo {
   playlist_item_id: string | null;
   marking_attempts: number;
   last_mark_attempt_at: string | null;
+  /** When the video was published on YouTube (ISO 8601 UTC); NULL if unknown. */
+  published_at?: string | null;
   processed_at: string;
   created_at: string;
 }
@@ -53,12 +55,14 @@ export function insertVideo(params: {
   transcriptText: string;
   processingStatus?: VideoProcessingStatus;
   playlistItemId?: string;
+  /** YouTube upload time (ISO 8601); kept if the row already has one. */
+  publishedAt?: string | null;
 }): StoredVideo {
   const db = getDb();
   const row = db
-    .prepare<StoredVideo, [string, string, string, string, string, string, string, string, string, string | null]>(
-      `INSERT INTO youtube_videos (video_id, title, channel_title, url, tags, markdown_summary, analysis_json, transcript_text, processing_status, playlist_item_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    .prepare<StoredVideo, [string, string, string, string, string, string, string, string, string, string | null, string | null]>(
+      `INSERT INTO youtube_videos (video_id, title, channel_title, url, tags, markdown_summary, analysis_json, transcript_text, processing_status, playlist_item_id, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(video_id) DO UPDATE SET
          title = excluded.title,
          channel_title = excluded.channel_title,
@@ -68,6 +72,7 @@ export function insertVideo(params: {
          transcript_text = excluded.transcript_text,
          processing_status = excluded.processing_status,
          playlist_item_id = COALESCE(excluded.playlist_item_id, youtube_videos.playlist_item_id),
+         published_at = COALESCE(youtube_videos.published_at, excluded.published_at),
          processed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        RETURNING *`
     )
@@ -81,7 +86,8 @@ export function insertVideo(params: {
       JSON.stringify(params.analysis),
       params.transcriptText,
       params.processingStatus ?? "complete",
-      params.playlistItemId ?? null
+      params.playlistItemId ?? null,
+      params.publishedAt ?? null
     )!;
   if (row.markdown_summary && row.markdown_summary.trim().length > 0) {
     syncAtlasForYoutubeVideo(row);

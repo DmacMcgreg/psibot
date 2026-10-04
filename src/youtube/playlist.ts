@@ -29,6 +29,8 @@ export interface PlaylistProcessingResult {
   retryFailures: number;
   errors: Array<{ videoId: string; error: string }>;
   details: VideoDetail[];
+  /** Items left in the source playlist because the time budget ran out. */
+  remaining: number;
 }
 
 export interface PlaylistProcessingOptions {
@@ -36,6 +38,10 @@ export interface PlaylistProcessingOptions {
   destinationPlaylistId?: string;
   limit?: number;
   retryFailed?: boolean;
+  /** Stop starting new videos after this long (default 10 min). The agent's
+   *  tool-call watchdog kills a call at 15 min, so a big backlog must be split
+   *  across runs; the next run picks up where this one stopped. */
+  timeBudgetMs?: number;
   model?: string;
   onProgress?: (message: string) => Promise<void>;
 }
@@ -48,6 +54,7 @@ export async function processPlaylist(
   const destinationPlaylistId = options.destinationPlaylistId || config.YOUTUBE_DESTINATION_PLAYLIST_ID;
   const limit = options.limit ?? 50;
   const retryFailed = options.retryFailed ?? true;
+  const deadline = Date.now() + (options.timeBudgetMs ?? 10 * 60 * 1000);
 
   if (!sourcePlaylistId) {
     throw new Error("No source playlist ID configured. Set YOUTUBE_SOURCE_PLAYLIST_ID or pass source_playlist_id.");
@@ -62,6 +69,7 @@ export async function processPlaylist(
     retryFailures: 0,
     errors: [],
     details: [],
+    remaining: 0,
   };
 
   // Phase 1: Retry previously failed playlist moves
@@ -128,6 +136,11 @@ export async function processPlaylist(
   // Phase 3: Process each video sequentially
   let idx = 0;
   for (const item of itemsToProcess) {
+    if (Date.now() > deadline) {
+      result.remaining = items.length - idx;
+      log.info("Playlist time budget spent; leaving the rest for the next run", { remaining: result.remaining });
+      break;
+    }
     idx++;
     const videoId = item.snippet.resourceId.videoId;
     const playlistItemId = item.id;
