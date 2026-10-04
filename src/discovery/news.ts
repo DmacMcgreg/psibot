@@ -251,7 +251,9 @@ Produce a JSON object with this schema (return ONLY the JSON in a code block):
 
   let response = "";
   try {
-    for await (const msg of query({ prompt, options: { maxTurns: 1 } })) {
+    // maxTurns 4 (was 1): a first-turn tool call used to hard-fail with
+    // "Reached maximum number of turns (1)"; plain-text path unchanged.
+    for await (const msg of query({ prompt, options: { maxTurns: 4 } })) {
       if (msg.type === "assistant" && msg.message) {
         response += msg.message.content
           .map((block: { type: string; text?: string }) =>
