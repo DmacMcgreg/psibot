@@ -20,7 +20,7 @@ import { tryPublishFromText } from "../agent/agent-run-publisher.ts";
 import { readSkill } from "../skills/index.ts";
 import { bumpUse, markExposed } from "../skills/usage.ts";
 import { CRON_FAILURE_STREAK, FAILED_RETRY_HOUR, parseDbTime, shouldMarkFailed } from "./watchdog.ts";
-import { providerQuotaError } from "./run-outcome.ts";
+import { providerErrorResult } from "./run-outcome.ts";
 import { sendOpsAlert } from "../shared/ops-alerts.ts";
 import { jobAlertKey, jobFailedAlertText } from "./job-alerts.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
@@ -174,15 +174,16 @@ export class JobExecutor {
         subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
       });
 
-      // A provider 429 (quota/rate-limit) rejection arrives as a *result*, not
-      // a throw — the CLI exits 0. Route it into the failure path so the
-      // streak counter, ops alert and watchdog see it; recorded as a result it
-      // lands behind status "success" and fails silently (job_runs 10322-24,
-      // 2026-10-05T04:00Z).
-      const quotaError = providerQuotaError(result.result);
-      if (quotaError) {
-        log.warn("Provider quota rejection classified as run failure", { jobId, name: job.name });
-        throw new Error(quotaError);
+      // A provider rejection arrives as a *result*, not a throw — the CLI
+      // exits 0. Route it into the failure path so the streak counter, ops
+      // alert and watchdog see it; recorded as a result it lands behind
+      // status "success" and fails silently (job_runs 10322-24, plus the
+      // census's context-window / auth-401 / fallback-exhausted residuals —
+      // 167 success-stamped error rows all time).
+      const errorResult = providerErrorResult(result.result);
+      if (errorResult) {
+        log.warn("Provider error envelope classified as run failure", { jobId, name: job.name });
+        throw new Error(errorResult);
       }
 
       // Budget enforcement disabled — non-quota results report success
@@ -373,12 +374,13 @@ export class JobExecutor {
         subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
       });
 
-      // Same classification as execute(): a bare 429 result is a failure, and
-      // its text must not feed forward as the pipeline's previous output.
-      const quotaError = providerQuotaError(result.result);
-      if (quotaError) {
-        log.warn("Provider quota rejection classified as run failure", { jobId, name: job.name, depth });
-        throw new Error(quotaError);
+      // Same classification as execute(): a provider error envelope (bare or
+      // behind the fallback tag) is a failure, and its text must not feed
+      // forward as the pipeline's previous output.
+      const errorResult = providerErrorResult(result.result);
+      if (errorResult) {
+        log.warn("Provider error envelope classified as run failure", { jobId, name: job.name, depth });
+        throw new Error(errorResult);
       }
 
       completeJobRun(run.id, {

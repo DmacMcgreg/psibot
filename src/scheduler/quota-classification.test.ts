@@ -25,7 +25,37 @@ process.env.ALLOWED_TELEGRAM_USER_IDS ??= "100000001";
 // (/tmp/psibot-429-20261005/app.db) — never the live registry.
 const RUN_10322 = "API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-05 12:12:52][20261005120002e143547df7b14f5c]";
 const RUN_10323 = "API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-05 12:12:52][202610051203064ba74f60123e4f91]";
-const RUN_10324 = "API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-05 12:12:52][2026100512031038e9dc9c153243e6]";
+const RUN_10324 = "API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-05 12:12:52][2026105012031038e9dc9c153243e6]";
+
+// Census residual shapes (research/psibot-jobruns-silent-blindspot-2026-10.md),
+// verbatim from the /tmp trio copy /tmp/psibot-jobruns-blindspot-20261005/ —
+// same registry as the 429 trio above, byte-verified against its rows.
+const RUN_215_CONTEXT_WINDOW = "API Error: The model has reached its context window limit.";
+const RUN_1402_AUTH_401 = 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"},"request_id":"req_011CZvmnzyRJiiSdrkpkZA6C"}';
+const RUN_7000_FALLBACK_529 = `[fallback: glm/sonnet, tier 2/8]
+
+API Error: 529 {"type":"error","error":{"type":"overloaded_error","code":"1305","message":"[1305][The service may be temporarily overloaded, please try again later][20260618114907e8635efcba4c4d98]"},"request_id":"20260618114907e8635efcba4c4d98"}`;
+const RUN_7002_FALLBACK_529 = `[fallback: glm/sonnet, tier 2/8]
+
+API Error: 529 {"type":"error","error":{"type":"overloaded_error","code":"1305","message":"[1305][The service may be temporarily overloaded, please try again later][202606181148379b45b770b1964988]"},"request_id":"202606181148379b45b770b1964988"}`;
+const RUN_4117_PROSE = `[NOTIFY]
+🌙 NIGHTLY BRIEF — Tuesday, May 5
+
+📅 TOMORROW (Wednesday, May 6)
+  Calendar data unavailable (Google/Apple API errors)
+  
+🌤️ TOMORROW'S WEATHER
+  11.8°C / 6.9°C ☁ Overcast — precip 16%
+
+📚 CLASS PREP
+  ⚠️ CLASS NIGHT TOMORROW (Wednesday)
+  No lecture notes found in upcoming-lectures/
+
+💤 No confirmed early commitments (calendar unavailable). Sleep well, but remember to prep class material for tomorrow night.
+
+---
+Brief saved to: ~/Documents/NotePlan-Notes/Notes/60 - Briefings/2026-05-05-nightly-brief.md
+[/NOTIFY]`;
 
 let db: Database;
 let sent: string[];
@@ -118,6 +148,32 @@ function resultExecutor(result: string): JobExecutor {
   return new JobExecutor(agent);
 }
 
+/** An agent that returns each scripted result once, in order — for driving a
+ *  pipeline (job A's run, then job B's executePipelineStep run) in one test. */
+function scriptedExecutor(results: string[]): { executor: JobExecutor; calls: () => number } {
+  let i = 0;
+  const agent = {
+    run: async () => fakeResult(results[Math.min(i++, results.length - 1)]),
+    consumeRestart: () => false,
+  } satisfies ExecutorAgent;
+  return { executor: new JobExecutor(agent), calls: () => i };
+}
+
+/** execute() fires pipeline steps without awaiting them, so no promise is
+ *  exposed to await — yield the event loop (zero-delay, no wall-clock sleep)
+ *  until the condition holds or the turn budget is spent. */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; !cond(); i++) {
+    if (i > 5_000) throw new Error("until: condition never held");
+    await new Promise<void>((r) => setImmediate(r));
+  }
+}
+
+function runCount(jobId: number): number {
+  const r = row(`SELECT COUNT(*) AS n FROM job_runs WHERE job_id = ?`, jobId);
+  return r !== null && typeof r.n === "number" ? r.n : 0;
+}
+
 describe("executor classification of provider 429 results", () => {
   it("records the run as error, not success, with the 429 text as its error", async () => {
     const id = addJob({ name: "YouTube Watchlist", schedule: "0 */3 * * *" });
@@ -155,5 +211,70 @@ describe("executor classification of provider 429 results", () => {
     expect(lastRun(id).status).toBe("success");
     expect(jobStatus(id)).toBe("enabled");
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("executor classification of census residual shapes", () => {
+  it("records context-window, auth-401 and fallback-exhausted results as error runs", async () => {
+    const cases: Array<[string, string]> = [
+      ["Inbox Triage", RUN_215_CONTEXT_WINDOW],
+      ["Research Pipeline", RUN_1402_AUTH_401],
+      ["Nightly Brief", RUN_7000_FALLBACK_529],
+    ];
+    for (const [name, text] of cases) {
+      const id = addJob({ name, schedule: "0 */6 * * *" });
+      await resultExecutor(text).execute(id);
+
+      const run = lastRun(id);
+      expect(run.status).toBe("error");
+      expect(run.error).toBe(text);
+      // Under the failure streak the job stays scheduled and quiet.
+      expect(jobStatus(id)).toBe("enabled");
+      expect(sent).toHaveLength(0);
+    }
+  });
+
+  it("counts a fallback-exhausted 529 toward the streak and fires the job-alerts arm at 3 in a row", async () => {
+    const id = addJob({ name: "Alpha Researcher", schedule: "0 */4 * * *" });
+    addRun(id, "error", "2026-06-18T02:00:00Z", RUN_7000_FALLBACK_529);
+    addRun(id, "error", "2026-06-18T03:31:00Z", RUN_7002_FALLBACK_529);
+
+    await resultExecutor(RUN_7000_FALLBACK_529).execute(id);
+
+    expect(jobStatus(id)).toBe("failed");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("PsiBot job failed: Alpha Researcher");
+    // jobFailedAlertText truncates the error — the fallback tag survives.
+    expect(sent[0]).toContain("[fallback: glm/sonnet, tier 2/8]");
+  });
+
+  it("keeps the id-4117 prose brief a success (the census's contains-predicate false positive)", async () => {
+    const id = addJob({ name: "Nightly Brief", schedule: "0 3 * * *" });
+    await resultExecutor(RUN_4117_PROSE).execute(id);
+
+    expect(lastRun(id).status).toBe("success");
+    expect(jobStatus(id)).toBe("enabled");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("pipeline path: a fallback-exhausted 529 fails the step and never feeds forward", async () => {
+    const first = addJob({ name: "Stage A", schedule: "0 6 * * *" });
+    const second = addJob({ name: "Stage B", schedule: "0 6 * * *" });
+    const third = addJob({ name: "Stage C", schedule: "0 6 * * *" });
+    db.prepare(`UPDATE jobs SET next_job_id = ? WHERE id = ?`).run(second, first);
+    db.prepare(`UPDATE jobs SET next_job_id = ? WHERE id = ?`).run(third, second);
+
+    const { executor, calls } = scriptedExecutor(["Stage A output", RUN_7000_FALLBACK_529, "never reached"]);
+    await executor.execute(first);
+
+    // execute() fires the step without awaiting it — yield until B's row lands.
+    await until(() => runCount(second) === 1);
+
+    expect(lastRun(first).status).toBe("success");
+    expect(lastRun(second).status).toBe("error");
+    expect(lastRun(second).error).toBe(RUN_7000_FALLBACK_529);
+    // The error text never feeds forward: Stage C never gets a run.
+    expect(runCount(third)).toBe(0);
+    expect(calls()).toBe(2);
   });
 });
