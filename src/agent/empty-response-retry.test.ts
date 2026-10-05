@@ -13,9 +13,10 @@ import { loadConfig } from "../config.ts";
  * psibot-yt-transient-fix; diagnosis in
  * research/psibot-yt-watchlist-diagnosis.md (vivaldi-home repo).
  *
- * The SDK's query() is faked with mock.module, which is process-wide and
- * first-wins in bun — the same ownership stop-run.test.ts documents.
- * Run this file on its own: `bun test src/agent/empty-response-retry.test.ts`.
+ * The SDK's query() is faked with mock.module, which is process-wide in
+ * bun — the same ownership stop-run.test.ts documents. The backoff env is
+ * read at retry time by emptyResponseBackoffMs(), so this suite stays green
+ * even when an earlier file (scheduler suites) already loaded ./index.ts.
  */
 
 // Throwaway env fixture: the gitignored developer .env normally supplies
@@ -24,7 +25,10 @@ import { loadConfig } from "../config.ts";
 process.env.TELEGRAM_BOT_TOKEN ??= "123456:TEST-BOT-TOKEN";
 process.env.ALLOWED_TELEGRAM_USER_IDS ??= "100000001";
 
-// Shrink the retry backoff before index.ts reads it at module scope.
+// Shrink the retry backoff; index.ts reads it at retry time (not module
+// scope), so setting it here reaches the already-loaded module. Saved and
+// restored — bun test shares one process with every other suite.
+const priorBackoffMs = process.env.EMPTY_RESPONSE_BACKOFF_MS;
 process.env.EMPTY_RESPONSE_BACKOFF_MS = "10";
 
 const EMPTY_EDE =
@@ -74,7 +78,11 @@ beforeAll(() => {
   for (const sql of MIGRATIONS) db.exec(sql);
   setDbForTesting(db);
 });
-afterAll(() => db.close());
+afterAll(() => {
+  db.close();
+  if (priorBackoffMs === undefined) delete process.env.EMPTY_RESPONSE_BACKOFF_MS;
+  else process.env.EMPTY_RESPONSE_BACKOFF_MS = priorBackoffMs;
+});
 
 function service() {
   // Only what createAgentTools reads while building the (unused) tool server.

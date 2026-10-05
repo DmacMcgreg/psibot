@@ -45,9 +45,16 @@ export function isEmptyFirstResponseError(err: unknown): boolean {
 
 /**
  * Backoff before the single retry of an empty first response. Env-overridable
- * so tests can shrink it and operators can tune it without a redeploy.
+ * so tests can shrink it and operators can tune it without a redeploy. Read
+ * at retry time, NOT module scope: bun test runs every file in one process,
+ * and an earlier file (the scheduler suites import AgentService) can load
+ * this module before a later test sets the env — a module-scope const froze
+ * the 15s default and timed empty-response-retry out, order-dependent
+ * (t_fz55r2ki7o).
  */
-const EMPTY_FIRST_RESPONSE_BACKOFF_MS = Number(process.env.EMPTY_RESPONSE_BACKOFF_MS ?? "") || 15_000;
+function emptyResponseBackoffMs(): number {
+  return Number(process.env.EMPTY_RESPONSE_BACKOFF_MS ?? "") || 15_000;
+}
 
 /**
  * Watchdog ceiling for a single tool execution. Must sit comfortably above
@@ -69,7 +76,7 @@ function skippedEmptyResponseResult(startedAt: number): AgentRunResult {
     sessionId: "",
     result:
       `Skipped: upstream returned an empty response (no assistant turn) twice after a ` +
-      `${Math.round(EMPTY_FIRST_RESPONSE_BACKOFF_MS / 1000)}s backoff — transient backend window, ` +
+      `${Math.round(emptyResponseBackoffMs() / 1000)}s backoff — transient backend window, ` +
       `not a job failure. The next scheduled run continues automatically.`,
     costUsd: 0,
     durationMs: Date.now() - startedAt,
@@ -365,9 +372,9 @@ export class AgentService {
         totalTiers,
         backend: tier.backend,
         model: tier.model,
-        backoffMs: EMPTY_FIRST_RESPONSE_BACKOFF_MS,
+        backoffMs: emptyResponseBackoffMs(),
       });
-      await Bun.sleep(EMPTY_FIRST_RESPONSE_BACKOFF_MS);
+      await Bun.sleep(emptyResponseBackoffMs());
       try {
         return { skipped: false, result: await this.runOnce({ ...options, model: tier.model, backend: tier.backend }) };
       } catch (err2) {
