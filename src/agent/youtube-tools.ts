@@ -11,7 +11,7 @@ import {
   getVideosNeedingPlaylistUpdate,
 } from "../youtube/db.ts";
 import { processAndStoreVideo } from "../youtube/process.ts";
-import { processPlaylist, type VideoDetail } from "../youtube/playlist.ts";
+import { youtubeProcessPlaylistTool } from "./youtube-playlist-tool.ts";
 import { checkVaultStatus } from "../youtube/api.ts";
 import {
   listTopics,
@@ -301,75 +301,7 @@ ${quotesStr}`;
         }
       ),
 
-      tool(
-        "youtube_process_playlist",
-        "Process videos from a YouTube playlist. Fetches items from the source playlist, extracts transcripts, analyzes them, generates embeddings, and moves processed videos to a destination playlist. Retries previously failed playlist moves.",
-        {
-          source_playlist_id: z.string().optional().describe("Source YouTube playlist ID (defaults to YOUTUBE_SOURCE_PLAYLIST_ID env var)"),
-          destination_playlist_id: z.string().optional().describe("Destination YouTube playlist ID (defaults to YOUTUBE_DESTINATION_PLAYLIST_ID env var)"),
-          limit: z.number().optional().describe("Max videos to process (default: 50)"),
-          retry_failed: z.boolean().optional().describe("Retry previously failed playlist moves (default: true)"),
-        },
-        async (args) => {
-          try {
-            const config = getConfig();
-            const result = await processPlaylist({
-              sourcePlaylistId: args.source_playlist_id,
-              destinationPlaylistId: args.destination_playlist_id,
-              limit: args.limit,
-              retryFailed: args.retry_failed,
-              model: config.YOUTUBE_ANALYSIS_MODEL,
-            });
-
-            const statusIcon = (status: VideoDetail["status"]): string => {
-              switch (status) {
-                case "processed": return "[NEW]";
-                case "skipped": return "[SKIP]";
-                case "moved": return "[MOVE]";
-                case "failed_to_move": return "[MOVE_ERR]";
-                case "failed": return "[FAIL]";
-              }
-            };
-
-            const lines = [
-              `Playlist processing complete (${result.processed} new, ${result.skipped} skipped, ${result.moved} moved, ${result.failed} failed)`,
-            ];
-
-            if (result.remaining > 0) {
-              lines.push(`${result.remaining} videos still in the playlist — time budget reached; the next run continues.`);
-            }
-
-            if (result.retrySuccesses > 0 || result.retryFailures > 0) {
-              lines.push(`Retries: ${result.retrySuccesses} succeeded, ${result.retryFailures} failed`);
-            }
-
-            if (result.details.length > 0) {
-              lines.push("");
-              for (const d of result.details) {
-                lines.push(`${statusIcon(d.status)} ${d.title}`);
-              }
-            }
-
-            if (result.errors.length > 0) {
-              lines.push(`\nErrors:`);
-              for (const err of result.errors) {
-                lines.push(`  - ${err.videoId}: ${err.error}`);
-              }
-            }
-
-            return {
-              content: [{ type: "text" as const, text: lines.join("\n") }],
-            };
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            log.error("youtube_process_playlist failed", { error: message });
-            return {
-              content: [{ type: "text" as const, text: `Playlist processing failed: ${message}` }],
-              isError: true,
-            };
-          }
-        }
-      ),
+      youtubeProcessPlaylistTool(),
 
       tool(
         "youtube_oauth_setup",
