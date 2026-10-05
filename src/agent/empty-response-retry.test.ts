@@ -18,6 +18,12 @@ import { loadConfig } from "../config.ts";
  * Run this file on its own: `bun test src/agent/empty-response-retry.test.ts`.
  */
 
+// Throwaway env fixture: the gitignored developer .env normally supplies
+// these, a clean checkout has neither, and loadConfig() below refuses to run
+// without them. Literal dummies — never a real token or chat id.
+process.env.TELEGRAM_BOT_TOKEN ??= "123456:TEST-BOT-TOKEN";
+process.env.ALLOWED_TELEGRAM_USER_IDS ??= "100000001";
+
 // Shrink the retry backoff before index.ts reads it at module scope.
 process.env.EMPTY_RESPONSE_BACKOFF_MS = "10";
 

@@ -18,6 +18,12 @@ import { getJob } from "../db/queries.ts";
  * failed instead of throwing.
  */
 
+// Throwaway env fixture: the gitignored developer .env normally supplies
+// these, a clean checkout has neither, and loadConfig() below refuses to run
+// without them. Literal dummies — never a real token or chat id.
+process.env.TELEGRAM_BOT_TOKEN ??= "123456:TEST-BOT-TOKEN";
+process.env.ALLOWED_TELEGRAM_USER_IDS ??= "100000001";
+
 /** Records execute() calls; subclasses the real executor so no cast is needed. */
 class StubExecutor extends JobExecutor {
   executedJobIds: number[] = [];

@@ -21,6 +21,12 @@ import { registerLibraryRoutes } from "../web/routes/mini-app/library.ts";
  * against an in-memory db — the owner's chat and registry are never touched.
  */
 
+// Throwaway env fixture: the gitignored developer .env normally supplies
+// these, a clean checkout has neither, and loadConfig() below refuses to run
+// without them. Literal dummies — never a real token or chat id.
+process.env.TELEGRAM_BOT_TOKEN ??= "123456:TEST-BOT-TOKEN";
+process.env.ALLOWED_TELEGRAM_USER_IDS ??= "100000001";
+
 let db: Database;
 
 beforeAll(() => {

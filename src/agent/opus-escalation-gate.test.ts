@@ -17,6 +17,12 @@ import { loadConfig } from "../config.ts";
  * Run this file on its own: `bun test src/agent/opus-escalation-gate.test.ts`.
  */
 
+// Throwaway env fixture: the gitignored developer .env normally supplies
+// these, a clean checkout has neither, and loadConfig() below refuses to run
+// without them. Literal dummies — never a real token or chat id.
+process.env.TELEGRAM_BOT_TOKEN ??= "123456:TEST-BOT-TOKEN";
+process.env.ALLOWED_TELEGRAM_USER_IDS ??= "100000001";
+
 // Match empty-response-retry.test.ts's env shrink BEFORE index.ts loads, so
 // an accidental same-process run cannot leave the 15s default cached and
 // blow that file's retry tests.
