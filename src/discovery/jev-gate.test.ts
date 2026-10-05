@@ -7,6 +7,7 @@ import { JevBudgetExceeded, type JevResult, type Payload } from "../relevance/je
 import {
   candidateFacts,
   recordGateSpend,
+  resolveJevAsker,
   runJevGate,
   spentToday,
   vaultAsker,
@@ -134,5 +135,107 @@ describe("spend ledger", () => {
     writeFileSync(path, `${JSON.stringify({ ts: "2020-01-01T00:00:00Z", cost: 5 })}\n{torn`, { flag: "a" });
     expect(spentToday(path)).toBeCloseTo(0.009);
     expect(spentToday(join(path, "missing"))).toBe(0);
+  });
+});
+
+describe("resolveJevAsker skip WARN", () => {
+  const gateWarn = /^\S+ \[WARN\] \[discovery:jev-gate\] /;
+
+  /** Capture console.warn lines (the shared logger's warn sink); restore after. */
+  function captureWarns(): { lines: string[]; restore(): void } {
+    const lines: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => { lines.push(args.join(" ")); };
+    return { lines, restore: () => { console.warn = orig; } };
+  }
+
+  /** Run fn without OPENROUTER_API_KEY, restoring it after (bun test is one process). */
+  async function withoutEnvKey<T>(fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    try {
+      return await fn();
+    } finally {
+      if (saved === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = saved;
+    }
+  }
+
+  /** Stand-in `vault` binary whose `grants` output is `text`. */
+  function fakeGrantsBin(text: string): string {
+    const bin = join(mkdtempSync(join(tmpdir(), "jev-grants-")), "vault");
+    writeFileSync(bin, `#!/bin/sh\ncat <<'EOF'\n${text}\nEOF\n`);
+    chmodSync(bin, 0o755);
+    return bin;
+  }
+
+  const ITEM = "OpenRouter API Key - Translation Tool";
+
+  test("null with no env key and no vault item: exactly one WARN, reason \"env key absent\"", async () => {
+    const cap = captureWarns();
+    try {
+      const asker = await withoutEnvKey(() => resolveJevAsker({ item: "", budgetUsd: 0.1 }));
+      expect(asker).toBeNull();
+      const warns = cap.lines.filter((l) => gateWarn.test(l));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('"reason":"env key absent"');
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("null with an inactive vault grant (the 04:00Z fire's arm): exactly one WARN, reason \"vault grant expired\"", async () => {
+    const vaultBin = fakeGrantsBin("no active per-item approvals"); // live ~/.local/bin/vault grants output 2026-10-05
+    const cap = captureWarns();
+    try {
+      const asker = await withoutEnvKey(() => resolveJevAsker({ item: ITEM, budgetUsd: 0.1, vaultBin }));
+      expect(asker).toBeNull();
+      const warns = cap.lines.filter((l) => gateWarn.test(l));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('"reason":"vault grant expired"');
+      expect(warns[0]).toContain(`"vaultItem":"${ITEM}"`);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("null when the grants probe itself fails: exactly one WARN, reason \"neither\"", async () => {
+    const cap = captureWarns();
+    try {
+      const asker = await withoutEnvKey(() => resolveJevAsker({ item: ITEM, budgetUsd: 0.1, vaultBin: "/nonexistent/vault-bin" }));
+      expect(asker).toBeNull();
+      const warns = cap.lines.filter((l) => gateWarn.test(l));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('"reason":"neither"');
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("stays silent when the env key resolves the in-process asker", async () => {
+    const saved = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const cap = captureWarns();
+    try {
+      const asker = await resolveJevAsker({ item: ITEM, budgetUsd: 0.1 });
+      expect(asker?.kind).toBe("in-process");
+      expect(cap.lines.filter((l) => gateWarn.test(l))).toHaveLength(0);
+    } finally {
+      cap.restore();
+      if (saved === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = saved;
+    }
+  });
+
+  test("stays silent when an active vault grant resolves the vault asker", async () => {
+    const vaultBin = fakeGrantsBin(`${ITEM}  human-approved  expires 2030-01-01`);
+    const cap = captureWarns();
+    try {
+      const asker = await withoutEnvKey(() => resolveJevAsker({ item: ITEM, budgetUsd: 0.1, vaultBin }));
+      expect(asker?.kind).toBe("vault");
+      expect(cap.lines.filter((l) => gateWarn.test(l))).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
   });
 });

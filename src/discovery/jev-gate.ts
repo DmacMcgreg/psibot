@@ -219,27 +219,48 @@ export function vaultAsker(opts: { item: string; budgetUsd: number; timeoutMs?: 
   };
 }
 
-/** True when vaultd currently holds an approval for `item`, so `vault run` will not prompt. */
-export async function vaultGrantActive(item: string, vaultBin = "vault"): Promise<boolean> {
+/** vaultd's answer for `item`: an active approval, none, or no answer at all. */
+interface GrantProbe { active: boolean; errored: boolean }
+
+async function probeVaultGrant(item: string, vaultBin: string): Promise<GrantProbe> {
   try {
     const proc = Bun.spawn([vaultBin, "grants"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
     const timer = setTimeout(() => proc.kill(), 10_000);
     const text = await new Response(proc.stdout).text();
     clearTimeout(timer);
     await proc.exited;
-    return text.split("\n").some((l) => l.includes(item) && !/expired/i.test(l));
+    return { active: text.split("\n").some((l) => l.includes(item) && !/expired/i.test(l)), errored: false };
   } catch {
-    return false;
+    return { active: false, errored: true };
   }
 }
+
+/** Why a resolution attempt could not reach Jev — the payload of the skip WARN. */
+export type JevAskerSkipReason = "env key absent" | "vault grant expired" | "neither";
 
 /**
  * Pick how to reach Jev: the in-process client when the key is in env,
  * else vaultd while a grant is active (never prompts), else null.
+ *
+ * Every null resolution emits exactly one WARN naming its reason, so a dead
+ * gate can never read as quiet success (the 04:00Z Oct 5 fire skipped via
+ * `jevMode:"unavailable"` with no log line of its own): "env key absent"
+ * (no OPENROUTER_API_KEY and no vault item configured either), "vault grant
+ * expired" (item configured, vaultd holds no active approval for it), or
+ * "neither" (the grants probe itself failed, so neither named cause is
+ * established). The sole caller `resolveJev` (index.ts) passes the reason
+ * through by delegating here once per resolution attempt.
  */
-export async function resolveJevAsker(opts: { item: string; budgetUsd: number }): Promise<JevAsker | null> {
+export async function resolveJevAsker(opts: { item: string; budgetUsd: number; vaultBin?: string }): Promise<JevAsker | null> {
   if (process.env.OPENROUTER_API_KEY) return inProcessAsker(opts.budgetUsd);
-  if (opts.item && (await vaultGrantActive(opts.item))) return vaultAsker(opts);
+  if (!opts.item) {
+    log.warn("Jev asker unresolved — gate skipped", { reason: "env key absent" as JevAskerSkipReason, vaultItem: null });
+    return null;
+  }
+  const grant = await probeVaultGrant(opts.item, opts.vaultBin ?? "vault");
+  if (grant.active) return vaultAsker(opts);
+  const reason: JevAskerSkipReason = grant.errored ? "neither" : "vault grant expired";
+  log.warn("Jev asker unresolved — gate skipped", { reason, vaultItem: opts.item, ...(grant.errored ? { grantProbe: "errored" } : {}) });
   return null;
 }
 
