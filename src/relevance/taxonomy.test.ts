@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
+// Side-effect import, must run before the first `new Database(...)` below:
+// src/db/index.ts registers the Homebrew SQLite build (extension-capable)
+// process-wide, and once ANY bun:sqlite Database is instantiated the
+// registration is a silent no-op — later sqliteVec.load() calls in this or
+// any other test file of the same bun-test process then fail with "This
+// build of sqlite3 does not support dynamic extension loading".
+import "../db/index.ts";
 import {
   beamSearch,
   buildTaxonomy,
