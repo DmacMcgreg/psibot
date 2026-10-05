@@ -121,17 +121,49 @@ describe("Scheduler.selfCheck", () => {
     expect(scheduler.selfCheck().registered).toEqual([]);
   });
 
-  it("closes out runs stuck in 'running' for over 6h, and only those", () => {
+  it("reaps a run orphaned by a restart: 'running' from before daemon boot becomes an explicit error", () => {
+    // Row 10328's shape: Weekly Maintenance started 08:00Z, the daemon
+    // reloaded 08:06:57Z — the owning process is gone, the row can never end.
+    const boot = new Date("2026-10-05T08:06:57.398Z");
+    scheduler = new Scheduler(fakeExecutor(), boot);
+    const id = addJob({ last_run_at: "2026-10-05 07:00:00" });
+    const orphan = addRun(id, "running", "2026-10-05 08:00:00Z");
+    scheduler.reload();
+    const report = scheduler.selfCheck(new Date("2026-10-05T08:07:12Z"));
+    expect(report.abandonedRuns).toBe(1);
+    const row = db.prepare(`SELECT status, error, completed_at FROM job_runs WHERE id = ?`).get(orphan) as { status: string; error: string | null; completed_at: string | null };
+    expect(row.status).toBe("error");
+    expect(row.error).toBe("abandoned — orphaned by restart: run started 2026-10-05 08:00:00Z, before daemon boot 2026-10-05T08:06:57.398Z");
+    expect(row.error?.startsWith(ABANDONED_RUN_ERROR)).toBe(true); // failure streak ignores it
+    expect(row.completed_at).toBeTruthy();
+  });
+
+  it("a run started after daemon boot is live: the sweep leaves it untouched", () => {
+    const boot = new Date("2026-10-05T08:06:57.398Z");
+    scheduler = new Scheduler(fakeExecutor(), boot);
+    const id = addJob({ last_run_at: "2026-10-05 08:30:00" });
+    const live = addRun(id, "running", "2026-10-05 09:00:00Z");
+    scheduler.reload();
+    const report = scheduler.selfCheck(new Date("2026-10-05T09:07:00Z"));
+    expect(report.abandonedRuns).toBe(0);
+    const row = db.prepare(`SELECT status, error, completed_at FROM job_runs WHERE id = ?`).get(live) as { status: string; error: string | null; completed_at: string | null };
+    expect(row.status).toBe("running");
+    expect(row.error).toBeNull();
+    expect(row.completed_at).toBeNull();
+  });
+
+  it("still closes out a same-process run stuck 'running' for over 6h (started after boot)", () => {
+    scheduler = new Scheduler(fakeExecutor(), hoursAgo(8));
     const id = addJob({ last_run_at: iso(hoursAgo(1)) });
-    const old = addRun(id, "running", "2026-03-25 18:18:39Z");
+    const stuck = addRun(id, "running", iso(hoursAgo(7)).replace("T", " ").slice(0, 19));
     const recent = addRun(id, "running", iso(hoursAgo(1)).replace("T", " ").slice(0, 19));
     scheduler.reload();
     expect(scheduler.selfCheck().abandonedRuns).toBe(1);
     const rows = db.prepare(`SELECT id, status, error, completed_at FROM job_runs ORDER BY id`).all() as Array<{ id: number; status: string; error: string | null; completed_at: string | null }>;
     const byId = new Map(rows.map((r) => [r.id, r]));
-    expect(byId.get(old)?.status).toBe("error");
-    expect(byId.get(old)?.error?.startsWith(ABANDONED_RUN_ERROR)).toBe(true);
-    expect(byId.get(old)?.completed_at).toBeTruthy();
+    expect(byId.get(stuck)?.status).toBe("error");
+    expect(byId.get(stuck)?.error?.startsWith(ABANDONED_RUN_ERROR)).toBe(true);
+    expect(byId.get(stuck)?.completed_at).toBeTruthy();
     expect(byId.get(recent)?.status).toBe("running");
   });
 });

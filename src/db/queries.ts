@@ -570,6 +570,32 @@ export function abandonStaleJobRuns(olderThanHours: number, errorPrefix: string)
 }
 
 /**
+ * Close out `job_runs` rows still "running" whose `started_at` predates the
+ * daemon's boot: the process that owned them is gone (killed by a restart or
+ * crash mid-run — e.g. job_runs 10328, orphaned by the 2026-10-05 08:06:57Z
+ * reload), so they can never end on their own. They become "error" with an
+ * error text starting with `errorPrefix` (the failure streak ignores those,
+ * see scheduler/watchdog.ts) and naming the restart plus both timestamps;
+ * `completed_at` is stamped. Rows started after the boot belong to this
+ * process and are left untouched. Returns the count.
+ */
+export function reapRestartOrphanedJobRuns(bootAt: Date, errorPrefix: string): number {
+  const db = getDb();
+  const boot = bootAt.toISOString();
+  const res = db
+    .prepare(
+      `UPDATE job_runs
+         SET status = 'error',
+             error = ? || started_at || ', before daemon boot ' || ? || COALESCE('; prior error: ' || error, ''),
+             completed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE status = 'running'
+         AND julianday(started_at) < julianday(?)`
+    )
+    .run(`${errorPrefix} — orphaned by restart: run started `, boot, boot);
+  return res.changes;
+}
+
+/**
  * When a job last went from "failed" back to "enabled" (dashboard toggle,
  * job_update tool, or the scheduler's daily retry), from job_config_history.
  * The executor's failure streak only counts runs after this moment, so a

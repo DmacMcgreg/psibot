@@ -5,6 +5,7 @@ import {
   updateJob,
   getJobRuns,
   abandonStaleJobRuns,
+  reapRestartOrphanedJobRuns,
   getOpsState,
   setOpsState,
   getLastEnabledAt,
@@ -43,10 +44,18 @@ export class Scheduler {
   /** Cron expressions that failed to parse, so the self-check logs them once, not every tick. */
   private invalidSchedules = new Map<number, string>();
 
-  constructor(executor: JobExecutor) {
+  constructor(executor: JobExecutor, bootAt: Date = new Date()) {
     this.executor = executor;
     this.executor.onJobRecovered = () => this.reload();
+    this.bootAt = bootAt;
   }
+
+  /**
+   * When this process booted (Scheduler construction — before any job can
+   * run). A `job_runs` row still "running" from before this moment belongs
+   * to a process that no longer exists; the self-check reaps it.
+   */
+  private readonly bootAt: Date;
 
   start(): void {
     this.reload();
@@ -104,9 +113,15 @@ export class Scheduler {
   selfCheck(now: Date = new Date()): { stopped: number[]; registered: number[]; overdue: number[]; abandonedRuns: number; retried: number[] } {
     const report = { stopped: [] as number[], registered: [] as number[], overdue: [] as number[], abandonedRuns: 0, retried: [] as number[] };
     try {
-      report.abandonedRuns = abandonStaleJobRuns(ORPHAN_RUN_MAX_AGE_HOURS, ABANDONED_RUN_ERROR);
-      if (report.abandonedRuns > 0) {
-        log.warn("Closed out orphaned job runs", { count: report.abandonedRuns, olderThanHours: ORPHAN_RUN_MAX_AGE_HOURS });
+      // Boot arm first, so a row matching both gets the precise "orphaned by
+      // restart" message; the age arm only sees what's left (same-process hangs).
+      const restartOrphans = reapRestartOrphanedJobRuns(this.bootAt, ABANDONED_RUN_ERROR);
+      if (restartOrphans > 0) {
+        log.warn("Reaped job runs orphaned by a restart", { count: restartOrphans, daemonBoot: this.bootAt.toISOString() });
+      }
+      report.abandonedRuns = restartOrphans + abandonStaleJobRuns(ORPHAN_RUN_MAX_AGE_HOURS, ABANDONED_RUN_ERROR);
+      if (report.abandonedRuns > restartOrphans) {
+        log.warn("Closed out stale job runs", { count: report.abandonedRuns - restartOrphans, olderThanHours: ORPHAN_RUN_MAX_AGE_HOURS });
       }
 
       if (failedRetryDue(now, getOpsState(FAILED_RETRY_STATE_KEY))) {
