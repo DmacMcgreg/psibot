@@ -7,16 +7,21 @@ import {
   getJobRuns,
   isTopicMuted,
   getAgentBySlug,
+  recordSentMessage,
+  getLastReenabledAt,
 } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
 import { splitMessage, markdownToTelegramV2, tmaLink } from "../telegram/format.ts";
-import { briefKeyboard } from "../telegram/keyboards.ts";
+import { briefKeyboard, jobActionsKeyboard } from "../telegram/keyboards.ts";
 import { PLIST_LABEL } from "../cli/paths.ts";
 import { decideNotify } from "../agent/notify-policy.ts";
 import { applyOutputTemplate } from "../agent/output-template.ts";
 import { tryPublishFromText } from "../agent/agent-run-publisher.ts";
 import { readSkill } from "../skills/index.ts";
 import { bumpUse, markExposed } from "../skills/usage.ts";
+import { CRON_FAILURE_STREAK, FAILED_RETRY_HOUR, parseDbTime, shouldMarkFailed } from "./watchdog.ts";
+import { sendOpsAlert } from "../shared/ops-alerts.ts";
+import { jobAlertKey, jobFailedAlertText } from "./job-alerts.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
 import { InlineKeyboard } from "grammy";
 import type { Bot } from "grammy";
@@ -81,7 +86,10 @@ function jobChatContext(job: Job): ChatContext | undefined {
   };
 }
 
+
 export class JobExecutor {
+  /** Set by the Scheduler so a job that leaves "failed" is scheduled again. */
+  onJobRecovered: (() => void) | null = null;
   private agent: AgentService;
   private bot: Bot | null = null;
   private notifyUserIds: number[] = [];
@@ -190,6 +198,7 @@ export class JobExecutor {
         // Auto-recover cron jobs that succeed after a failure
         updateJob(jobId, { status: "enabled" });
         log.info("Job recovered from failed status", { jobId, name: job.name });
+        this.onJobRecovered?.();
       }
 
       log.info("Job completed", {
@@ -233,13 +242,14 @@ export class JobExecutor {
         const template = job.output_template ?? agent?.output_template ?? null;
         const rendered = template ? applyOutputTemplate(template, decision.cleanedResult) : decision.cleanedResult;
         const isBrief = /brief/i.test(job.name);
-        const keyboard = isBrief ? briefKeyboard(run.id) : undefined;
+        const keyboard = isBrief ? briefKeyboard(run.id) : jobActionsKeyboard(jobId);
 
         await this.notify(
           rendered,
           job.notify_chat_id ?? undefined,
           job.notify_topic_id ?? undefined,
           withAppLink(keyboard, jobId),
+          { jobId, runId: run.id },
         );
       } else {
         log.info("Job notification suppressed", { jobId, name: job.name, policy: decision.policy, reason: decision.reason });
@@ -264,16 +274,36 @@ export class JobExecutor {
         duration_ms: Date.now() - startTime,
       });
 
+      // One-off jobs fail immediately. Cron jobs stay scheduled until they
+      // error CRON_FAILURE_STREAK times in a row — a single bad run used to
+      // unschedule them silently for good (getEnabledJobs skips "failed").
+      // Runs abandoned by a daemon restart don't count toward the streak.
+      // A re-enabled job (manual or the daily retry) starts a fresh streak.
+      const recent = job.type === "cron" ? getJobRuns(jobId, CRON_FAILURE_STREAK + 5) : [];
+      const giveUp = shouldMarkFailed(job.type, recent, parseDbTime(getLastReenabledAt(jobId)));
       updateJob(jobId, {
         last_run_at: new Date().toISOString(),
-        status: "failed",
+        ...(giveUp ? { status: "failed" as const } : {}),
       });
+      if (giveUp && job.type === "cron") {
+        log.warn("Cron job taken off the schedule after repeated errors", { jobId, name: job.name, streak: CRON_FAILURE_STREAK });
+      }
+      if (giveUp && job.status !== "failed") {
+        void sendOpsAlert(
+          jobAlertKey(jobId),
+          jobFailedAlertText({ id: jobId, name: job.name, type: job.type }, message),
+        );
+      }
 
+      const offSchedule = giveUp && job.type === "cron"
+        ? `\n\nIt has now failed ${CRON_FAILURE_STREAK} runs in a row and is off the schedule. PsiBot re-enables failed cron jobs once a day (from ${FAILED_RETRY_HOUR}:00), or re-enable it yourself.`
+        : "";
       await this.notify(
-        `Job "${job.name}" failed: ${message}`,
+        `Job "${job.name}" failed: ${message}${offSchedule}`,
         job.notify_chat_id ?? undefined,
         job.notify_topic_id ?? undefined,
-        withAppLink(undefined, jobId),
+        withAppLink(jobActionsKeyboard(jobId), jobId),
+        { jobId, runId: run.id },
       );
 
       // Spawn diagnostic agent (with cooldown to prevent loops)
@@ -376,7 +406,8 @@ export class JobExecutor {
             rendered,
             job.notify_chat_id ?? undefined,
             job.notify_topic_id ?? undefined,
-            withAppLink(undefined, jobId),
+            withAppLink(jobActionsKeyboard(jobId), jobId),
+            { jobId, runId: run.id },
           );
         } else {
           log.info("Pipeline notification suppressed", { jobId, policy: decision.policy, reason: decision.reason });
@@ -445,7 +476,13 @@ INSTRUCTIONS:
     }
   }
 
-  private async notify(text: string, chatId?: string, topicId?: number, keyboard?: InlineKeyboard): Promise<void> {
+  private async notify(
+    text: string,
+    chatId?: string,
+    topicId?: number,
+    keyboard?: InlineKeyboard,
+    meta?: { jobId: number; runId?: number },
+  ): Promise<void> {
     if (!this.bot) return;
 
     // Check topic-level mute
@@ -456,16 +493,28 @@ INSTRUCTIONS:
 
     const chunks = splitMessage(text);
 
+    // Provenance: every wrapper-sent chunk is traceable back to its job/run.
+    const record = (target: string | number, messageId: number, threadId?: number) => {
+      if (!meta) return;
+      recordSentMessage(target, messageId, threadId ?? null, {
+        source: "job-wrapper",
+        jobId: meta.jobId,
+        runId: meta.runId,
+        preview: chunks[0],
+      });
+    };
+
     if (chatId) {
       // Send to specific group chat / topic
       try {
         for (let i = 0; i < chunks.length; i++) {
           const isLast = i === chunks.length - 1;
-          await this.bot.api.sendMessage(chatId, markdownToTelegramV2(chunks[i]), {
+          const sent = await this.bot.api.sendMessage(chatId, markdownToTelegramV2(chunks[i]), {
             parse_mode: "MarkdownV2",
             ...(topicId ? { message_thread_id: topicId } : {}),
             ...(isLast && keyboard ? { reply_markup: keyboard } : {}),
           });
+          record(chatId, sent.message_id, topicId);
         }
       } catch (err) {
         log.error("Failed to send topic notification", { chatId, topicId, error: String(err) });
@@ -474,10 +523,11 @@ INSTRUCTIONS:
           try {
             for (let i = 0; i < chunks.length; i++) {
               const isLast = i === chunks.length - 1;
-              await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunks[i]), {
+              const sent = await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunks[i]), {
                 parse_mode: "MarkdownV2",
                 ...(isLast && keyboard ? { reply_markup: keyboard } : {}),
               });
+              record(userId, sent.message_id);
             }
           } catch (e) {
             log.error("Failed to send DM fallback", { userId, error: String(e) });
@@ -490,10 +540,11 @@ INSTRUCTIONS:
         try {
           for (let i = 0; i < chunks.length; i++) {
             const isLast = i === chunks.length - 1;
-            await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunks[i]), {
+            const sent = await this.bot.api.sendMessage(userId, markdownToTelegramV2(chunks[i]), {
               parse_mode: "MarkdownV2",
               ...(isLast && keyboard ? { reply_markup: keyboard } : {}),
             });
+            record(userId, sent.message_id);
           }
         } catch (err) {
           log.error("Failed to send notification", { userId, error: String(err) });
