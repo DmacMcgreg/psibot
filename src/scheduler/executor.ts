@@ -1,4 +1,4 @@
-import { AgentService } from "../agent/index.ts";
+import type { AgentService } from "../agent/index.ts";
 import {
   getJob,
   createJobRun,
@@ -20,6 +20,7 @@ import { tryPublishFromText } from "../agent/agent-run-publisher.ts";
 import { readSkill } from "../skills/index.ts";
 import { bumpUse, markExposed } from "../skills/usage.ts";
 import { CRON_FAILURE_STREAK, FAILED_RETRY_HOUR, parseDbTime, shouldMarkFailed } from "./watchdog.ts";
+import { providerQuotaError } from "./run-outcome.ts";
 import { sendOpsAlert } from "../shared/ops-alerts.ts";
 import { jobAlertKey, jobFailedAlertText } from "./job-alerts.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
@@ -87,15 +88,22 @@ function jobChatContext(job: Job): ChatContext | undefined {
 }
 
 
+/**
+ * The slice of AgentService the executor actually drives — run, plus the
+ * deferred-restart poll. A structural type so tests inject a scripted agent
+ * without asserting the class's private state.
+ */
+export type ExecutorAgent = Pick<AgentService, "run" | "consumeRestart">;
+
 export class JobExecutor {
   /** Set by the Scheduler so a job that leaves "failed" is scheduled again. */
   onJobRecovered: (() => void) | null = null;
-  private agent: AgentService;
+  private agent: ExecutorAgent;
   private bot: Bot | null = null;
   private notifyUserIds: number[] = [];
   private lastDiagAt = new Map<number, number>();
 
-  constructor(agent: AgentService) {
+  constructor(agent: ExecutorAgent) {
     this.agent = agent;
   }
 
@@ -166,7 +174,18 @@ export class JobExecutor {
         subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
       });
 
-      // Budget enforcement disabled — always report success
+      // A provider 429 (quota/rate-limit) rejection arrives as a *result*, not
+      // a throw — the CLI exits 0. Route it into the failure path so the
+      // streak counter, ops alert and watchdog see it; recorded as a result it
+      // lands behind status "success" and fails silently (job_runs 10322-24,
+      // 2026-10-05T04:00Z).
+      const quotaError = providerQuotaError(result.result);
+      if (quotaError) {
+        log.warn("Provider quota rejection classified as run failure", { jobId, name: job.name });
+        throw new Error(quotaError);
+      }
+
+      // Budget enforcement disabled — non-quota results report success
       const status: RunStatus = "success";
 
       completeJobRun(run.id, {
@@ -353,6 +372,14 @@ export class JobExecutor {
         agentPrompt: job.agent_prompt ?? undefined,
         subagentNames: job.subagents ? JSON.parse(job.subagents) : undefined,
       });
+
+      // Same classification as execute(): a bare 429 result is a failure, and
+      // its text must not feed forward as the pipeline's previous output.
+      const quotaError = providerQuotaError(result.result);
+      if (quotaError) {
+        log.warn("Provider quota rejection classified as run failure", { jobId, name: job.name, depth });
+        throw new Error(quotaError);
+      }
 
       completeJobRun(run.id, {
         status: "success",
