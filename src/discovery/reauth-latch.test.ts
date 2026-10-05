@@ -20,30 +20,32 @@ import { oauthExpiredLine, probeGoogleRefresh } from "../agent/youtube-tools.ts"
 const T0 = "2026-10-01T00:00:00Z";
 const T1 = "2026-10-03T08:30:00Z";
 
-// buildReauthMessage reads config at message-build time; load it once.
-// Clean-checkout fixture (per the env-fixture successor row's spec): these
-// two are the only required vars and this suite must not depend on
-// order-leakage from src/agent suites that set them. Literal dummy values,
-// never a real secret.
+// The latch's authorize deep link reads config at message-build time via
+// getConfig(); load it once. Clean-checkout fixture (per the env-fixture
+// successor row's spec): these two are the only required vars and this suite
+// must not depend on order-leakage from src/agent suites that set them.
+// Literal dummy values, never a real secret.
 process.env.TELEGRAM_BOT_TOKEN ??= "test-token-fixture";
 process.env.ALLOWED_TELEGRAM_USER_IDS ??= "123456789";
-// buildReauthMessage only emits the /dashboard?key= deep link when the vault
-// URL is set; dummy values, no network (the vault listing is injected in the
-// notify tests, and these two are only ever interpolated into text).
+// The latch message only emits the /authorize deep link when the vault URL is
+// set; dummy values, no network (the vault listing is injected in the notify
+// tests, and these two are only ever interpolated into text).
 process.env.OAUTH_VAULT_URL ??= "http://oauth-vault-fixture.test";
 process.env.OAUTH_VAULT_API_KEY ??= "fixture-key";
 const cfg = loadConfig();
 // In a shared bun-test process an earlier file may have already frozen the
-// config singleton WITHOUT the vault vars — the env ??= above can't help
-// then, and buildReauthMessage only emits the /dashboard?key= deep link when
-// the vault URL is set. Set them on the loaded config and restore in
-// afterAll: green in any file order, no state leaked to later files.
+// config singleton WITHOUT the vault vars — and in a single-file run the
+// singleton carries the real .env values — so set the fixture values on the
+// loaded config unconditionally and restore in afterAll: green in any file
+// order, real URL/key never in a diff, no state leaked to later files.
 const prevVaultUrl = cfg.OAUTH_VAULT_URL;
 const prevVaultKey = cfg.OAUTH_VAULT_API_KEY;
-if (!prevVaultUrl) {
-  cfg.OAUTH_VAULT_URL = "http://oauth-vault-fixture.test";
-  cfg.OAUTH_VAULT_API_KEY = "fixture-key";
-}
+// Force the fixture values even when the singleton was already loaded from
+// the real .env (single-file runs load it): assertions must pin the fixture
+// URL, and the real vault URL/key must never surface in a test diff.
+// afterAll restores both.
+cfg.OAUTH_VAULT_URL = "http://oauth-vault-fixture.test";
+cfg.OAUTH_VAULT_API_KEY = "fixture-key";
 
 let db: Database;
 
@@ -142,15 +144,23 @@ describe("decideReauthEpisode", () => {
 // --- notify path (episode behavior the map's done-line asserts) ---
 
 describe("notifyReauthEpisode", () => {
-  it("exactly one reauth message across >=3 consecutive dead runs, carrying the dashboard deep link", async () => {
+  it("exactly one reauth message across >=3 consecutive dead runs, carrying the authorize deep link", async () => {
     const { bot, sent } = fakeBot();
     for (let i = 0; i < 4; i++) {
       await run(bot, { reauthRequired: true, updatedAt: T0 });
     }
     expect(sent).toHaveLength(CHATS.length); // one per default chat, NOT one per run
     for (const m of sent) {
-      expect(m.text).toContain("/dashboard?key=");
+      // R1 authorize deep-link variant (map §5, row t_g5powq5cxd): the link is
+      // the vault's own Google-consent start — the exact href shape the
+      // dashboard's Connect button builds — so one tap lands on Google
+      // consent, not the dashboard's provider table.
       expect(m.text).toContain("needs re-auth");
+      expect(m.text).toContain(
+        "http://oauth-vault-fixture.test/authorize?provider=google&response_type=code&client_id=dashboard&redirect_uri=" +
+          encodeURIComponent("http://oauth-vault-fixture.test/connected"),
+      );
+      expect(m.text).not.toContain("/dashboard"); // the two-hop path is gone
     }
     // latch state persisted: the episode key is recorded for the next run
     const raw = db
