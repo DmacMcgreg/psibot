@@ -9,11 +9,19 @@ import { HeartbeatRunner } from "./heartbeat/index.ts";
 import { SynthesisRunner } from "./atlas/runner.ts";
 import { DiscoveryRunner } from "./discovery/index.ts";
 import { DigestRunner } from "./digest/index.ts";
+import { NoteplanSweepRunner } from "./maintenance/noteplan-sweep.ts";
+import { PublishedDateSweepRunner } from "./maintenance/published-date-sweep.ts";
+import { LogRotationRunner } from "./maintenance/log-rotation.ts";
+import { SkillForgeRunner } from "./assets/forge.ts";
+import { AssetDigestRunner } from "./assets/digest.ts";
+import { AssetFeedRunner } from "./assets/feed-runner.ts";
+import { AssetExtractRunner } from "./assets/extract-runner.ts";
 import { createWebApp } from "./web/index.ts";
 import { createTelegramBot } from "./telegram/index.ts";
 import { startWebhookServer, stopWebhookServer } from "./telegram/webhook.ts";
 import { TaskQueue } from "./shared/task-queue.ts";
 import { createLogger } from "./shared/logger.ts";
+import { setOpsAlertSender, telegramDmSender } from "./shared/ops-alerts.ts";
 import { writePid, removePid } from "./cli/pid.ts";
 import type { Bot } from "grammy";
 import type { Server } from "bun";
@@ -80,6 +88,9 @@ async function main() {
 
   // Wire up job completion notifications to Telegram
   executor.setNotifier(bot, config.ALLOWED_TELEGRAM_USER_IDS);
+  // Ops alerts (missed/failed jobs, runaway log growth) go to David's DM.
+  // Alerts raised earlier (the scheduler's first self-check) are sent now.
+  setOpsAlertSender(telegramDmSender(bot, config.ALLOWED_TELEGRAM_USER_IDS));
 
   let webhookServer: Server<undefined> | undefined;
   if (config.TELEGRAM_WEBHOOK_ENABLED) {
@@ -149,6 +160,46 @@ async function main() {
   digest.start();
   log.info("Weekly digest runner started");
 
+  // Start weekly NotePlan content-archival sweep (ingest → retention prune).
+  // Non-LLM maintenance: shells out to scripts/archive-noteplan-content.ts so
+  // pipeline content keeps flowing into noteplan_archive and off the filesystem.
+  const noteplanSweep = new NoteplanSweepRunner();
+  noteplanSweep.start();
+  log.info("NotePlan archive sweep runner started");
+
+  // Publish dates for newly archived tabs and saved links (no LLM; polite fetches).
+  const publishedDateSweep = new PublishedDateSweepRunner();
+  publishedDateSweep.start();
+
+  // Daily copy-then-truncate rotation of ~/.psibot/logs (keep 7 days) plus a
+  // runaway-growth guard (>200 MB/day → one ERROR + one Telegram ops alert).
+  const logRotation = new LogRotationRunner();
+  logRotation.start();
+
+  // Asset registry (see src/assets/): weekly skill forge drafts skill updates
+  // from filed techniques into knowledge/skill-forge/.
+  const skillForge = new SkillForgeRunner();
+  skillForge.start();
+  // Daily "Act on these" Telegram card (top 5 assets, one-tap buttons), plus
+  // alerts for urgent opportunities and 7/2-day deadline reminders.
+  const assetDigest = config.ASSET_DIGEST_ENABLED
+    ? new AssetDigestRunner({
+        getBot: () => bot ?? null,
+        defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
+        digestChatId: groupChatId,
+        digestTopicId: 49,
+      })
+    : null;
+  assetDigest?.start();
+  // New-source feeds: CanadaBuys tenders, Ontario/GC funding, IRAP leads,
+  // Hugging Face, GitHub, HN, skills.sh, Kaggle → scored assets.
+  const assetFeeds = new AssetFeedRunner();
+  assetFeeds.start();
+  // Extract assets from new videos, tabs, stars, saves and research notes
+  // (goal gate first, then glm-5.3). Every 20 min outside 23:00–07:00.
+  const assetExtract = new AssetExtractRunner();
+  assetExtract.start();
+
   // Start proactive YouTube discovery runner (RSS fan-out + scoring + processing + news digest)
   if (config.DISCOVERY_ENABLED) {
     discovery = new DiscoveryRunner({
@@ -156,9 +207,14 @@ async function main() {
       defaultChatIds: config.ALLOWED_TELEGRAM_USER_IDS,
       groupChatId,
       topicId: config.DISCOVERY_NEWS_TOPIC_ID || undefined,
+      cronPattern: config.DISCOVERY_CRON_PATTERN.trim() || undefined,
     });
     discovery.start();
-    log.info("Discovery runner started", { intervalHours: config.DISCOVERY_INTERVAL_HOURS });
+    log.info("Discovery runner started", {
+      intervalHours: config.DISCOVERY_INTERVAL_HOURS,
+      pattern: discovery.resolvedCronPattern(),
+      nextFire: discovery.nextFireAt()?.toISOString() ?? null,
+    });
   }
 
   // Graceful shutdown
@@ -166,6 +222,13 @@ async function main() {
     log.info("Shutting down...");
 
     discovery?.stop();
+    noteplanSweep.stop();
+    publishedDateSweep.stop();
+    logRotation.stop();
+    skillForge.stop();
+    assetDigest?.stop();
+    assetFeeds.stop();
+    assetExtract.stop();
     digest.stop();
     synthesis.stop();
     heartbeat?.stop();

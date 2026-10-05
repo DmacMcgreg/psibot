@@ -151,6 +151,7 @@ interface ProcessedPick {
  */
 export class DiscoveryRunner {
   private cron: Cron | null = null;
+  private bootTimer: Timer | null = null;
   private getBot: () => Bot | null;
   private defaultChatIds: number[];
   private groupChatId?: string;
@@ -178,8 +179,20 @@ export class DiscoveryRunner {
     this.cronPattern = deps.cronPattern;
   }
 
+  /** Cron pattern this runner fires on: the override, else `0-every-intervalHours`
+   * (which pins one daily fire to 00:00 local — the collision window the
+   * channel-rot census measured; override with DISCOVERY_CRON_PATTERN). */
+  resolvedCronPattern(): string {
+    return this.cronPattern ?? `0 */${this.intervalHours} * * *`;
+  }
+
+  /** Next scheduled cron fire once started; null before start(). */
+  nextFireAt(): Date | null {
+    return this.cron?.nextRun() ?? null;
+  }
+
   start(): void {
-    const pattern = this.cronPattern ?? `0 */${this.intervalHours} * * *`;
+    const pattern = this.resolvedCronPattern();
     log.info("Starting discovery runner", { pattern, intervalHours: this.intervalHours });
     this.cron = new Cron(pattern, () => {
       this.runOnce().catch((err) => log.error("Discovery run crashed", { error: String(err) }));
@@ -188,7 +201,8 @@ export class DiscoveryRunner {
     // Kick off a run shortly after boot so discovery is active immediately,
     // rather than waiting for the first cron tick (up to `intervalHours` away).
     // The 90s delay lets the Telegram bot connect and the agent service settle.
-    setTimeout(() => {
+    this.bootTimer = setTimeout(() => {
+      this.bootTimer = null;
       this.runOnce().catch((err) => log.error("Discovery startup run crashed", { error: String(err) }));
     }, 90_000);
   }
@@ -196,6 +210,10 @@ export class DiscoveryRunner {
   stop(): void {
     this.cron?.stop();
     this.cron = null;
+    if (this.bootTimer) {
+      clearTimeout(this.bootTimer);
+      this.bootTimer = null;
+    }
     log.info("Discovery runner stopped");
   }
 

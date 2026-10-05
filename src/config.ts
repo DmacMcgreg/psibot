@@ -87,6 +87,12 @@ const envSchema = z.object({
   PSIBOT_DIR: z
     .string()
     .default(join(process.env.HOME ?? "/tmp", ".psibot")),
+  // Skill library home. Lives in the project's .claude/skills so the Agent
+  // SDK surfaces skills natively (settingSources: ["project"]) and interactive
+  // Claude Code sessions in this repo see the same library.
+  SKILLS_DIR: z
+    .string()
+    .default(join(process.cwd(), ".claude", "skills")),
   TELEGRAM_WEBHOOK_ENABLED: z
     .string()
     .default("false")
@@ -216,6 +222,12 @@ const envSchema = z.object({
     .default("6")
     .transform(Number)
     .pipe(z.number().int().positive()),
+  // Optional cron override for the discovery runner. Unset = the runner's
+  // default 0-every-intervalHours pattern, which pins one daily fire to
+  // 00:00 local (04:00Z) — the window the channel-rot census measured at
+  // 287-296 RSS errors every night (research/psibot-channel-rot-census-2026-10).
+  // Set e.g. "30 */6 * * *" to hold the same 6h cadence on a :30 offset.
+  DISCOVERY_CRON_PATTERN: z.string().default(""),
   // Max videos to fully process (transcript -> analyze -> embed -> graph) per run.
   // Each costs one yt-dlp + one LLM analysis pass, so keep small.
   DISCOVERY_MAX_PROCESS_PER_RUN: z
@@ -256,6 +268,58 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((s) => s === "true"),
+  // --- Discovery quality (2026-09-26, docs/plans/2026-09-26-discovery-quality.md) ---
+  // Search seeds: "mixed" = Jev taxonomy leaves weighted by David's chosen
+  // videos + interest-profile topics, rotated with a cooldown and benched when
+  // their results keep failing the gates. "profile" = the old behaviour (top
+  // profile topic names, same order every run).
+  DISCOVERY_SEED_MODE: z.enum(["mixed", "profile"]).default("mixed"),
+  DISCOVERY_SEED_COOLDOWN_HOURS: z.string().default("48").transform(Number).pipe(z.number().nonnegative()),
+  // search.list relevanceLanguage hint ("" disables).
+  DISCOVERY_SEARCH_LANGUAGE: z.string().default("en"),
+  // Cheap pre-filters (src/discovery/prefilter.ts). All run before any paid step.
+  DISCOVERY_PREFILTER_ENABLED: z.string().default("true").transform((s) => s === "true"),
+  DISCOVERY_MIN_DURATION_SEC: z.string().default("120").transform(Number).pipe(z.number().int().nonnegative()),
+  DISCOVERY_MAX_DURATION_MIN_UNKNOWN_CHANNEL: z.string().default("120").transform(Number).pipe(z.number().int().nonnegative()),
+  DISCOVERY_BLOCKED_CATEGORIES: z.string().default("1,20"),
+  DISCOVERY_ALLOWED_LANGUAGES: z.string().default("en"),
+  // Extra channel titles to always reject (comma-separated, case-insensitive).
+  DISCOVERY_BLOCKED_CHANNELS: z.string().default(""),
+  // Also block channels whose discovery videos keep getting rejected (≥3 junk, ≤20% good).
+  DISCOVERY_AUTO_BLOCK_CHANNELS: z.string().default("true").transform((s) => s === "true"),
+  // Jev gate before summarising. auto = use Jev when reachable (OPENROUTER_API_KEY
+  // in env, or an active vaultd grant for DISCOVERY_JEV_VAULT_ITEM), else fall
+  // back to the cheap gates with DISCOVERY_FALLBACK_MIN_SIMILARITY. required =
+  // process nothing when Jev is unreachable. off = never call Jev.
+  DISCOVERY_JEV_GATE: z.enum(["auto", "required", "off"]).default("auto"),
+  // How many top candidates per run Jev judges (≈ $0.0005 each).
+  DISCOVERY_JEV_POOL: z.string().default("24").transform(Number).pipe(z.number().int().positive()),
+  DISCOVERY_JEV_BUDGET_USD: z.string().default("0.03").transform(Number).pipe(z.number().nonnegative()),
+  DISCOVERY_JEV_DAILY_BUDGET_USD: z.string().default("0.20").transform(Number).pipe(z.number().nonnegative()),
+  // Minimum P(interested) to process a candidate (the /discover triage uses 0.8 for "Jev pick").
+  DISCOVERY_JEV_PICK_THRESHOLD: z.string().default("0.8").transform(Number).pipe(z.number().min(0).max(1)),
+  // What to do with candidates Jev is unsure about: reject (default) or keep for a later run.
+  DISCOVERY_JEV_UNSURE: z.enum(["reject", "keep"]).default("reject"),
+  DISCOVERY_JEV_VAULT_ITEM: z.string().default("OpenRouter API Key - Translation Tool"),
+  // Embedding-gate threshold used instead of 0.47 when the Jev gate is unavailable.
+  DISCOVERY_FALLBACK_MIN_SIMILARITY: z.string().default("0.5").transform(Number).pipe(z.number().min(0).max(1)),
+  // --- Research revamp (2026-09-26, vivaldi-home/research/revamp-noise-surfaces.md) ---
+  // Noisy generators, now off by default. Set to "true" to bring one back.
+  // Heartbeat P3b: cluster triaged items into `themes` (glm).
+  HEARTBEAT_THEMES_ENABLED: z.string().default("false").transform((s) => s === "true"),
+  // Discovery step 7: mine "news" items from recent video summaries (Claude).
+  DISCOVERY_NEWS_ENABLED: z.string().default("false").transform((s) => s === "true"),
+  // Atlas daily narrative at 23:15 (glm). The asset digest replaces it; weekly synthesis stays.
+  ATLAS_DAILY_SYNTHESIS_ENABLED: z.string().default("false").transform((s) => s === "true"),
+  // Extra discovery searches per run seeded from GOALS.md tracks (added on top
+  // of DISCOVERY_MAX_SEARCH_CALLS_PER_RUN, so David's own interests keep their slots). 0 disables.
+  DISCOVERY_GOAL_SEEDS_PER_RUN: z.string().default("2").transform(Number).pipe(z.number().int().nonnegative()),
+  // Asset digest ("Act on these"): daily Telegram list with buttons, deadline alerts and reminders.
+  ASSET_DIGEST_ENABLED: z.string().default("true").transform((s) => s === "true"),
+  ASSET_DIGEST_CRON: z.string().default("10 8 * * *"),
+  ASSET_DIGEST_TZ: z.string().default("America/Toronto"),
+  // Where the digest goes: "topic" = the heartbeat's group News topic (49), "dm" = David's DM.
+  ASSET_DIGEST_TARGET: z.enum(["topic", "dm"]).default("topic"),
 });
 
 export type Config = z.infer<typeof envSchema>;
