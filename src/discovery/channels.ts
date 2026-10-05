@@ -5,6 +5,8 @@ import {
   markChannelPolled,
   insertCandidate,
   hasVideoBeenSeen,
+  recordChannelFailure,
+  markPollWindowBlocked,
   type DiscoveryChannel,
   type CandidateSource,
 } from "./db.ts";
@@ -19,10 +21,49 @@ const log = createLogger("discovery:channels");
  */
 const MAX_BACKFILL_PER_CHANNEL = 30;
 
+/**
+ * Pinned canary for block-window detection: MrBeast, known-live and NOT in the
+ * channel list (research/psibot-channel-rot-census-2026-10.md). During a
+ * YouTube-side block window every feeds/videos.xml request 404s identically —
+ * live, dead, or never-existent — so per-channel failures prove nothing in that
+ * window. A canary 404 stamps the round window-blocked; any prune-class
+ * decision must stand down when it sees that stamp.
+ */
+export const CANARY_CHANNEL_ID = "UCX6OQ3DkcsbYNE6H8uQQuVA";
+
+/**
+ * WARN after this many consecutive failed polls of one channel, and only when
+ * the canary is healthy. Discovery fires 4x/day and block windows only ever
+ * kill the 04:00Z fire, so a live channel's streak resets within ~6h; 8
+ * consecutive failures ≈ two days without a single success anywhere — the
+ * signature of actual channel rot, not a window.
+ */
+export const CHANNEL_FAILURE_WARN_STREAK = 8;
+
 export interface PollResult {
   channelsPolled: number;
   newCandidates: number;
   errors: number;
+  /**
+   * True when the pinned canary channel failed before the round — a
+   * YouTube-side block window (every channel 404s, live or dead). The stamp
+   * is persisted in discovery_state (`channel_poll_window_blocked_at`); any
+   * prune-class decision reading it must stand down for this run.
+   */
+  windowBlocked: boolean;
+}
+
+/**
+ * Probe the pinned canary channel. Ok ⇒ the poll window is healthy, so
+ * per-channel failures are real signal. Throw ⇒ the window is blocked.
+ */
+async function probeCanaryChannel(): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await fetchChannelFeed(CANARY_CHANNEL_ID);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
@@ -35,11 +76,26 @@ export interface PollResult {
  * and concurrent writes would collide ("database is locked").
  */
 export async function pollRssFeeds(maxChannels = 500, concurrency = 8): Promise<PollResult> {
+  // Canary first: one known-live channel outside the list. Its failure says
+  // "block window", not "channels dead" — stamp the run and suppress streak
+  // WARNs for the whole round (the ledger itself still records honestly).
+  const canary = await probeCanaryChannel();
+  if (!canary.ok) {
+    markPollWindowBlocked();
+    log.warn("Canary channel fetch failed — poll window marked blocked", {
+      canaryChannelId: CANARY_CHANNEL_ID,
+      error: canary.error,
+    });
+  }
+
   const channels = listChannels().slice(0, maxChannels);
   const fetched: Array<{ channel: DiscoveryChannel; entries: FeedEntry[] }> = [];
   let errors = 0;
 
-  // Phase 1 — bounded-concurrency network fetch (no DB access here).
+  // Phase 1 — bounded-concurrency network fetch. DB access here is limited to
+  // the catch arm's failure-ledger write: it is fully synchronous (no await
+  // inside), so it cannot interleave with other statements on the single
+  // bun:sqlite connection. Everything else DB-shaped waits for phase 2.
   let cursor = 0;
   await Promise.all(
     Array.from({ length: Math.min(concurrency, channels.length) }, async () => {
@@ -50,6 +106,14 @@ export async function pollRssFeeds(maxChannels = 500, concurrency = 8): Promise<
           fetched.push({ channel, entries });
         } catch (err) {
           errors++;
+          const streak = recordChannelFailure(channel.channel_id);
+          if (canary.ok && streak >= CHANNEL_FAILURE_WARN_STREAK) {
+            log.warn("Channel consecutive-failure streak — no prune exists; review manually", {
+              channelId: channel.channel_id,
+              channel: channel.channel_title,
+              streak,
+            });
+          }
           log.warn("RSS poll failed", {
             channelId: channel.channel_id,
             channel: channel.channel_title,
@@ -81,8 +145,9 @@ export async function pollRssFeeds(maxChannels = 500, concurrency = 8): Promise<
     channelsPolled: fetched.length,
     newCandidates,
     errors,
+    windowBlocked: !canary.ok,
   });
-  return { channelsPolled: fetched.length, newCandidates, errors };
+  return { channelsPolled: fetched.length, newCandidates, errors, windowBlocked: !canary.ok };
 }
 
 /**

@@ -2,6 +2,7 @@
 // from db.ts (which was 642 physical lines; cap 500). db.ts re-exports this
 // module's surface so existing `./db.ts` importers keep their import path.
 
+import type { Database } from "bun:sqlite";
 import { getDb } from "../db/index.ts";
 import { createLogger } from "../shared/logger.ts";
 
@@ -19,6 +20,8 @@ export interface DiscoveryChannel {
   watch_count: number;
   last_polled_at: string | null;
   created_at: string;
+  /** Consecutive failed RSS polls; 0 after every successful poll. */
+  consecutive_failures: number;
 }
 
 // --- Channels ---
@@ -46,6 +49,7 @@ export function upsertChannel(params: {
 
 export function getChannel(channelId: string): DiscoveryChannel | null {
   const db = getDb();
+  ensureFailureLedgerColumn(db);
   return db
     .prepare<DiscoveryChannel, [string]>(
       `SELECT * FROM discovery_channels WHERE channel_id = ?`,
@@ -55,6 +59,7 @@ export function getChannel(channelId: string): DiscoveryChannel | null {
 
 export function listChannels(origin?: ChannelOrigin): DiscoveryChannel[] {
   const db = getDb();
+  ensureFailureLedgerColumn(db);
   if (origin) {
     return db
       .prepare<DiscoveryChannel, [ChannelOrigin]>(
@@ -71,9 +76,95 @@ export function listChannels(origin?: ChannelOrigin): DiscoveryChannel[] {
 
 export function markChannelPolled(channelId: string): void {
   const db = getDb();
+  ensureFailureLedgerColumn(db);
+  // A successful poll IS the streak reset — the two can never drift apart.
   db.prepare(
-    `UPDATE discovery_channels SET last_polled_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE channel_id = ?`,
+    `UPDATE discovery_channels
+     SET last_polled_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'), consecutive_failures = 0
+     WHERE channel_id = ?`,
   ).run(channelId);
+}
+
+// --- Channel failure ledger + window-blocked stamp ---
+//
+// Per-channel consecutive-failure streak, persisted from pollRssFeeds' catch
+// arm (research/psibot-channel-rot-census-2026-10.md). Without it, "dead" and
+// "blocked" are indistinguishable in the daemon's own state — a naive
+// N-strikes prune would have deleted all 292 live channels during the
+// 2026-10-05 04:00Z block window. This ledger only records; no DELETE path
+// exists here or is allowed to exist while the window-blocked stamp can be
+// missed. The schema change ships via this module (not db/schema.ts) as a
+// lazily-applied idempotent ALTER, keyed per Database instance so test DB
+// swaps re-apply it.
+
+/** discovery_state key holding the last window-blocked stamp (ISO timestamp). */
+export const CHANNEL_WINDOW_BLOCKED_KEY = "channel_poll_window_blocked_at";
+
+const ledgerReady = new WeakSet<Database>();
+
+function ensureFailureLedgerColumn(db: Database): void {
+  if (ledgerReady.has(db)) return;
+  const columns = db
+    .prepare(`PRAGMA table_info(discovery_channels)`)
+    .all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === "consecutive_failures")) {
+    db.exec(
+      `ALTER TABLE discovery_channels ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+  ledgerReady.add(db);
+}
+
+/** Increment the channel's consecutive-failure streak; returns the new value. */
+export function recordChannelFailure(channelId: string): number {
+  const db = getDb();
+  ensureFailureLedgerColumn(db);
+  return (
+    db
+      .prepare<{ consecutive_failures: number }, [string]>(
+        `UPDATE discovery_channels
+         SET consecutive_failures = consecutive_failures + 1
+         WHERE channel_id = ?
+         RETURNING consecutive_failures`,
+      )
+      .get(channelId)?.consecutive_failures ?? 0
+  );
+}
+
+export function getChannelFailureStreak(channelId: string): number {
+  const db = getDb();
+  ensureFailureLedgerColumn(db);
+  return (
+    db
+      .prepare<{ consecutive_failures: number }, [string]>(
+        `SELECT consecutive_failures FROM discovery_channels WHERE channel_id = ?`,
+      )
+      .get(channelId)?.consecutive_failures ?? 0
+  );
+}
+
+/**
+ * Stamp discovery_state with "the last poll round hit a block window" —
+ * written when the pinned canary channel (known-live, outside the list)
+ * fails. Any future prune-class decision reads this and stands down.
+ */
+export function markPollWindowBlocked(): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO discovery_state (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(CHANNEL_WINDOW_BLOCKED_KEY, new Date().toISOString());
+}
+
+export function getPollWindowBlockedAt(): string | null {
+  const db = getDb();
+  return (
+    db
+      .prepare<{ value: string }, [string]>(
+        `SELECT value FROM discovery_state WHERE key = ?`,
+      )
+      .get(CHANNEL_WINDOW_BLOCKED_KEY)?.value ?? null
+  );
 }
 
 /**
