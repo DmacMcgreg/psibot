@@ -21,6 +21,17 @@ const T0 = "2026-10-01T00:00:00Z";
 const T1 = "2026-10-03T08:30:00Z";
 
 // buildReauthMessage reads config at message-build time; load it once.
+// Clean-checkout fixture (per the env-fixture successor row's spec): these
+// two are the only required vars and this suite must not depend on
+// order-leakage from src/agent suites that set them. Literal dummy values,
+// never a real secret.
+process.env.TELEGRAM_BOT_TOKEN ??= "test-token-fixture";
+process.env.ALLOWED_TELEGRAM_USER_IDS ??= "123456789";
+// buildReauthMessage only emits the /dashboard?key= deep link when the vault
+// URL is set; dummy values, no network (the vault listing is injected in the
+// notify tests, and these two are only ever interpolated into text).
+process.env.OAUTH_VAULT_URL ??= "http://oauth-vault-fixture.test";
+process.env.OAUTH_VAULT_API_KEY ??= "fixture-key";
 loadConfig();
 
 let db: Database;
