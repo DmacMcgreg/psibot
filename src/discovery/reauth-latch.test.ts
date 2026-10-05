@@ -32,7 +32,18 @@ process.env.ALLOWED_TELEGRAM_USER_IDS ??= "123456789";
 // notify tests, and these two are only ever interpolated into text).
 process.env.OAUTH_VAULT_URL ??= "http://oauth-vault-fixture.test";
 process.env.OAUTH_VAULT_API_KEY ??= "fixture-key";
-loadConfig();
+const cfg = loadConfig();
+// In a shared bun-test process an earlier file may have already frozen the
+// config singleton WITHOUT the vault vars — the env ??= above can't help
+// then, and buildReauthMessage only emits the /dashboard?key= deep link when
+// the vault URL is set. Set them on the loaded config and restore in
+// afterAll: green in any file order, no state leaked to later files.
+const prevVaultUrl = cfg.OAUTH_VAULT_URL;
+const prevVaultKey = cfg.OAUTH_VAULT_API_KEY;
+if (!prevVaultUrl) {
+  cfg.OAUTH_VAULT_URL = "http://oauth-vault-fixture.test";
+  cfg.OAUTH_VAULT_API_KEY = "fixture-key";
+}
 
 let db: Database;
 
@@ -48,6 +59,8 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  cfg.OAUTH_VAULT_URL = prevVaultUrl;
+  cfg.OAUTH_VAULT_API_KEY = prevVaultKey;
   db.close();
 });
 
