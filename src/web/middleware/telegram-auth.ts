@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { getConfig } from "../../config.ts";
 import { createLogger } from "../../shared/logger.ts";
+import { clientIp, ipAllowlisted } from "../client-ip.ts";
 
 const log = createLogger("web:telegram-auth");
 
@@ -93,22 +94,6 @@ export async function validateInitData(
   }
 }
 
-function requestIp(c: Parameters<MiddlewareHandler>[0]): string {
-  return (
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-    c.req.header("x-real-ip") ??
-    "127.0.0.1"
-  );
-}
-
-function ipAllowlisted(ip: string, tailscalePrefix: string): boolean {
-  return (
-    ip === "127.0.0.1" ||
-    ip === "::1" ||
-    (tailscalePrefix.length > 0 && ip.startsWith(tailscalePrefix))
-  );
-}
-
 /**
  * Mini-App API auth. Accepts either a valid Telegram initData header OR a
  * request from an IP-allowlisted origin (localhost / tailnet). The IP
@@ -147,7 +132,7 @@ export function telegramAuthMiddleware(): MiddlewareHandler {
       // Fall through to IP check — initData was present but invalid
     }
 
-    const ip = requestIp(c);
+    const ip = clientIp(c);
     if (ipAllowlisted(ip, config.TAILSCALE_IP_PREFIX)) {
       const primaryUserId = config.ALLOWED_TELEGRAM_USER_IDS[0] ?? 0;
       c.set("telegramUser" as never, {

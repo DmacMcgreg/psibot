@@ -17,7 +17,9 @@ const envSchema = z.object({
     .default("3141")
     .transform(Number)
     .pipe(z.number().int().positive()),
-  HOST: z.string().default("0.0.0.0"),
+  // Loopback only. Tailnet access goes through `tailscale serve`, which proxies to
+  // localhost; 0.0.0.0 would put the dashboard and /api/chat on the LAN.
+  HOST: z.string().default("127.0.0.1"),
   DEFAULT_MAX_BUDGET_USD: z
     .string()
     .default("20.00")

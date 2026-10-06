@@ -12,6 +12,7 @@ import { createYoutubeGraphRoutes } from "./routes/youtube-graph.ts";
 import { createMiniAppRoutes } from "./routes/mini-app/index.ts";
 import { createInboxRoutes } from "./routes/inbox.ts";
 import { createLogger } from "../shared/logger.ts";
+import { clientIp, ipAllowlisted } from "./client-ip.ts";
 
 const log = createLogger("web");
 
@@ -26,25 +27,17 @@ export function createWebApp(deps: WebAppDeps) {
   const app = new Hono();
   const config = getConfig();
 
-  // IP allowlist middleware (exempt OAuth callback - Funnel traffic has proxy IPs)
+  // IP allowlist middleware (exempt OAuth callback - Funnel traffic has proxy IPs).
+  // The IP comes from the socket; see client-ip.ts for when X-Forwarded-For counts.
   app.use("*", async (c, next) => {
     if (c.req.path.startsWith("/auth/youtube/callback") || c.req.path.startsWith("/tma")) {
       await next();
       return;
     }
 
-    const ip =
-      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
-      c.req.header("x-real-ip") ??
-      "127.0.0.1";
-
-    const allowed =
-      ip === "127.0.0.1" ||
-      ip === "::1" ||
-      ip.startsWith(config.TAILSCALE_IP_PREFIX);
-
-    if (!allowed) {
-      log.warn("Blocked request from unauthorized IP", { ip });
+    const ip = clientIp(c);
+    if (!ipAllowlisted(ip, config.TAILSCALE_IP_PREFIX)) {
+      log.warn("Blocked request from unauthorized IP", { ip: ip ?? "unknown" });
       return c.text("Forbidden", 403);
     }
 

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Bot } from "grammy";
 import type { Config } from "../config.ts";
 import { createLogger } from "../shared/logger.ts";
+import { clientIp } from "../web/client-ip.ts";
 import type { Server } from "bun";
 
 const log = createLogger("webhook");
@@ -47,14 +48,13 @@ export async function startWebhookServer(
 
   // IP allowlist middleware
   // When behind Tailscale Funnel, requests arrive from the local tailscaled proxy (127.0.0.1).
-  // X-Forwarded-For contains the original client IP from Tailscale's DERP infrastructure.
+  // X-Forwarded-For contains the original client IP; clientIp() trusts it only from loopback.
   app.use("*", async (c, next) => {
-    const forwardedFor = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-    const ip = forwardedFor ?? c.req.header("x-real-ip") ?? "127.0.0.1";
+    const ip = clientIp(c);
 
     // Allow localhost (Tailscale Funnel proxy) and Telegram's IP ranges
-    if (!isTelegramIp(ip)) {
-      log.warn("Blocked webhook request from non-Telegram IP", { ip });
+    if (!ip || !isTelegramIp(ip)) {
+      log.warn("Blocked webhook request from non-Telegram IP", { ip: ip ?? "unknown" });
       return c.notFound();
     }
 
@@ -104,7 +104,7 @@ export async function startWebhookServer(
 
   const server = Bun.serve({
     port: config.TELEGRAM_WEBHOOK_PORT,
-    hostname: "0.0.0.0",
+    hostname: "127.0.0.1", // Funnel's tailscaled proxy connects over loopback; never the LAN
     fetch: app.fetch,
   });
 
