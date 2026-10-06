@@ -2,6 +2,7 @@ import { Cron } from "croner";
 import {
   getEnabledJobs,
   getAllJobs,
+  getJob,
   updateJob,
   getJobRuns,
   abandonStaleJobRuns,
@@ -11,6 +12,7 @@ import {
   getLastEnabledAt,
 } from "../db/queries.ts";
 import { JobExecutor } from "./executor.ts";
+import { providerWindowResetUntil, staggeredWindowWait } from "./provider-window.ts";
 import {
   SELF_CHECK_INTERVAL_MS,
   ORPHAN_RUN_MAX_AGE_HOURS,
@@ -34,20 +36,62 @@ const FAILED_RETRY_STATE_KEY = "scheduler:failed-retry-day";
 /** ops_state key prefix: when the self-check last re-registered job <id>. */
 const HEALED_STATE_PREFIX = "scheduler:healed:";
 
+/** The slice of JobExecutor the Scheduler drives — structural so tests
+ *  inject a recording executor without the class's private state. */
+type SchedulerExecutor = Pick<JobExecutor, "execute" | "onJobRecovered" | "onProviderRetry">;
+
 export class Scheduler {
-  private executor: JobExecutor;
+  private executor: SchedulerExecutor;
   private cronJobs = new Map<number, Cron>();
   private timers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** One-shot provider-window retries, with the slot each was staggered into. */
+  private providerRetries = new Map<number, { timer: Timer; slot: number }>();
   private selfCheckTimer: ReturnType<typeof setInterval> | null = null;
   /** When the self-check last re-registered each job (restarts its overdue clock). */
   private healedAt = new Map<number, Date>();
   /** Cron expressions that failed to parse, so the self-check logs them once, not every tick. */
   private invalidSchedules = new Map<number, string>();
 
-  constructor(executor: JobExecutor, bootAt: Date = new Date()) {
+  constructor(executor: JobExecutor | SchedulerExecutor, bootAt: Date = new Date()) {
     this.executor = executor;
-    this.executor.onJobRecovered = () => this.reload();
+    this.wireExecutorHooks();
     this.bootAt = bootAt;
+  }
+
+  /**
+   * Executor → scheduler hooks. Public for tests; idempotent, and wired in
+   * the constructor, so an explicit call is always safe.
+   */
+  wireExecutorHooks(): void {
+    this.executor.onJobRecovered = () => this.reload();
+    this.executor.onProviderRetry = (jobId, at) => this.scheduleProviderRetry(jobId, at);
+  }
+
+  /**
+   * Fire a job exactly once after the provider window resets. Simultaneous
+   * retries (the 04:00Z trio all parse the same deadline) are staggered by
+   * WINDOW_RUN_STAGGER_MS per slot so they don't re-collide at the opening;
+   * the enabled check happens at fire time, so a job disabled (or taken off
+   * the schedule by the streak counter) before the window opens never fires.
+   */
+  private scheduleProviderRetry(jobId: number, at: Date): void {
+    if (this.providerRetries.has(jobId)) return; // one pending retry per job
+    const slot = this.providerRetries.size;
+    const wait = staggeredWindowWait(at, slot);
+    log.info("Scheduling provider-window retry", { jobId, slot, waitMs: wait, at: at.toISOString() });
+    const timer: Timer = setTimeout(() => {
+      this.providerRetries.delete(jobId);
+      const job = getJob(jobId);
+      if (!job || job.status !== "enabled") {
+        log.info("Provider-window retry skipped (job no longer enabled)", { jobId, status: job?.status ?? "missing" });
+        return;
+      }
+      this.executor.execute(jobId, { providerRetry: true }).catch((err) => {
+        log.error("Provider-window retry failed", { jobId, error: String(err) });
+      });
+    }, wait);
+    timer.unref?.();
+    this.providerRetries.set(jobId, { timer, slot });
   }
 
   /**
@@ -231,6 +275,20 @@ export class Scheduler {
     if (job.type === "cron" && job.schedule) {
       try {
         const cron = new Cron(job.schedule, () => {
+          // A fire that lands inside a known-exhausted provider window would
+          // burn a run straight into the same [1308] the window state was
+          // minted from (the 04:00Z trio collision). Defer to the next fire
+          // after the deadline; the executor's retry arm already scheduled
+          // the job that hit the envelope back in once the window opens.
+          const exhaustedUntil = providerWindowResetUntil();
+          if (exhaustedUntil) {
+            log.info("Provider window exhausted — deferring cron fire", {
+              jobId: job.id,
+              name: job.name,
+              until: exhaustedUntil.toISOString(),
+            });
+            return;
+          }
           this.executor.execute(job.id).catch((err) => {
             log.error("Cron job execution failed", {
               jobId: job.id,
@@ -331,5 +389,10 @@ export class Scheduler {
       clearTimeout(timer);
     }
     this.timers.clear();
+
+    for (const { timer } of this.providerRetries.values()) {
+      clearTimeout(timer);
+    }
+    this.providerRetries.clear();
   }
 }

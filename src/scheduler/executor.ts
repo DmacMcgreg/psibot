@@ -21,6 +21,7 @@ import { readSkill } from "../skills/index.ts";
 import { bumpUse, markExposed } from "../skills/usage.ts";
 import { CRON_FAILURE_STREAK, FAILED_RETRY_HOUR, parseDbTime, shouldMarkFailed } from "./watchdog.ts";
 import { providerErrorResult } from "./run-outcome.ts";
+import { usageLimitRetryMs, noteProviderWindowExhausted } from "./provider-window.ts";
 import { sendOpsAlert } from "../shared/ops-alerts.ts";
 import { jobAlertKey, jobFailedAlertText } from "./job-alerts.ts";
 import type { RunStatus, ChatContext, Job } from "../shared/types.ts";
@@ -98,6 +99,13 @@ export type ExecutorAgent = Pick<AgentService, "run" | "consumeRestart">;
 export class JobExecutor {
   /** Set by the Scheduler so a job that leaves "failed" is scheduled again. */
   onJobRecovered: (() => void) | null = null;
+  /**
+   * Set by the Scheduler: called once when a run dies on the provider's
+   * [1308] usage-limit envelope, with the moment the window resets (plus
+   * buffer). The scheduler spaces simultaneous retries past that deadline
+   * (WINDOW_RUN_STAGGER_MS) instead of re-colliding at the window opening.
+   */
+  onProviderRetry: ((jobId: number, at: Date) => void) | null = null;
   private agent: ExecutorAgent;
   private bot: Bot | null = null;
   private notifyUserIds: number[] = [];
@@ -112,7 +120,7 @@ export class JobExecutor {
     this.notifyUserIds = userIds;
   }
 
-  async execute(jobId: number, options?: { manualTrigger?: boolean }): Promise<void> {
+  async execute(jobId: number, options?: { manualTrigger?: boolean; providerRetry?: boolean }): Promise<void> {
     const job = getJob(jobId);
     if (!job) {
       log.error("Job not found", { jobId });
@@ -315,6 +323,25 @@ export class JobExecutor {
         );
       }
 
+      // The provider usage-limit arm ([1308], the 04:00Z trio job_runs
+      // 10322-24): the run stays a classified error, but instead of a
+      // diagnostic (which would fire straight back into the exhausted
+      // window), the parsed reset is shared in ops_state and one retry is
+      // scheduled after it. A retry that hits the window again still
+      // refreshes the deadline for other jobs but never chains.
+      const usageRetryMs = usageLimitRetryMs(message);
+      if (usageRetryMs !== null) {
+        const deadline = noteProviderWindowExhausted(usageRetryMs);
+        if (!options?.providerRetry) {
+          log.info("Provider usage limit hit — scheduling retry after window reset", {
+            jobId, name: job.name, deadline: deadline.toISOString(),
+          });
+          this.onProviderRetry?.(jobId, deadline);
+        }
+      } else {
+        await this.diagnoseFailure(jobId, job.name, message);
+      }
+
       const offSchedule = giveUp && job.type === "cron"
         ? `\n\nIt has now failed ${CRON_FAILURE_STREAK} runs in a row and is off the schedule. PsiBot re-enables failed cron jobs once a day (from ${FAILED_RETRY_HOUR}:00), or re-enable it yourself.`
         : "";
@@ -325,9 +352,6 @@ export class JobExecutor {
         withAppLink(jobActionsKeyboard(jobId), jobId),
         { jobId, runId: run.id },
       );
-
-      // Spawn diagnostic agent (with cooldown to prevent loops)
-      await this.diagnoseFailure(jobId, job.name, message);
     }
   }
 
