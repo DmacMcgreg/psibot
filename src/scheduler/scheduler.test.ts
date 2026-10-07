@@ -67,6 +67,7 @@ function addRun(jobId: number, status: string, startedAt: string, error: string 
 
 const iso = (d: Date) => d.toISOString();
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
+const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
 describe("Scheduler.selfCheck", () => {
   let scheduler: Scheduler;
@@ -139,12 +140,17 @@ describe("Scheduler.selfCheck", () => {
   });
 
   it("a run started after daemon boot is live: the sweep leaves it untouched", () => {
-    const boot = new Date("2026-10-05T08:06:57.398Z");
+    // The age arm compares against the DB's real clock (julianday('now')),
+    // not selfCheck's `now` — a fixture-pinned past date rots once 6h of
+    // real time passes (this test was green at landing on 2026-10-05 and red
+    // from 15:00Z that day). Anchor every timestamp to the real clock, with
+    // the run started after boot but far inside the 6h age threshold.
+    const boot = minutesAgo(60);
     scheduler = new Scheduler(fakeExecutor(), boot);
-    const id = addJob({ last_run_at: "2026-10-05 08:30:00" });
-    const live = addRun(id, "running", "2026-10-05 09:00:00Z");
+    const id = addJob({ last_run_at: iso(minutesAgo(37)) });
+    const live = addRun(id, "running", iso(minutesAgo(53)));
     scheduler.reload();
-    const report = scheduler.selfCheck(new Date("2026-10-05T09:07:00Z"));
+    const report = scheduler.selfCheck(new Date());
     expect(report.abandonedRuns).toBe(0);
     const row = db.prepare(`SELECT status, error, completed_at FROM job_runs WHERE id = ?`).get(live) as { status: string; error: string | null; completed_at: string | null };
     expect(row.status).toBe("running");
