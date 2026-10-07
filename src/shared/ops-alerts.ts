@@ -16,6 +16,7 @@
 import type { Bot } from "grammy";
 import { getOpsState, setOpsState, deleteOpsState, recordSentMessage } from "../db/queries.ts";
 import { createLogger } from "./logger.ts";
+import type { SentMessageSource } from "./types.ts";
 
 const log = createLogger("ops-alerts");
 
@@ -32,21 +33,53 @@ const held: Array<{ key: string; text: string }> = [];
 
 const stateKey = (key: string) => `alert:${key}`;
 
+/** The slice of grammy's Bot a DM needs (a real Bot satisfies it). */
+export interface DmBot {
+  api: {
+    sendMessage(
+      chatId: number,
+      text: string,
+      other?: { parse_mode?: "HTML"; link_preview_options?: { is_disabled?: boolean } },
+    ): Promise<{ message_id: number }>;
+  };
+}
+
+/** How one DM goes out: parse mode and the `sent_messages` provenance tag. */
+export interface DmOptions {
+  /** "HTML" for pre-escaped markup (the fleet digest); omitted = plain text. */
+  parseMode?: "HTML";
+  source?: SentMessageSource;
+}
+
+/**
+ * DM `text` to each user id. Resolves the first delivered message id, or null
+ * when nobody got it. Never throws.
+ */
+export async function sendTelegramDm(
+  bot: DmBot,
+  userIds: number[],
+  text: string,
+  opts: DmOptions = {},
+): Promise<number | null> {
+  let firstId: number | null = null;
+  for (const userId of userIds) {
+    try {
+      const sent = await bot.api.sendMessage(userId, text, {
+        link_preview_options: { is_disabled: true },
+        ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
+      });
+      recordSentMessage(userId, sent.message_id, null, { source: opts.source ?? "ops-alert", preview: text });
+      firstId ??= sent.message_id;
+    } catch (err) {
+      log.error("Failed to send Telegram DM", { userId, source: opts.source ?? "ops-alert", error: String(err) });
+    }
+  }
+  return firstId;
+}
+
 /** Plain-text DM to each user id. No parse_mode, so job names and errors need no escaping. */
 export function telegramDmSender(bot: Bot, userIds: number[]): OpsAlertSender {
-  return async (text) => {
-    let delivered = false;
-    for (const userId of userIds) {
-      try {
-        const sent = await bot.api.sendMessage(userId, text, { link_preview_options: { is_disabled: true } });
-        recordSentMessage(userId, sent.message_id, null, { source: "ops-alert", preview: text });
-        delivered = true;
-      } catch (err) {
-        log.error("Failed to send ops alert", { userId, error: String(err) });
-      }
-    }
-    return delivered;
-  };
+  return async (text) => (await sendTelegramDm(bot, userIds, text)) !== null;
 }
 
 /** Wire the delivery path (index.ts, once the bot exists) and flush held alerts. */
