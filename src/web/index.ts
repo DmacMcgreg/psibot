@@ -11,6 +11,7 @@ import { createAuthRoutes } from "./routes/auth.ts";
 import { createYoutubeGraphRoutes } from "./routes/youtube-graph.ts";
 import { createMiniAppRoutes } from "./routes/mini-app/index.ts";
 import { createInboxRoutes } from "./routes/inbox.ts";
+import { createAssetRoutes } from "./routes/assets.ts";
 import { createLogger } from "../shared/logger.ts";
 import { clientIp, ipAllowlisted } from "./client-ip.ts";
 
@@ -75,6 +76,7 @@ export function createWebApp(deps: WebAppDeps) {
   app.route("/", createAuthRoutes());
   app.route("/", createYoutubeGraphRoutes());
   app.route("/", createInboxRoutes());
+  app.route("/", createAssetRoutes());
 
   // Mini App routes
   if (config.MINI_APP_ENABLED) {
