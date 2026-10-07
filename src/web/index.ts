@@ -12,6 +12,7 @@ import { createYoutubeGraphRoutes } from "./routes/youtube-graph.ts";
 import { createMiniAppRoutes } from "./routes/mini-app/index.ts";
 import { createInboxRoutes } from "./routes/inbox.ts";
 import { createAssetRoutes } from "./routes/assets.ts";
+import { createNotifyRoutes, type NotifyDeps } from "./routes/notify.ts";
 import { createLogger } from "../shared/logger.ts";
 import { clientIp, ipAllowlisted } from "./client-ip.ts";
 
@@ -22,6 +23,8 @@ interface WebAppDeps {
   memory: MemorySystem;
   triggerJob: (jobId: number) => void;
   reloadScheduler: () => void;
+  /** POST /api/notify (fleet phone digest). Omitted = route not mounted. */
+  notify?: NotifyDeps;
 }
 
 export function createWebApp(deps: WebAppDeps) {
@@ -77,6 +80,7 @@ export function createWebApp(deps: WebAppDeps) {
   app.route("/", createYoutubeGraphRoutes());
   app.route("/", createInboxRoutes());
   app.route("/", createAssetRoutes());
+  if (deps.notify) app.route("/", createNotifyRoutes(deps.notify));
 
   // Mini App routes
   if (config.MINI_APP_ENABLED) {

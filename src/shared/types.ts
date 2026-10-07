@@ -88,7 +88,8 @@ export type SentMessageSource =
   | "job-history"
   | "ops-alert"
   | "asset-digest"
-  | "weekly-digest";
+  | "weekly-digest"
+  | "fleet-digest";
 
 export interface SentMessage {
   id: number;

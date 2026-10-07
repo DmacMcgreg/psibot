@@ -21,7 +21,9 @@ import { createTelegramBot } from "./telegram/index.ts";
 import { startWebhookServer, stopWebhookServer } from "./telegram/webhook.ts";
 import { TaskQueue } from "./shared/task-queue.ts";
 import { createLogger } from "./shared/logger.ts";
-import { setOpsAlertSender, telegramDmSender } from "./shared/ops-alerts.ts";
+import { sendTelegramDm, setOpsAlertSender, telegramDmSender } from "./shared/ops-alerts.ts";
+import { ensureNotifyToken } from "./web/routes/notify.ts";
+import { dirname, join } from "node:path";
 import { writePid, removePid } from "./cli/pid.ts";
 import type { Bot } from "grammy";
 import type { Server } from "bun";
@@ -61,12 +63,21 @@ async function main() {
   scheduler = new Scheduler(executor);
   const taskQueue = new TaskQueue(10);
 
+  // Fleet phone digest token (POST /api/notify): 32 random bytes, 0600, beside the DB.
+  const notifyTokenPath = join(dirname(config.DB_PATH), "notify-token");
+  ensureNotifyToken(notifyTokenPath);
+
   // Create web app
   const app = createWebApp({
     agent,
     memory,
     triggerJob: (jobId) => scheduler.trigger(jobId),
     reloadScheduler: () => scheduler.reload(),
+    notify: {
+      tokenPath: notifyTokenPath,
+      send: async (html) =>
+        bot ? sendTelegramDm(bot, config.ALLOWED_TELEGRAM_USER_IDS, html, { parseMode: "HTML", source: "fleet-digest" }) : null,
+    },
   });
 
   // Start web server
