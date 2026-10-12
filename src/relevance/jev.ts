@@ -227,6 +227,15 @@ export class JevClient {
     renameSync(tmp, p);
   }
 
+  /** Cache access for subclasses (LocalDeciderClient). */
+  protected cacheRead(payload: Payload): RawResponse | null {
+    return this.cacheGet(cacheKey(payload, this.model));
+  }
+
+  protected cacheWrite(payload: Payload, response: RawResponse): void {
+    this.cachePut(cacheKey(payload, this.model), response);
+  }
+
   /** True when this payload is already cached (no spend needed). */
   isCached(payload: Payload): boolean {
     return existsSync(this.cachePath(cacheKey(payload, this.model)));

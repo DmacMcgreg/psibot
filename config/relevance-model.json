@@ -1,0 +1,7 @@
+{
+  "backend": "local",
+  "small": "Mapika/decider-0.8b",
+  "escalate": "midium-ai/decider-4b-dwq-4bit",
+  "escalateBand": [0.35, 0.65],
+  "note": "escalate is not wired yet; see research/redesign-2026-10/program/reports/cc-j8ti.md"
+}

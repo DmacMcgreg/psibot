@@ -37,6 +37,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { JevClient } from "./jev.ts";
+import { LocalDeciderClient, loadRelevanceConfig } from "./local-decider.ts";
 import {
   ITEM_TYPES,
   labelStats,
@@ -82,6 +83,14 @@ function record(command: string, client: JevClient): void {
 }
 
 function makeClient(): JevClient {
+  // cc-j8ti: the local decider is the default; RELEVANCE_BACKEND=jev (or config/relevance-model.json) restores hosted Jev.
+  const cfg = loadRelevanceConfig();
+  const backend = process.env.RELEVANCE_BACKEND ?? cfg.backend ?? "local";
+  if (backend === "local") {
+    const local = new LocalDeciderClient({ model: cfg.small, concurrency: 1 });
+    console.error(`relevance: backend=local model=${local.model} (no key, no spend)`);
+    return local;
+  }
   const totalCap = Number(arg("total-cap", "10"));
   const spent = ledgerTotal();
   const budget = Math.max(0, Math.min(Number(arg("budget", "1")), totalCap - spent));
