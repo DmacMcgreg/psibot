@@ -1,7 +1,5 @@
 {
   "backend": "local",
-  "small": "Mapika/decider-0.8b",
-  "escalate": "midium-ai/decider-4b-dwq-4bit",
-  "escalateBand": [0.35, 0.65],
-  "note": "escalate is not wired yet; see research/redesign-2026-10/program/reports/cc-j8ti.md"
+  "small": "midium-ai/decider-4b-dwq-4bit",
+  "note": "MLX 4B DWQ is the default: ~1 s/item with the shared-state cache (the torch/MPS 0.8B path took ~40 s). Mapika/decider-0.8b also runs through the same script."
 }

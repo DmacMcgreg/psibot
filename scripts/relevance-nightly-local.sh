@@ -3,7 +3,7 @@
 # no `vault run`, no OpenRouter key, no --budget/--total-cap. Not installed in launchd;
 # com.dmac.jev-retrain stays disabled until David approves the swap.
 #   RELEVANCE_DRY=1  triage-discover dry run (nothing written)
-#   TRIAGE_LIMIT=N   cap triage items (the 0.8B on MPS takes ~40 s per item)
+#   TRIAGE_LIMIT=N   cap triage items (MLX 4B takes ~1 s per item; the old torch/MPS path took ~40 s)
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export RELEVANCE_BACKEND=local
 cd "$(dirname "$0")/.." || exit 1

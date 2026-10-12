@@ -1,6 +1,6 @@
 /**
  * Local replacement for JevClient (cc-j8ti). Same ask/askMany/model surface and
- * the same answer shape, scored by the Mapika decider on this machine:
+ * the same answer shape, scored by a local decider checkpoint through MLX:
  * no OpenRouter key, no vault grant, no spend.
  *
  * One `uv run local-decider.py` process per askMany batch (load, score all,
@@ -22,7 +22,7 @@ const CONFIG_PATH = "config/relevance-model.json";
 const SCRIPT = new URL("./local-decider.py", import.meta.url).pathname;
 
 export function loadRelevanceConfig(path = CONFIG_PATH): RelevanceModelConfig {
-  const fallback: RelevanceModelConfig = { backend: "local", small: "Mapika/decider-0.8b" };
+  const fallback: RelevanceModelConfig = { backend: "local", small: "midium-ai/decider-4b-dwq-4bit" };
   if (!existsSync(path)) return fallback;
   return { ...fallback, ...(JSON.parse(readFileSync(path, "utf-8")) as Partial<RelevanceModelConfig>) };
 }
