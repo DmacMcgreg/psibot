@@ -13,7 +13,7 @@ import { canonicalUrl } from "../relevance/canon.ts";
 import { trackWeight } from "./goals.ts";
 import { HOMES } from "./homes.ts";
 import {
-  ASSET_KINDS, ASSET_STATUSES,
+  ASSET_KINDS, ASSET_STATUSES, TERMINAL_STATUSES,
   type AssetInput, type AssetSourceInput, type AssetRow, type AssetSourceRow,
   type AssetKind, type AssetStatus, type ExtractionStatus, type AssetDetails,
 } from "./types.ts";
@@ -362,8 +362,11 @@ export function listAssets(f: AssetFilter = {}): RankedAsset[] {
   if (f.track) { where.push("(a.track = ? OR a.tracks_json LIKE ?)"); args.push(f.track, `%"${f.track}"%`); }
   if (f.minScore != null) { where.push("a.value_score >= ?"); args.push(f.minScore); }
   if (f.q) { where.push("(a.title LIKE ? OR a.summary LIKE ? OR a.details_json LIKE ?)"); args.push(`%${f.q}%`, `%${f.q}%`, `%${f.q}%`); }
-  where.push("(a.deadline IS NULL OR a.deadline >= ?)");
-  args.push(localDate(now));
+  // Expired deadlines prune the worklist, not the history: terminal rows
+  // (done/dismissed) stay listed after their deadlines pass (live ids 33/41 vs
+  // 503, probed 2026-10-14 — GET /api/assets?status=done returned 5 of 7).
+  where.push(`(a.deadline IS NULL OR a.deadline >= ? OR a.status IN (${TERMINAL_STATUSES.map(() => "?").join(",")}))`);
+  args.push(localDate(now), ...TERMINAL_STATUSES);
   const rows = getDb().prepare<AssetRow & { sources: number }, (string | number)[]>(
     `SELECT a.*, (SELECT COUNT(*) FROM asset_sources s WHERE s.asset_id = a.id) AS sources
      FROM assets a ${where.length ? "WHERE " + where.join(" AND ") : ""}`,

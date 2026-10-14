@@ -151,6 +151,36 @@ describe("upsertAsset", () => {
     expect(rankOf({ kind: "opportunity", value_score: 70, track: "bids", deadline: "2020-01-01" })).toBe(0);
   });
 
+  it("keeps done and dismissed rows listed after their deadlines pass (live ids 33/41/503)", () => {
+    // Live probe 2026-10-14: GET /api/assets?status=done returned 5 of 7 rows — ids 33
+    // (deadline 2026-10-12) and 41 (2026-10-01) were dropped by listAssets's expired-
+    // deadline filter while 503 (2026-10-23) showed; one dismissed row fell the same
+    // way. Terminal rows are history, not worklist: the filter may only prune rows
+    // that are still actionable (new/queued/in_use).
+    const probeNow = new Date("2026-10-14T16:00:00Z"); // noon EDT, the probe instant
+    const up = (title: string, ref: string, deadline: string) =>
+      upsertAsset({ ...base, kind: "opportunity", title, url: `https://canadabuys.canada.ca/${ref}`, track: "bids", deadline }, { source_kind: "canadabuys", source_ref: ref }).id;
+    const a33 = up("RFP01 Get Cyber Safe", "live-33", "2026-10-12");
+    const a41 = up("RFSA EP361-261511", "live-41", "2026-10-01");
+    const a503 = up("East Wing feasibility", "live-503", "2026-10-23");
+    const goneDismissed = up("Expired grant", "live-dismissed", "2026-09-01");
+    const expiredOpen = up("Past open RFP", "live-open", "2026-09-01");
+    setAssetStatus(a33, "done", "done");
+    setAssetStatus(a41, "done", "done");
+    setAssetStatus(a503, "done", "done");
+    setAssetStatus(goneDismissed, "dismissed", "dismiss");
+    const listed = (f: Parameters<typeof listAssets>[0]) => new Set(listAssets({ ...f, now: probeNow, limit: 1000 }).map((r) => r.id));
+    const every = listed({});
+    for (const id of [a33, a41, a503, goneDismissed]) expect(every.has(id)).toBe(true);
+    expect(every.has(expiredOpen)).toBe(false); // expired worklist rows stay hidden
+    const done = listed({ status: "done" });
+    expect(done.has(a33)).toBe(true);
+    expect(done.has(a41)).toBe(true);
+    expect(done.has(a503)).toBe(true);
+    expect(listed({ status: "dismissed" }).has(goneDismissed)).toBe(true);
+    expect(listed({ status: "open" }).has(expiredOpen)).toBe(false);
+  });
+
   it("lets a feed's re-score lower an opportunity, but keeps the best score otherwise", () => {
     const tender: AssetInput = {
       ...base, kind: "opportunity", title: "Web redesign RFP", url: "https://canadabuys.canada.ca/rescore", track: "bids",

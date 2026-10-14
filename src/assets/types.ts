@@ -10,6 +10,9 @@ export type AssetKind = (typeof ASSET_KINDS)[number];
 export const ASSET_STATUSES = ["new", "queued", "in_use", "done", "dismissed"] as const;
 export type AssetStatus = (typeof ASSET_STATUSES)[number];
 
+/** Statuses an asset never leaves: an expired deadline must not hide it from listings. */
+export const TERMINAL_STATUSES: readonly AssetStatus[] = ["done", "dismissed"];
+
 export type Effort = "S" | "M" | "L";
 
 /**
