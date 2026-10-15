@@ -13,9 +13,19 @@ snapshot (db+wal+shm copied together, the established pattern from
 | end | Oct 3 00:49 | `e9d2017a24f52013` | 14 |
 |---|---|---|---|
 | start | Oct 3 00:21 | `e9d2017a24f52013` | 14 |
+| refresh | Oct 15 10:35 EDT | `e9d2017a24f52013` | 14 |
 
 Byte-stable across the run; equals the day-apart baseline in
 `research/psibot-rules-invariant-2026-10.md` (vivaldi-home).
+
+The Oct 15 refresh re-read the live registry through a fresh read-only
+`/tmp` snapshot (db 469,553,152 B + wal 27,649,352 B + shm copied together,
+opened `mode=ro`) and re-derived the hash two independent ways — the
+digest's own `rulesHash` (`apps/psibot-job-health-digest/health.ts:187`)
+and a python re-serialization that had to normalize sqlite's integral
+floats (`0` vs `0.0`) before the canonical bytes matched byte-for-byte.
+Both print `e9d2017a24f52013`; 14 rows, all `level=manual`, last write
+still `2026-09-26T01:10:23Z`, `decision_count` total 323 unchanged.
 
 ## How a rule is born (mechanics, for future readers)
 
@@ -69,15 +79,16 @@ in the working tree** (154 dirty files, sibling discovery-quality WIP):
 
 | Regression | Gate | Test | Bite proof (this run, /tmp copy of the working tree) | Status |
 |---|---|---|---|---|
-| News-flood (per-item GitHub/Reddit cards) | `src/shared/surface-policy.ts` `DISCOVER_ONLY_SOURCES = [youtube, github, reddit]` (github/reddit added 2026-07-22) | `src/shared/surface-policy.test.ts` "keeps automated poller sources out of the inbox channel" | removing github/reddit from the array → test fails | **uncommitted** (`M` both files) |
-| Morning-brief self-report | `src/agent/notify-policy.ts` `case "dynamic"`: no `[NOTIFY]` marker + success → `notify:false` | `src/agent/notify-policy.test.ts` "dynamic policy drops an unmarked work report" | making dynamic broadcast unmarked reports → test fails | **untracked** (test file `??`; gate committed) |
-| OAuth-link (expiry warnings without dashboard URL) | `src/shared/oauth.ts` `buildReauthMessage()` | `src/shared/oauth.test.ts` "reauth message … includes the dashboard link" | breaking the URL lookup → 2 tests fail | **untracked** (`??` both files) |
+| News-flood (per-item GitHub/Reddit cards) | `src/shared/surface-policy.ts` `DISCOVER_ONLY_SOURCES = [youtube, github, reddit]` (github/reddit added 2026-07-22) | `src/shared/surface-policy.test.ts` "keeps automated poller sources out of the inbox channel" | removing github/reddit from the array → test fails | **landed `050d579`** (2026-10-04) — was `M` both files on Oct 3; green 4/4 at HEAD, red re-proven 2026-10-15 (below) |
+| Morning-brief self-report | `src/agent/notify-policy.ts` `case "dynamic"`: no `[NOTIFY]` marker + success → `notify:false` | `src/agent/notify-policy.test.ts` "dynamic policy drops an unmarked work report" | making dynamic broadcast unmarked reports → test fails | **landed `ac62063`** (2026-10-03) — test file was `??` on Oct 3; green 4/4 at HEAD, red re-proven 2026-10-15 (below) |
+| OAuth-link (expiry warnings without dashboard URL) | `src/shared/oauth.ts` `buildReauthMessage()` | `src/shared/oauth.test.ts` "reauth message … includes the dashboard link" | breaking the URL lookup → 2 tests fail | **landed `8d19ef4` + `e6fa88a`** (2026-10-03) — both files were `??` on Oct 3; green 3/3 at HEAD, red re-proven 2026-10-15 (below) |
 
 Bite-proofs ran on `/tmp/bite-main` (copy of `src/` + symlinks), never on
-the sibling's files; restored → 11/11 green. **Gap for David / the WIP
-owner:** these three tests satisfy criterion 0's
-"failing-then-passing" only once their owner lands them — this row's
-scoped commit cannot carry foreign WIP.
+the sibling's files; restored → 11/11 green. **Corrected 2026-10-15:**
+the three suites the Oct 3 row left as foreign WIP have since landed
+(`ac62063`, `e6fa88a`, `050d579`, all ancestors of HEAD), so criterion 0's
+"failing-then-passing" is now satisfied end-to-end — the 2026-10-15 pass
+below is the failing-then-passing record, not a promise.
 
 ## The three recovered regressions landed this row (red → green)
 
@@ -112,12 +123,90 @@ not this row's doing).
 
 ## Residual gaps (honest list)
 
-1. The three named regressions' tests are uncommitted sibling WIP — the
-   owner's landing commit is what completes criterion 0 verbatim.
+1. ~~The three named regressions' tests are uncommitted sibling WIP.~~
+   **Closed 2026-10-15:** all three landed — `ac62063` (notify-policy,
+   4/4), `e6fa88a` (oauth, 3/3), `050d579` (surface-policy, 4/4), every
+   one an ancestor of HEAD, none touched since landing.
 2. `8291ea9`'s other half — the over-cap reminder sweep
-   (`dismissOverCapReminders`) — has no test; one-time cleanup dismissed 31
-   stuck rows in the live DB.
+   (`dismissOverCapReminders`) — had no test on Oct 3. **Closed 2026-10-15:**
+   `src/scheduler/overcap-dismiss.test.ts` (192 lines) landed as `4629fc1`
+   and is 8/8 green at HEAD.
 3. The goal's criterion text itself is not readable through the fleet's
    Studio surface (`fw goals`/`fw thread` show titles only); the three
    names were recovered from the repo's own analysis doc, which matches the
-   goal's wording ("three named regressions").
+   goal's wording ("three named regressions"). Re-checked 2026-10-15 —
+   `fw goals --coverage` still lists titles and row ids, no criteria text,
+   so gap 3 stands.
+
+---
+
+# Refresh — 2026-10-15 (row `t_vnptf3vezg`, tester role)
+
+Re-read by a tester, not by the author. Nothing in the live registry or
+the daemon's code was modified; every read below ran against detached
+`/tmp` checkouts or read-only DB copies.
+
+## Green at HEAD (`ea4dc20`, detached checkout + symlinked node_modules)
+
+`bun test src/shared/surface-policy.test.ts src/agent/notify-policy.test.ts
+src/shared/oauth.test.ts` → **11 pass / 0 fail / 25 expect() calls**.
+
+## Red — four proofs the gates actually bite
+
+| proof | what was broken | result |
+|---|---|---|
+| planted at `050d579^` | pre-widening `DISCOVER_ONLY_SOURCES = ["youtube"]` (the Jul-22 News-flood state) | **3 pass / 1 fail** — `keeps automated poller sources out of the inbox channel` fails on `github` |
+| mutant M3 at HEAD | dropped `"reddit"` from `DISCOVER_ONLY_SOURCES` | **3 pass / 1 fail** — same test fails |
+| mutant M1 at HEAD | `case "dynamic"` no-marker default flipped from `input.status !== "success"` to `true` | **3 pass / 1 fail** — `dynamic policy drops an unmarked work report` fails |
+| mutant M2 at HEAD | `oauthDashboardUrl` returns the vault root instead of `/dashboard?key=…` | **1 pass / 2 fail** — both dashboard-link tests fail |
+| planted at `8d19ef4^` | no `src/shared/oauth.ts` at all | **0 pass / 1 fail / 1 error** (`Cannot find module './oauth.ts'`) — the gate did not exist before `8d19ef4` |
+
+Each mutant was applied alone, run, and reverted; the checkout was
+byte-identical to HEAD afterwards. A test that stays green under its own
+mutant is decoration, so all five reds above were required before the
+greens counted.
+
+## The morning-brief gate's live half (DB, not code)
+
+The Jul-22 analysis named the fix "a DB column flip, not a behavior
+request" — job 31's `notify_policy` was NULL, defaulting to `always`.
+Live read (same Oct 15 read-only snapshot):
+
+| job | name | notify_policy | status |
+|---|---|---|---|
+| 31 | Morning Brief | **dynamic** | enabled |
+| 62 | Nightly Brief | **dynamic** | enabled |
+
+Distribution across all jobs: `dynamic` 5, `silent` 11, `on_error` 4,
+NULL 49. The code half (`notify-policy.ts case "dynamic"`) and the DB half
+(policy column on the brief jobs) both hold today — the regression needs
+both to be present to come back, and `notify-policy.test.ts:57-63` pins
+the NULL→`always` default as the documented failure mode.
+
+## Every channel-surfacing path still funnels through one gate
+
+`isInboxSurfaceable` / `INBOX_SURFACEABLE_SQL` call sites at HEAD:
+`src/db/queries.ts:1268` (surfacing query), `src/heartbeat/index.ts:807`
+(top-items list), `:874` and `:944` (the two per-item send loops). The
+other posting path, the discovery digest, is config-gated
+(`src/discovery/index.ts:720`, `DISCOVERY_SURFACE_TELEGRAM`, default
+`"false"` per `src/config.ts:269-273`; not set in `.env`, so the channel
+stays silent for discovery). No ungated `pending_items` → channel poster
+found.
+
+## The durable guard is running
+
+- `apps/psibot-job-health-digest` suite: **81 pass / 0 fail** across 3
+  files (2026-10-15 run in the command-center checkout).
+- `watch-state.json`: `dayApart` performed `2026-10-12T00:17:54.770Z`,
+  verdict `identical`, `freshHash e9d2017a24f52013` — matching this row's
+  fresh Oct 15 read and the pinned baseline.
+- `digest-2026-10-11.md:81-82` renders the same hash line and the
+  "no drift" verdict.
+
+## What is still open (nothing blocking)
+
+- Gap 3 above (goal criteria text invisible to the fleet surface).
+- The three test suites are pins, not a scheduler: nothing re-runs them
+  weekly. Adding a cron rail that re-runs the five red proofs plus the
+  digest suite would be a successor row, not part of this one.
