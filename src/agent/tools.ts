@@ -46,7 +46,7 @@ import {
 } from "../research/index.ts";
 import { triageAllPending } from "../triage/index.ts";
 import { briefingActionKeyboard } from "../telegram/keyboards.ts";
-import { pollRedditSaved } from "../capture/reddit.ts";
+import { pollRedditSaved, CaptureHttpError } from "../capture/reddit.ts";
 import { pollGithubStars } from "../capture/github.ts";
 import { pollRedditFirehose } from "../capture/reddit-firehose.ts";
 import { pollOpenInsider } from "../capture/openinsider.ts";
@@ -98,6 +98,40 @@ export interface ToolDeps {
   scheduleRestart: () => void;
   /** Late-binding discovery runner; present when DISCOVERY_ENABLED. */
   getDiscoveryRunner?: () => import("../discovery/index.ts").DiscoveryRunner | null;
+}
+
+export type CaptureToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+/** Human-readable failure tail: the HTTP status when the capture boundary
+ *  normalized one, else the raw error message. */
+function captureFailure(err: unknown): string {
+  if (err instanceof CaptureHttpError) return `HTTP ${err.status}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Reddit/GitHub poll tool bodies. A non-2xx response rejects at the fetch
+ * boundary and becomes an isError carrying the status, so a dead poller reads
+ * as a failure instead of "0 new items captured". The deduped ops alert goes
+ * out from src/capture/* at that boundary, independent of this text and of
+ * notify_policy.
+ */
+export async function runInboxPollReddit(): Promise<CaptureToolResult> {
+  try {
+    const captured = await pollRedditSaved();
+    return { content: [{ type: "text" as const, text: `Reddit poll complete: ${captured} new items captured.` }] };
+  } catch (err) {
+    return { content: [{ type: "text" as const, text: `Reddit poll failed: ${captureFailure(err)}` }], isError: true };
+  }
+}
+
+export async function runInboxPollGithub(): Promise<CaptureToolResult> {
+  try {
+    const captured = await pollGithubStars();
+    return { content: [{ type: "text" as const, text: `GitHub poll complete: ${captured} new items captured.` }] };
+  } catch (err) {
+    return { content: [{ type: "text" as const, text: `GitHub poll failed: ${captureFailure(err)}` }], isError: true };
+  }
 }
 
 export function createAgentTools(deps: ToolDeps) {
@@ -1974,20 +2008,14 @@ ${runsText}`;
         "inbox_poll_reddit",
         "Poll Reddit saved posts and add new items to the inbox. Uses the configured Reddit feed token.",
         {},
-        async () => {
-          const captured = await pollRedditSaved();
-          return { content: [{ type: "text" as const, text: `Reddit poll complete: ${captured} new items captured.` }] };
-        }
+        async () => runInboxPollReddit(),
       ),
 
       tool(
         "inbox_poll_github",
         "Poll GitHub starred repos and add new items to the inbox. Uses the configured GitHub token.",
         {},
-        async () => {
-          const captured = await pollGithubStars();
-          return { content: [{ type: "text" as const, text: `GitHub poll complete: ${captured} new items captured.` }] };
-        }
+        async () => runInboxPollGithub(),
       ),
 
       tool(

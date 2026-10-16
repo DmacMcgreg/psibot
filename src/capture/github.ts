@@ -1,6 +1,8 @@
 import { getConfig } from "../config.ts";
 import { insertPendingItem, getPendingItemByUrl } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
+import { sendOpsAlert } from "../shared/ops-alerts.ts";
+import { CaptureHttpError } from "./reddit.ts";
 
 const log = createLogger("capture:github");
 
@@ -41,7 +43,11 @@ export async function pollGithubStars(): Promise<number> {
 
       if (!res.ok) {
         log.error("GitHub API error", { status: res.status, page });
-        break;
+        await sendOpsAlert(
+          "capture:github",
+          `GitHub starred API returned HTTP ${res.status} — the poller is failing, not catching up to an empty list. Check GITHUB_TOKEN.`,
+        );
+        throw new CaptureHttpError("github", res.status);
       }
 
       const stars = (await res.json()) as GitHubStarredRepo[];
@@ -76,7 +82,7 @@ export async function pollGithubStars(): Promise<number> {
       }
     } catch (err) {
       log.error("GitHub poll failed", { error: String(err), page });
-      break;
+      throw err;
     }
   }
 

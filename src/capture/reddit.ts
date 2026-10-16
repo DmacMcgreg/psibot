@@ -1,8 +1,25 @@
 import { getConfig } from "../config.ts";
 import { insertPendingItem, getPendingItemByUrl } from "../db/queries.ts";
 import { createLogger } from "../shared/logger.ts";
+import { sendOpsAlert } from "../shared/ops-alerts.ts";
 
 const log = createLogger("capture:reddit");
+
+/**
+ * A non-2xx capture response, normalized once at the fetch boundary so every
+ * caller sees the same failure shape. Before this, a 403 was logged, `break`,
+ * and returned 0 — identical to "no new saves" — and the run was recorded as a
+ * success while nothing was captured.
+ */
+export class CaptureHttpError extends Error {
+  constructor(
+    readonly source: "reddit" | "github",
+    readonly status: number,
+  ) {
+    super(`${source} capture HTTP ${status}`);
+    this.name = "CaptureHttpError";
+  }
+}
 
 const USER_AGENT = "PsiBot:v2.0 (by /u/FunnyRocker)";
 
@@ -89,7 +106,11 @@ export async function pollRedditSaved(): Promise<number> {
 
       if (!res.ok) {
         log.error("Reddit API error", { status: res.status, page });
-        break;
+        await sendOpsAlert(
+          "capture:reddit",
+          `Reddit saved.json returned HTTP ${res.status} — the poller is failing, not catching up to an empty list. Fix REDDIT_FEED_TOKEN or retire the job.`,
+        );
+        throw new CaptureHttpError("reddit", res.status);
       }
 
       const json = (await res.json()) as { kind: string; data: RedditListingData };
@@ -122,7 +143,7 @@ export async function pollRedditSaved(): Promise<number> {
       page++;
     } catch (err) {
       log.error("Reddit poll failed", { error: String(err), page });
-      break;
+      throw err;
     }
   }
 
