@@ -175,7 +175,7 @@ async function main() {
   // Non-LLM maintenance: shells out to scripts/archive-noteplan-content.ts so
   // pipeline content keeps flowing into noteplan_archive and off the filesystem.
   const noteplanSweep = new NoteplanSweepRunner();
-  noteplanSweep.start();
+  if (config.NOTEPLAN_SWEEP_ENABLED) noteplanSweep.start();
   log.info("NotePlan archive sweep runner started");
 
   // Publish dates for newly archived tabs and saved links (no LLM; polite fetches).

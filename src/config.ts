@@ -320,6 +320,7 @@ const envSchema = z.object({
   ASSET_DIGEST_ENABLED: z.string().default("true").transform((s) => s === "true"),
   // false = skip the Atlas synthesis, weekly digest, skill forge and asset feed/extract runners.
   BACKGROUND_PIPELINES_ENABLED: z.string().default("true").transform((s) => s === "true"),
+  NOTEPLAN_SWEEP_ENABLED: z.string().default("true").transform((s) => s === "true"),
   ASSET_DIGEST_CRON: z.string().default("10 8 * * *"),
   ASSET_DIGEST_TZ: z.string().default("America/Toronto"),
   // Where the digest goes: "topic" = the heartbeat's group News topic (49), "dm" = David's DM.
