@@ -158,7 +158,7 @@ async function main() {
     tradingChatId: groupChatId,
     tradingTopicId: 103,
   });
-  synthesis.start();
+  if (config.BACKGROUND_PIPELINES_ENABLED) synthesis.start();
   log.info("Atlas synthesis runner started");
 
   // Start weekly digest runner (reuses the same group-chat / News-topic config)
@@ -168,7 +168,7 @@ async function main() {
     digestChatId: groupChatId,
     digestTopicId: 49, // News topic
   });
-  digest.start();
+  if (config.BACKGROUND_PIPELINES_ENABLED) digest.start();
   log.info("Weekly digest runner started");
 
   // Start weekly NotePlan content-archival sweep (ingest → retention prune).
@@ -190,7 +190,7 @@ async function main() {
   // Asset registry (see src/assets/): weekly skill forge drafts skill updates
   // from filed techniques into knowledge/skill-forge/.
   const skillForge = new SkillForgeRunner();
-  skillForge.start();
+  if (config.BACKGROUND_PIPELINES_ENABLED) skillForge.start();
   // Daily "Act on these" Telegram card (top 5 assets, one-tap buttons), plus
   // alerts for urgent opportunities and 7/2-day deadline reminders.
   const assetDigest = config.ASSET_DIGEST_ENABLED
@@ -205,11 +205,11 @@ async function main() {
   // New-source feeds: CanadaBuys tenders, Ontario/GC funding, IRAP leads,
   // Hugging Face, GitHub, HN, skills.sh, Kaggle → scored assets.
   const assetFeeds = new AssetFeedRunner();
-  assetFeeds.start();
+  if (config.BACKGROUND_PIPELINES_ENABLED) assetFeeds.start();
   // Extract assets from new videos, tabs, stars, saves and research notes
   // (goal gate first, then glm-5.3). Every 20 min outside 23:00–07:00.
   const assetExtract = new AssetExtractRunner();
-  assetExtract.start();
+  if (config.BACKGROUND_PIPELINES_ENABLED) assetExtract.start();
 
   // Start proactive YouTube discovery runner (RSS fan-out + scoring + processing + news digest)
   if (config.DISCOVERY_ENABLED) {

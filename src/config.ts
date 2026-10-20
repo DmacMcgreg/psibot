@@ -318,6 +318,8 @@ const envSchema = z.object({
   DISCOVERY_GOAL_SEEDS_PER_RUN: z.string().default("2").transform(Number).pipe(z.number().int().nonnegative()),
   // Asset digest ("Act on these"): daily Telegram list with buttons, deadline alerts and reminders.
   ASSET_DIGEST_ENABLED: z.string().default("true").transform((s) => s === "true"),
+  // false = skip the Atlas synthesis, weekly digest, skill forge and asset feed/extract runners.
+  BACKGROUND_PIPELINES_ENABLED: z.string().default("true").transform((s) => s === "true"),
   ASSET_DIGEST_CRON: z.string().default("10 8 * * *"),
   ASSET_DIGEST_TZ: z.string().default("America/Toronto"),
   // Where the digest goes: "topic" = the heartbeat's group News topic (49), "dm" = David's DM.
