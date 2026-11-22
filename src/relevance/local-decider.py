@@ -18,7 +18,7 @@ one row per question with a single answer slot at the last position, letter logi
 row's options, divided by the temperature for the answer type, softmaxed. The prompt builder and
 answer assembly come from the `decider` package shipped inside the Mapika/decider-0.8b snapshot.
 """
-import argparse, copy, json, os, sys, glob
+import argparse, copy, json, os, sys, glob, time
 
 HF = os.path.expanduser("~/.cache/huggingface/hub")
 PKG_REPO = "Mapika/decider-0.8b"  # source of the `decider` python package (prompt/systemone)
@@ -34,6 +34,10 @@ def snapshot(repo: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="midium-ai/decider-4b-dwq-4bit")
+    ap.add_argument("--adapter", default=None,
+                    help="directory with a LoRA adapter (adapter_config.json + adapters.safetensors) trained by "
+                         "scripts/relevance-finetune/train.py. The adapter expects the facts-only payload from "
+                         "src/relevance/triage-questions-lite.ts, not the rubric payload.")
     args = ap.parse_args()
 
     model_dir = snapshot(args.model)
@@ -80,7 +84,8 @@ def main() -> int:
     tok = Tok(f"{model_dir}/tokenizer.json")
     # midium's DWQ builds ship a text-only qwen3_5_text config that mlx_lm loads through its qwen3_5 module
     mt = json.load(open(f"{model_dir}/config.json")).get("model_type")
-    model, _ = load(model_dir, model_config={"model_type": "qwen3_5"}) if mt == "qwen3_5_text" else load(model_dir)
+    lkw = {"adapter_path": args.adapter} if args.adapter else {}
+    model, _ = load(model_dir, model_config={"model_type": "qwen3_5"}, **lkw) if mt == "qwen3_5_text" else load(model_dir, **lkw)
     mx.eval(model.parameters())
     lm = getattr(model, "language_model", model)
     letters = mx.array(letter_ids(tok))
@@ -122,6 +127,7 @@ def main() -> int:
         if not line:
             continue
         req = json.loads(line)
+        t0 = time.perf_counter()
         try:
             ctx = render_state(req["state"])
             rqs = {k: render_question(v) for k, v in req["questions"].items()}
@@ -137,6 +143,8 @@ def main() -> int:
             out = {"model": args.model, "answers": assemble(rqs, index, probs),
                    "usage": {"input_tokens": unique_tokens(items), "output_tokens": 0}}
             rec = {"id": req["id"], "answers": out["answers"], "model": out["model"], "usage": out["usage"]}
+            if os.environ.get("DECIDER_TIMING"):
+                rec["elapsed_s"] = round(time.perf_counter() - t0, 3)
         except Exception as e:  # one bad item must not sink the batch
             rec = {"id": req["id"], "error": f"{type(e).__name__}: {e}"}
         sys.stdout.write(json.dumps(rec, ensure_ascii=False) + "\n")

@@ -55,7 +55,7 @@ const DECISION_OPTIONS = {
   unsure: "Unsure: the rubric does not clearly settle it, or it is a topic he likes in a form he might or might not want.",
 };
 
-function factsState(f: ItemFacts): Record<string, unknown> {
+export function factsState(f: ItemFacts): Record<string, unknown> {
   const out: Record<string, unknown> = {
     title: f.title,
     source: SOURCE_TEXT[f.source] ?? f.source,
