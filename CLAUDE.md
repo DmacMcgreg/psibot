@@ -23,6 +23,19 @@ Personal AI assistant: Telegram bot + web dashboard, powered by Claude Agent SDK
 - `bun run tsc --noEmit` - Typecheck
 - `psibot install|start|stop|restart|status|logs` - Daemon management
 
+## Testing
+
+Four lean-test rules (David, 2026-11-22):
+
+1. Run only the tests for the files you changed. The full suite runs once at merge.
+2. No new tests that check UI wording or HTML.
+3. Browser/e2e tests only for money, sign-in and secrets.
+4. A test already failing on main gets logged, not fixed inside an unrelated task.
+
+- Affected tests only: `bun test --changed=origin/main`. Bun runs only the test files that import a file changed since `origin/main`, uncommitted edits included. With nothing changed it runs 0 tests and exits 0.
+- Full suite at merge: this repo has no CI, so whoever merges runs `bun test` once before merging.
+- Rule 4: write the failing test's name, its error line and the `main` commit in the PR description, and leave the test alone.
+
 ## Important Notes
 
 - The Claude Agent SDK uses OAuth automatically (no ANTHROPIC_API_KEY needed)
